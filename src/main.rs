@@ -81,6 +81,10 @@ struct Cli {
     /// they start or end: more change points, ~3× the DB requests on a cold cache.
     #[arg(long)]
     all_stops: bool,
+    /// Ignore delays: planned times only. DB's latest schedule (cancellations,
+    /// diversions, extra trains) still applies.
+    #[arg(long)]
+    planned: bool,
     /// EFA journey planner asked for local legs between German stops (empty: none).
     /// It knows trams and buses Transitous can miss.
     #[arg(long, default_value = "https://www.vrn.de/mngvrn")]
@@ -115,7 +119,7 @@ async fn main() -> Result<()> {
 
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: cli.hubs };
     let rough = rough::collect(&motis, efa.as_ref(), &query).await?;
-    let built = timetable::build(
+    let mut built = timetable::build(
         &motis,
         db.as_ref(),
         &rough.itineraries,
@@ -124,6 +128,9 @@ async fn main() -> Result<()> {
         cli.all_stops,
     )
     .await;
+    if cli.planned {
+        built.timetable.ignore_delays();
+    }
     let tt = &built.timetable;
     let net = Network::new(tt);
 
@@ -147,7 +154,12 @@ async fn main() -> Result<()> {
         eprintln!("warning: {warning}");
     }
     let title = format!("{} → {}", tt.stations[tt.origin].name, tt.stations[tt.destination].name);
-    let departing = format!("departing {}–{}", clock(time, None), clock(time + window, None));
+    let departing = format!(
+        "departing {}–{}{}",
+        clock(time, None),
+        clock(time + window, None),
+        if cli.planned { " · planned times, delays ignored" } else { "" }
+    );
     println!("{title}, {departing}");
     println!(
         "timetable: {} stations, {} trains · rough routes via {} · {} Transitous requests{}{}",
@@ -205,7 +217,8 @@ async fn main() -> Result<()> {
         }
         println!();
     }
-    println!("Data: Transitous, https://transitous.org/sources/ — live data where available.");
+    let times = if cli.planned { "planned times" } else { "live data where available" };
+    println!("Data: Transitous, https://transitous.org/sources/ — {times}.");
     if db.is_some() {
         println!("      Deutsche Bahn Timetables API.");
     }

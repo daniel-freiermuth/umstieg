@@ -86,6 +86,8 @@ from the goal goes up (e.g. København → Malmö on the way to Göteborg).
    trains, about three times the requests), plus stations where DB long-distance
    trains call before the next corridor station (this finds Frankfurt Süd).
    Trains are joined across boards by DB's run id, live changes applied.
+   `--planned` ignores delays (planned times only); DB's latest schedule —
+   cancellations, diversions, extra trains — still applies.
    MOTIS trains are merged in by number or identical times; DB wins where it
    has data, MOTIS fills the rest (abroad, buses). Stations from different
    feeds are unified by EVA number, name or distance (< 300 m).

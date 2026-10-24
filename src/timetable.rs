@@ -113,6 +113,18 @@ pub struct Timetable {
     pub destination: usize,
 }
 
+impl Timetable {
+    /// Planned times everywhere: delays are dropped, while the latest schedule
+    /// (cancellations, diversions, extra trains from DB's changes) stays.
+    pub fn ignore_delays(&mut self) {
+        for call in self.trips.iter_mut().flat_map(|t| t.calls.iter_mut()) {
+            for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
+                time.actual = time.planned;
+            }
+        }
+    }
+}
+
 pub struct Build {
     pub timetable: Timetable,
     /// Stations added from DB train paths.
