@@ -184,6 +184,30 @@ function stayAt(spans, from, to, time, y, s) {
   const here = spans.filter(w => w.from <= t && t <= w.to);
   return { t, here, pts: [[from, y, s], [to, y, s]] };
 }
+// Reachability from being at a station at time t: every connection there
+// arriving by t, up to the station, and every one leaving from t on, from the
+// station. Later departures count too: waiting longer is always possible.
+// Returns deduplicated piece slices [piece, first point, last point].
+function reachSegments(spans, t) {
+  const segs = new Map();
+  const add = (pi, k0, k1) => { const key = `${pi}:${k0}:${k1}`; if (!segs.has(key)) segs.set(key, [pi, k0, k1]); };
+  for (const w of spans) {
+    const ps = D.chains[w.chain].pieces;
+    const full = q => add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
+    const [before, after] = [w.from <= t, w.to >= t];
+    if (w.k === undefined) {
+      // Waiting: the wait belongs to both halves.
+      if (before) for (let q = 0; q <= w.j; q++) full(q);
+      if (after) for (let q = w.j; q < ps.length; q++) full(q);
+    } else {
+      // In a train standing there: its ride is cut at the stop.
+      const n = D.pieces[ps[w.j]].pts.length - 1;
+      if (before) { for (let q = 0; q < w.j; q++) full(q); add(ps[w.j], 0, w.k); }
+      if (after) { add(ps[w.j], w.k - 1, n); for (let q = w.j + 1; q < ps.length; q++) full(q); }
+    }
+  }
+  return [...segs.values()];
+}
 
 // The smallest shared units, each drawn once and used as hover target, so
 // every connection passing through counts, wherever it boards or leaves:
@@ -194,64 +218,67 @@ function stayAt(spans, from, to, time, y, s) {
 // Depends only on which groups are hidden, not on zoom.
 function buildModel() {
   const edges = new Map(), waits = new Map(), walks = new Map(), warns = new Set();
+  // Everything flat at a station (waits, trains standing there) is one target
+  // per continuous stay, so nothing stacks. Spans remember where in their
+  // connection they are (piece position j, for standing trains point k) for
+  // the reachability highlight.
+  const stays = new Map();
+  const stay = (s, y, span) => {
+    if (!stays.has(s)) stays.set(s, { y, spans: [] });
+    stays.get(s).spans.push(span);
+  };
   D.chains.forEach((c, i) => {
     if (hidden.has(c.group)) return;
-    for (const pi of c.pieces) {
+    c.pieces.forEach((pi, j) => {
       const p = D.pieces[pi];
       if (p.kind === "ride") {
         for (let k = 1; k < p.pts.length; k++) {
           const [a, b] = [p.pts[k - 1], p.pts[k]];
           const key = `${p.trip}:${a[0]}:${a[2]}:${b[0]}:${b[2]}`;
           if (!edges.has(key)) {
-            const info = a[2] === b[2]
-              ? `${D.trips[p.trip]} · stop at ${D.names[a[2]]} ${timeFmt.format(a[0])}–${timeFmt.format(b[0])}`
-              : `${D.trips[p.trip]} · ${timeFmt.format(a[0])} ${D.names[a[2]]} → ${timeFmt.format(b[0])} ${D.names[b[2]]}`;
+            const info = `${D.trips[p.trip]} · ${timeFmt.format(a[0])} ${D.names[a[2]]} → ${timeFmt.format(b[0])} ${D.names[b[2]]}`;
             edges.set(key, { trip: p.trip, pts: [a, b], info, chains: new Set() });
           }
           edges.get(key).chains.add(i);
+          if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip: p.trip, j, k });
         }
       } else if (p.kind === "wait" && p.pts.length) {
-        const s = p.pts[0][2];
+        const s = p.pts[0][2], span = { from: p.pts[0][0], to: p.pts[p.pts.length - 1][0], chain: i, j };
         if (!waits.has(s)) waits.set(s, { y: p.pts[0][1], spans: [] });
-        waits.get(s).spans.push({ from: p.pts[0][0], to: p.pts[p.pts.length - 1][0], chain: i });
+        waits.get(s).spans.push(span);
+        stay(s, p.pts[0][1], span);
         if (p.warn) warns.add(pi);
       } else if (p.kind === "walk") {
         if (!walks.has(pi)) walks.set(pi, new Set());
         walks.get(pi).add(i);
       }
-    }
+    });
   });
   // Overlapping waits at a station merge into one line per continuous stay.
   for (const w of waits.values()) w.runs = runsOf(w.spans);
   // Hover targets, looked up by index from a single set of event listeners.
   const targets = [];
-  // Everything flat at a station (waits, trains standing there) is one target
-  // per continuous stay, so nothing stacks: hovering names who is there then.
-  const stays = new Map();
-  const stay = (s, y, span) => {
-    if (!stays.has(s)) stays.set(s, { y, spans: [] });
-    stays.get(s).spans.push(span);
-  };
-  for (const [s, w] of waits) for (const span of w.spans) stay(s, w.y, span);
   for (const e of edges.values()) {
-    const [a, b] = e.pts;
-    if (a[2] === b[2]) {
-      for (const chain of e.chains) stay(a[2], a[1], { from: a[0], to: b[0], chain, trip: e.trip });
-      continue;
-    }
+    if (e.pts[0][2] === e.pts[1][2]) continue;
     const t = { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts };
     targets.push({ pts: e.pts, at: () => t });
   }
   for (const [s, { y, spans }] of stays) {
+    let reach = null;
     for (const [from, to] of runsOf(spans)) targets.push({ pts: [[from, y, s], [to, y, s]], at: time => {
       const { t, here, pts } = stayAt(spans, from, to, time, y, s);
       const trains = [...new Set(here.filter(w => w.trip !== undefined).map(w => w.trip))];
       const waiting = new Set(here.filter(w => w.trip === undefined).map(w => w.chain)).size;
       const parts = [waiting ? `${waiting} waiting` : null, ...trains.map(tr => `standing: ${D.trips[tr]}`)].filter(Boolean);
+      // Arriving by t and leaving from t on only change at span ends, so the
+      // two counts identify the highlight; it is rebuilt only when they change.
+      const key = `${s}:${spans.filter(w => w.from <= t).length}:${spans.filter(w => w.to >= t).length}`;
+      if (reach?.key !== key) reach = { key, segments: reachSegments(spans, t) };
       return {
         info: `at ${D.names[s]} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
         trip: trains.length === 1 && !waiting ? trains[0] : undefined,
         chains: [...new Set(here.map(w => w.chain))],
+        reach,
         pts,
       };
     } });
@@ -462,20 +489,24 @@ function refresh() {
   // Hovered stretch and hovered group show at full strength; the rest of a
   // clicked list recedes once one of its connections is selected or previewed.
   const soft = new Set(), faded = new Set();
-  if (hoverTarget) hoverTarget.chains.forEach(i => soft.add(i));
+  // A hovered stay highlights what is reachable from there (reach segments);
+  // other hovered lines highlight their connections.
+  const reach = hoverTarget?.reach ?? null;
+  if (hoverTarget && !reach) hoverTarget.chains.forEach(i => soft.add(i));
   if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup && !hidden.has(c.group)) soft.add(i); });
   if (candidates) candidates.chains.forEach(i => (strong.length ? faded : soft).add(i));
-  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0);
+  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);
 
   // Overlay: previewed connections in train colours, the selection thick on top.
   // Redrawn only when the set changes, not on every mouse move.
-  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b), [...faded].sort((a, b) => a - b)]);
+  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b), [...faded].sort((a, b) => a - b), reach?.key]);
   if (key !== view.overlayKey) {
     view.overlayKey = key;
     overlay.replaceChildren();
-    const draw = (pi, cls) => {
+    const draw = (pi, cls, k0 = 0, k1 = Infinity) => {
       const p = D.pieces[pi];
-      const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
+      const line = el("polyline", { points: pts({ pts: p.pts.slice(k0, k1 + 1) }),
+                                    class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
       if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
     };
     const mine = new Set(strong.flatMap(i => D.chains[i].pieces));
@@ -485,6 +516,7 @@ function refresh() {
     bright.forEach(pi => shown.add(pi));
     for (const pi of pieces(faded)) draw(pi, "soft faded");
     for (const pi of bright) draw(pi, "soft");
+    if (reach) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", k0, k1);
     for (const pi of mine) draw(pi, "strong");
   }
 

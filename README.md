@@ -45,9 +45,11 @@ run parallel, faster trains are steeper and overtake slower ones.
 
 Hovering only previews: it highlights every connection passing the point under
 the mouse and lists them by group. On a ride that is every connection on that
-train between those two stops, wherever it boards or leaves; on a flat line at
-a station, every connection there at that time, waiting or in a train standing
-there (one target per continuous stay, nothing stacks). Clicking selects: if one
+train between those two stops, wherever it boards or leaves. On a flat line at
+a station (waiting, or in a train standing there; one target per continuous
+stay, nothing stacks) it shows what is reachable from being there at that time:
+every connection arriving by then, up to the station, and every one leaving
+from then on, from the station, later departures included. Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
 previews and clicking selects one (the other listed connections then fade to
