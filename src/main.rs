@@ -1,6 +1,8 @@
 mod db;
+mod enumerate;
 mod motis;
-mod search;
+mod rough;
+mod timetable;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
@@ -8,11 +10,12 @@ use chrono_tz::Tz;
 use clap::Parser;
 use futures::future::try_join_all;
 
-use motis::{Leg, Motis};
-use search::{Evaluated, Journey, Query, Recovery};
+use enumerate::{Chain, Limits, Step};
+use motis::Motis;
+use timetable::{Time, Timetable};
 
-/// Find public transport connections that journey planners hide, with their
-/// transfer buffers and what happens if you miss a change.
+/// Lists every public transport connection within limits, including those
+/// journey planners hide, grouped by first and last train.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -26,22 +29,34 @@ struct Cli {
     /// Departure window in minutes.
     #[arg(long, default_value_t = 120)]
     window: i64,
-    /// Station to split the trip at; repeatable. Added to the automatic hubs.
-    #[arg(long)]
-    via: Vec<String>,
-    /// Number of transfer stations taken from the planner's own answers as hubs.
-    #[arg(long, default_value_t = 6)]
-    hubs: usize,
-    /// Minimum buffer in minutes for changes assembled at a hub.
+    /// Maximum number of changes.
+    #[arg(long, default_value_t = 15)]
+    max_changes: usize,
+    /// Show connections taking at most this many hours longer than the fastest.
+    #[arg(long, default_value_t = 3.0)]
+    extra_hours: f64,
+    /// Changes shorter than this many minutes are flagged with ⚠.
     #[arg(long, default_value_t = 5)]
     min_transfer: i64,
-    /// Buffers above this many minutes count as equally comfortable.
-    #[arg(long, default_value_t = 30)]
-    enough_buffer: i64,
-    /// Skip the "what if I miss this change" queries.
+    /// Connections listed per (first train, last train) group; 0 = all.
+    #[arg(long, default_value_t = 5)]
+    per_group: usize,
+    /// Show every connection with platforms and what happens if a change is missed.
     #[arg(long)]
-    no_fallbacks: bool,
-    /// Skip checking trains against DB's live data even if credentials are configured.
+    detail: bool,
+    /// Station to route the rough search through; repeatable.
+    #[arg(long)]
+    via: Vec<String>,
+    /// Transfer stations of the planner's answers used to widen the rough search.
+    #[arg(long, default_value_t = 6)]
+    hubs: usize,
+    /// Also list connections that change to a train they could have boarded at an earlier stop.
+    #[arg(long)]
+    keep_detours: bool,
+    /// Search effort cap (explored states).
+    #[arg(long, default_value_t = 5_000_000)]
+    max_nodes: usize,
+    /// Don't use DB's station boards even if credentials are configured.
     #[arg(long)]
     no_db: bool,
     /// MOTIS API base URL.
@@ -60,74 +75,103 @@ async fn main() -> Result<()> {
     let db = match (cli.no_db, db::Credentials::load()?) {
         (false, Some(credentials)) => Some(db::Db::new(credentials, &user_agent)?),
         (false, None) => {
-            eprintln!("note: no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); skipping DB check");
+            eprintln!("note: no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only");
             None
         }
         (true, _) => None,
     };
 
     let time = parse_time(cli.at.as_deref())?;
+    let window = TimeDelta::minutes(cli.window);
     let (origin, destination) = tokio::try_join!(motis.stop(&cli.from), motis.stop(&cli.to))?;
     let vias = try_join_all(cli.via.iter().map(|v| motis.stop(v))).await?;
 
-    let query = Query {
-        origin,
-        destination,
-        time,
-        window: TimeDelta::minutes(cli.window),
-        vias,
-        auto_hubs: cli.hubs,
-        min_transfer: TimeDelta::minutes(cli.min_transfer),
-        enough_buffer: TimeDelta::minutes(cli.enough_buffer),
-    };
-    let outcome = search::search(&motis, db.as_ref(), &query, !cli.no_fallbacks).await?;
+    let query = rough::Query { origin, destination, time, window, vias, auto_hubs: cli.hubs };
+    let rough = rough::collect(&motis, &query).await?;
+    let built = timetable::build(&motis, db.as_ref(), &rough.itineraries, &query.origin, &query.destination).await;
+    let tt = &built.timetable;
 
-    for warning in &outcome.warnings {
+    let min_transfer = TimeDelta::minutes(cli.min_transfer);
+    let limits = Limits {
+        depart_from: time,
+        depart_until: time + window,
+        max_changes: cli.max_changes,
+        extra_time: TimeDelta::seconds((cli.extra_hours * 3600.0) as i64),
+        min_transfer,
+        keep_detours: cli.keep_detours,
+        max_nodes: cli.max_nodes,
+    };
+    let result = enumerate::enumerate(tt, &limits);
+    let total = result.chains.len();
+    let groups = enumerate::group(tt, result.chains);
+
+    for warning in rough.warnings.iter().chain(&built.warnings) {
         eprintln!("warning: {warning}");
     }
     println!(
-        "{} → {}   departing {}–{}",
-        query.origin.name,
-        query.destination.name,
+        "{} → {}, departing {}–{}",
+        tt.stations[tt.origin].name,
+        tt.stations[tt.destination].name,
         clock(time, None),
-        clock(time + query.window, None),
+        clock(time + window, None),
     );
     println!(
-        "hubs: {}\n{} candidates, {} worth showing ({} Transitous requests{})\n",
-        outcome.hubs.join(", "),
-        outcome.candidates,
-        outcome.journeys.len(),
+        "timetable: {} stations, {} trains · rough routes via {} · {} Transitous requests{}",
+        tt.stations.len(),
+        tt.trips.len(),
+        rough.hubs.join(", "),
         motis.request_count(),
         db.as_ref()
             .map(|db| format!(", {} DB requests", db.request_count()))
             .unwrap_or_default(),
     );
-    for evaluated in &outcome.journeys {
-        print_journey(evaluated);
+    if !built.discovered.is_empty() {
+        println!("stations found via DB train paths: {}", built.discovered.join(", "));
     }
-    if !outcome.rejected.is_empty() {
-        println!("Dropped after DB check:");
-        for r in &outcome.rejected {
-            println!("  ✗ {}: {}", summary(&r.journey), r.reason);
+    let Some(fastest) = result.fastest else {
+        println!("\nNo connection found.");
+        return Ok(());
+    };
+    let completeness = match result.complete_up_to {
+        Some(n) if n >= limits.max_changes => String::new(),
+        Some(n) => format!(", complete up to {n} changes; raise --max-nodes for more"),
+        None => ", incomplete even without changes; raise --max-nodes".to_owned(),
+    };
+    println!(
+        "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups ({} states explored{completeness})\n",
+        duration(fastest),
+        duration(fastest + limits.extra_time),
+        limits.max_changes,
+        total,
+        groups.len(),
+        result.nodes,
+    );
+
+    for group in &groups {
+        println!(
+            "■ {} … {}  ({})",
+            tt.trips[group.first].label,
+            tt.trips[group.last].label,
+            group.chains.len()
+        );
+        let shown = if cli.per_group == 0 { group.chains.len() } else { cli.per_group };
+        for chain in group.chains.iter().take(shown) {
+            if cli.detail {
+                print_detail(tt, chain, min_transfer);
+            } else {
+                print_line(tt, chain, min_transfer);
+            }
+        }
+        if group.chains.len() > shown {
+            println!("    … {} more", group.chains.len() - shown);
         }
         println!();
     }
     println!("Data: Transitous, https://transitous.org/sources/ — live data where available.");
     if db.is_some() {
-        println!("      Deutsche Bahn Timetables API (DB ✓ = confirmed by DB).");
+        println!("      Deutsche Bahn Timetables API.");
     }
     Ok(())
-}
-
-/// One line: times and trains.
-fn summary(j: &Journey) -> String {
-    let trains: Vec<&str> = j.legs.iter().filter(|l| l.is_transit()).map(Leg::label).collect();
-    format!(
-        "{} → {} {}",
-        clock(j.departure(), j.legs[0].from.tz.as_deref()),
-        clock(j.arrival(), j.legs[j.legs.len() - 1].to.tz.as_deref()),
-        trains.join(" / "),
-    )
 }
 
 fn parse_time(at: Option<&str>) -> Result<DateTime<Utc>> {
@@ -156,7 +200,7 @@ fn clock(t: DateTime<Utc>, tz: Option<&str>) -> String {
     }
 }
 
-fn minutes(d: TimeDelta) -> String {
+fn duration(d: TimeDelta) -> String {
     let m = d.num_minutes();
     if m.abs() >= 60 {
         format!("{}h{:02}", m / 60, (m % 60).abs())
@@ -166,102 +210,106 @@ fn minutes(d: TimeDelta) -> String {
 }
 
 /// Time plus live delay, e.g. "11:51" or "11:55 (+4)".
-fn timed(actual: DateTime<Utc>, scheduled: DateTime<Utc>, live: bool, tz: Option<&str>) -> String {
-    let delay = (actual - scheduled).num_minutes();
-    if live && delay != 0 {
-        format!("{} ({delay:+})", clock(actual, tz))
+fn timed(t: Option<Time>, tz: Option<&str>) -> String {
+    let Some(t) = t else { return "--:--".to_owned() };
+    let delay = t.delay().num_minutes();
+    if delay != 0 {
+        format!("{} ({delay:+})", clock(t.actual, tz))
     } else {
-        clock(actual, tz)
+        clock(t.actual, tz)
     }
 }
 
-fn place(name: &str, track: Option<&str>) -> String {
-    match track {
-        Some(track) => format!("{name} [{track}]"),
-        None => name.to_owned(),
+fn buffer(slack: TimeDelta, min_transfer: TimeDelta) -> String {
+    let warn = if slack < min_transfer { "⚠" } else { "" };
+    format!("{}{warn}", duration(slack))
+}
+
+fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) -> String {
+    let departure = chain.departure(tt);
+    let arrival = chain.arrival(tt);
+    let min = chain
+        .min_slack(tt)
+        .map_or_else(|| "direct".to_owned(), |s| format!("min {}", buffer(s, min_transfer)));
+    format!(
+        "{} → {}  {}  {}×  {}",
+        clock(departure, tt.stations[tt.origin].tz.as_deref()),
+        clock(arrival, tt.stations[tt.destination].tz.as_deref()),
+        duration(arrival - departure),
+        chain.changes(),
+        min,
+    )
+}
+
+/// One connection on one line: trains, change stations and buffers.
+fn print_line(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
+    let transfers = chain.transfers(tt);
+    let mut parts = Vec::new();
+    for (i, (trip, board, alight)) in chain.rides().enumerate() {
+        let t = &tt.trips[trip];
+        let (b, a) = (&t.calls[board], &t.calls[alight]);
+        let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
+        if i > 0 {
+            let tr = &transfers[i - 1];
+            let walk = if tr.walk > TimeDelta::zero() { format!(" walk {}", duration(tr.walk)) } else { String::new() };
+            parts.push(format!("‖{}{walk}‖", buffer(tr.slack, min_transfer)));
+        }
+        let from = if i > 0 && bs.name != tt.stations[transfers[i - 1].station].name {
+            format!(" {}", bs.name)
+        } else {
+            String::new()
+        };
+        parts.push(format!(
+            "{}{from} {} → {} {}",
+            timed(b.departure, bs.tz.as_deref()),
+            t.label,
+            timed(a.arrival.or(a.departure), as_.tz.as_deref()),
+            as_.name,
+        ));
     }
+    println!("  {}   {}", header(tt, chain, min_transfer), parts.join(" "));
 }
 
-fn print_journey(e: &Evaluated) {
-    let j = &e.journey;
-    let tz = j.legs[0].from.tz.as_deref();
-    let buffer = j
-        .min_slack()
-        .map_or_else(|| "direct".to_owned(), |s| format!("min buffer {}", minutes(s)));
-    let origin = if j.planner_shows {
-        String::new()
-    } else {
-        format!(
-            "   ★ hidden by planner{}",
-            j.via_hub.as_deref().map(|h| format!(", found via {h}")).unwrap_or_default()
-        )
-    };
-    println!(
-        "{} → {}  {}  {} change(s), {}{}",
-        clock(j.departure(), tz),
-        clock(j.arrival(), j.legs[j.legs.len() - 1].to.tz.as_deref()),
-        minutes(j.arrival() - j.departure()),
-        j.changes(),
-        buffer,
-        origin,
-    );
-
-    let transfers = j.transfers();
-    let mut transit_index = 0;
-    for leg in &j.legs {
-        if !leg.is_transit() {
-            println!("        walk {}", minutes(leg.duration()));
-            continue;
+/// One connection with platforms, and the earliest arrival if a change is missed.
+fn print_detail(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
+    println!("  {}", header(tt, chain, min_transfer));
+    let transfers = chain.transfers(tt);
+    let arrival = chain.arrival(tt);
+    let mut ride = 0;
+    for step in &chain.steps {
+        match *step {
+            Step::Walk { footpath } => {
+                let fp = &tt.footpaths[footpath];
+                println!("      walk {} to {}", duration(fp.duration), tt.stations[fp.to].name);
+            }
+            Step::Ride { trip, board, alight } => {
+                let t = &tt.trips[trip];
+                let (b, a) = (&t.calls[board], &t.calls[alight]);
+                let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
+                let platform = |p: &Option<String>| p.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default();
+                let source = if b.from_db && a.from_db { "DB" } else if b.from_db || a.from_db { "DB/T" } else { "T" };
+                println!(
+                    "    {} {}{} → {} {}{}   {}{}  ({source})",
+                    timed(b.departure, bs.tz.as_deref()),
+                    bs.name,
+                    platform(&b.platform),
+                    timed(a.arrival.or(a.departure), as_.tz.as_deref()),
+                    as_.name,
+                    platform(&a.platform),
+                    t.label,
+                    t.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default(),
+                );
+                if let Some(tr) = transfers.get(ride) {
+                    let fallback = enumerate::earliest_arrival(tt, tr.station, tr.departure + TimeDelta::minutes(1))
+                        [tt.destination]
+                        .map_or_else(
+                            || "no fallback in timetable".to_owned(),
+                            |t| format!("arrive {} (+{})", clock(t, None), duration((t - arrival).max(TimeDelta::zero()))),
+                        );
+                    println!("      ↳ {} buffer · if missed: {fallback}", buffer(tr.slack, min_transfer));
+                }
+                ride += 1;
+            }
         }
-        print_leg(leg);
-        if let Some(t) = transfers.get(transit_index) {
-            let missed = match e.recoveries.get(transit_index) {
-                None => String::new(),
-                Some(r) => format!(" · if missed: {}", describe(r, j.arrival())),
-            };
-            println!("        ↳ {} buffer{missed}", minutes(t.slack));
-        }
-        transit_index += 1;
-    }
-    println!();
-}
-
-fn print_leg(leg: &Leg) {
-    let from_tz = leg.from.tz.as_deref();
-    let to_tz = leg.to.tz.as_deref();
-    let towards = leg.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default();
-    let db = match (leg.confirmed.departure, leg.confirmed.arrival) {
-        (true, true) => "   DB ✓",
-        (true, false) => "   DB ✓ dep",
-        (false, true) => "   DB ✓ arr",
-        (false, false) => "",
-    };
-    println!(
-        "  {}  {}  →  {}  {}   {}{}{}",
-        timed(leg.start_time, leg.scheduled_start_time, leg.real_time, from_tz),
-        place(&leg.from.name, leg.from.track.as_deref()),
-        timed(leg.end_time, leg.scheduled_end_time, leg.real_time, to_tz),
-        place(&leg.to.name, leg.to.track.as_deref()),
-        leg.label(),
-        towards,
-        db,
-    );
-}
-
-fn describe(r: &Recovery, planned_arrival: DateTime<Utc>) -> String {
-    match r {
-        Recovery::Reroute { arrival, first_leg } => {
-            let late = (*arrival - planned_arrival).max(TimeDelta::zero());
-            format!(
-                "arrive {} (+{}), next: {} {} from {}",
-                clock(*arrival, None),
-                minutes(late),
-                first_leg.label(),
-                clock(first_leg.start_time, first_leg.from.tz.as_deref()),
-                first_leg.from.name,
-            )
-        }
-        Recovery::Stranded => "nothing within 4h".to_owned(),
-        Recovery::Failed(e) => format!("lookup failed ({e})"),
     }
 }

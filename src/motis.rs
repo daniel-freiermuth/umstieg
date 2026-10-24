@@ -22,6 +22,14 @@ pub struct Place {
     pub parent_id: Option<String>,
     pub tz: Option<String>,
     pub track: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub arrival: Option<DateTime<Utc>>,
+    pub departure: Option<DateTime<Utc>>,
+    pub scheduled_arrival: Option<DateTime<Utc>>,
+    pub scheduled_departure: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 impl Place {
@@ -39,26 +47,13 @@ pub struct Leg {
     pub to: Place,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
-    pub scheduled_start_time: DateTime<Utc>,
-    pub scheduled_end_time: DateTime<Utc>,
-    #[serde(default)]
-    pub real_time: bool,
     pub display_name: Option<String>,
     pub route_short_name: Option<String>,
     pub trip_id: Option<String>,
     pub trip_short_name: Option<String>,
     pub headsign: Option<String>,
     #[serde(default)]
-    pub cancelled: bool,
-    /// Which ends of the leg DB's live data confirmed.
-    #[serde(skip)]
-    pub confirmed: Confirmed,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Confirmed {
-    pub departure: bool,
-    pub arrival: bool,
+    pub intermediate_stops: Vec<Place>,
 }
 
 impl Leg {
@@ -84,6 +79,16 @@ impl Leg {
         let digits = name.rsplit(|c: char| !c.is_ascii_digit()).next()?;
         digits.parse().ok().filter(|&n| n > 0)
     }
+
+    /// DB product class: 'F' long distance, 'N' regional, 'S' S-Bahn; `None` for non-rail.
+    pub fn class(&self) -> Option<char> {
+        match self.mode.as_str() {
+            "HIGHSPEED_RAIL" | "LONG_DISTANCE" | "NIGHT_RAIL" => Some('F'),
+            "REGIONAL_FAST_RAIL" | "REGIONAL_RAIL" => Some('N'),
+            "SUBURBAN" => Some('S'),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,12 +108,15 @@ struct GeocodeMatch {
     kind: String,
     name: String,
     id: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Stop {
     pub id: String,
     pub name: String,
+    pub position: Option<(f64, f64)>,
 }
 
 pub struct Motis {
@@ -176,7 +184,7 @@ impl Motis {
         matches
             .into_iter()
             .find(|m| m.kind == "STOP")
-            .map(|m| Stop { id: m.id, name: m.name })
+            .map(|m| Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name })
             .with_context(|| format!("no stop found for {text:?}"))
     }
 

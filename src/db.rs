@@ -1,25 +1,25 @@
 //! Deutsche Bahn Timetables API (DB API Marketplace): planned station boards
-//! plus live changes. Used to confirm, correct or reject legs at German stations.
+//! per hour plus live changes. The source of truth for trains at German stations.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, NaiveDateTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
 use tokio::sync::Semaphore;
-
-use crate::motis::Place;
 
 const BASE: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
 /// Free plan quota.
 const REQUESTS_PER_MINUTE: usize = 60;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
-/// Transitous schedules can lag DB's by more than a few minutes; DB wins. Train
-/// numbers are unique enough that the nearest match within this window is the train.
-const MATCH_TOLERANCE: TimeDelta = TimeDelta::minutes(60);
+/// Attempts per request on connection resets, 429 and 5xx.
+const MAX_ATTEMPTS: u32 = 3;
+/// Station lookups, `name\teva\tdb name` per line (empty eva: DB doesn't know it).
+const STATION_CACHE: &str = "stations.tsv";
 
 pub struct Credentials {
     pub client_id: String,
@@ -31,7 +31,7 @@ impl Credentials {
     /// `$XDG_CONFIG_HOME/umstieg/db.env` (`KEY=value` lines).
     pub fn load() -> Result<Option<Self>> {
         let mut values: HashMap<String, String> = HashMap::new();
-        if let Some(path) = config_path() {
+        if let Some(path) = xdg_dir("XDG_CONFIG_HOME", ".config").map(|d| d.join("db.env")) {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     for line in text.lines() {
@@ -53,11 +53,12 @@ impl Credentials {
     }
 }
 
-fn config_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
-    Some(base.join("umstieg").join("db.env"))
+/// `$VAR/umstieg`, falling back to `~/<fallback>/umstieg`.
+fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
+    let base = std::env::var_os(var)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))?;
+    Some(base.join("umstieg"))
 }
 
 #[derive(Debug, Clone)]
@@ -68,69 +69,112 @@ pub struct Station {
 
 /// Arrival or departure of a train at a station.
 #[derive(Debug, Clone, Default)]
-struct Event {
-    planned: Option<DateTime<Utc>>,
-    changed: Option<DateTime<Utc>>,
-    planned_platform: Option<String>,
-    changed_platform: Option<String>,
-    cancelled: bool,
+pub struct Event {
+    pub planned: Option<DateTime<Utc>>,
+    pub changed: Option<DateTime<Utc>>,
+    pub planned_platform: Option<String>,
+    pub changed_platform: Option<String>,
+    pub cancelled: bool,
+    /// Stations before (arrival) or after (departure) this one.
+    pub planned_path: Vec<String>,
+    pub changed_path: Option<Vec<String>>,
 }
 
 impl Event {
     fn merge(&mut self, change: &Event) {
         self.planned = self.planned.or(change.planned);
         self.changed = change.changed.or(self.changed);
-        self.planned_platform = self.planned_platform.take().or_else(|| change.planned_platform.clone());
-        self.changed_platform = change.changed_platform.clone().or(self.changed_platform.take());
+        if self.planned_platform.is_none() {
+            self.planned_platform.clone_from(&change.planned_platform);
+        }
+        if change.changed_platform.is_some() {
+            self.changed_platform.clone_from(&change.changed_platform);
+        }
         self.cancelled |= change.cancelled;
+        if self.planned_path.is_empty() {
+            self.planned_path.clone_from(&change.planned_path);
+        }
+        if change.changed_path.is_some() {
+            self.changed_path.clone_from(&change.changed_path);
+        }
+    }
+
+    pub fn path(&self) -> &[String] {
+        self.changed_path.as_deref().unwrap_or(&self.planned_path)
+    }
+
+    pub fn platform(&self) -> Option<&str> {
+        self.changed_platform.as_deref().or(self.planned_platform.as_deref())
     }
 }
 
+/// One train calling at one station.
 #[derive(Debug, Clone, Default)]
-struct Visit {
-    number: Option<u32>,
-    /// Product class: 'F' long distance, 'N' regional, 'S' S-Bahn.
-    class: Option<char>,
-    arrival: Option<Event>,
-    departure: Option<Event>,
+pub struct Visit {
+    /// Identifies the train run across stations.
+    pub trip: String,
+    /// Position of this station in the run.
+    pub seq: u32,
+    pub number: Option<u32>,
+    /// Product class: 'F' long distance, 'N' regional, 'S' S-Bahn. Foreign trains may lack it.
+    pub class: Option<char>,
+    pub category: Option<String>,
+    pub line: Option<String>,
+    pub arrival: Option<Event>,
+    pub departure: Option<Event>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Kind {
-    Arrival,
-    Departure,
+impl Visit {
+    fn merge(&mut self, change: &Visit) {
+        self.number = self.number.or(change.number);
+        self.class = self.class.or(change.class);
+        if self.category.is_none() {
+            self.category.clone_from(&change.category);
+        }
+        if self.line.is_none() {
+            self.line.clone_from(&change.line);
+        }
+        for (mine, theirs) in [(&mut self.arrival, &change.arrival), (&mut self.departure, &change.departure)] {
+            if let Some(theirs) = theirs {
+                mine.get_or_insert_with(Event::default).merge(theirs);
+            }
+        }
+    }
+
+    /// "ICE 378", "RE7 (11166)".
+    pub fn label(&self) -> String {
+        let number = self.number.map(|n| n.to_string()).unwrap_or_default();
+        match (&self.line, &self.category) {
+            (Some(line), _) => format!("{line} ({number})"),
+            (None, Some(category)) => format!("{category} {number}"),
+            (None, None) => number,
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
-pub enum Check {
-    Confirmed {
-        planned: DateTime<Utc>,
-        actual: DateTime<Utc>,
-        live: bool,
-        platform: Option<String>,
-    },
-    Cancelled { station: String },
-    NotServed { station: String },
-    /// Station unknown to DB or its board is empty: no statement possible.
-    NoData,
-}
-
-/// Planned visits of one station-hour, keyed by DB stop id.
-type Board = Arc<Vec<(String, Visit)>>;
+/// Planned visits of one station-hour.
+type Board = Arc<Vec<Visit>>;
 
 pub struct Db {
     http: reqwest::Client,
     credentials: Credentials,
     permits: Semaphore,
     recent: tokio::sync::Mutex<VecDeque<Instant>>,
+    cache_dir: Option<PathBuf>,
     stations: Mutex<HashMap<String, Option<Station>>>,
-    plans: tokio::sync::Mutex<HashMap<(String, String), Board>>,
-    changes: tokio::sync::Mutex<HashMap<String, Arc<HashMap<String, Visit>>>>,
+    plans: Mutex<HashMap<(String, String), Board>>,
+    changes: Mutex<HashMap<String, Arc<HashMap<String, Visit>>>>,
     requests: AtomicUsize,
 }
 
 impl Db {
     pub fn new(credentials: Credentials, user_agent: &str) -> Result<Self> {
+        let cache_dir = xdg_dir("XDG_CACHE_HOME", ".cache");
+        let stations = cache_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(STATION_CACHE)).ok())
+            .map(|text| parse_station_cache(&text))
+            .unwrap_or_default();
         Ok(Self {
             http: reqwest::Client::builder()
                 .user_agent(user_agent)
@@ -139,9 +183,10 @@ impl Db {
             credentials,
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             recent: tokio::sync::Mutex::new(VecDeque::new()),
-            stations: Mutex::new(HashMap::new()),
-            plans: tokio::sync::Mutex::new(HashMap::new()),
-            changes: tokio::sync::Mutex::new(HashMap::new()),
+            cache_dir,
+            stations: Mutex::new(stations),
+            plans: Mutex::new(HashMap::new()),
+            changes: Mutex::new(HashMap::new()),
             requests: AtomicUsize::new(0),
         })
     }
@@ -166,170 +211,222 @@ impl Db {
         recent.push_back(Instant::now());
     }
 
-    /// `Ok(None)` for 404: DB has no data for that path.
+    /// `Ok(None)` for 404: DB has no data for that path. Retries resets, 429 and 5xx.
     async fn get(&self, path: &str) -> Result<Option<String>> {
         let _permit = self.permits.acquire().await?;
-        self.pace().await;
-        self.requests.fetch_add(1, Ordering::Relaxed);
         let url = format!("{BASE}{path}");
-        let resp = self
-            .http
-            .get(&url)
-            .header("DB-Client-Id", &self.credentials.client_id)
-            .header("DB-Api-Key", &self.credentials.api_key)
-            .header("Accept", "application/xml")
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            self.pace().await;
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            let sent = self
+                .http
+                .get(&url)
+                .header("DB-Client-Id", &self.credentials.client_id)
+                .header("DB-Api-Key", &self.credentials.api_key)
+                .header("Accept", "application/xml")
+                .send()
+                .await;
+            let transient = match &sent {
+                Ok(resp) => resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || resp.status().is_server_error(),
+                Err(e) => e.is_connect() || e.is_request() || e.is_timeout(),
+            };
+            if transient && attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                continue;
+            }
+            let resp = sent.with_context(|| format!("GET {url}"))?;
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            let body = resp.text().await?;
+            if !status.is_success() {
+                bail!("GET {url} failed: {status} {}", body.chars().take(200).collect::<String>());
+            }
+            return Ok(Some(body));
         }
-        let body = resp.text().await?;
-        if !status.is_success() {
-            bail!("GET {url} failed: {status} {}", body.chars().take(200).collect::<String>());
-        }
-        Ok(Some(body))
     }
 
-    /// Map a MOTIS place to a DB station: EVA number embedded in the stop id, else the name.
-    async fn station(&self, place: &Place) -> Result<Option<Station>> {
-        if let Some(hit) = self.stations.lock().expect("cache poisoned").get(&place.name) {
+    /// Map a station known by name (and maybe a foreign stop id) to a DB station.
+    pub async fn resolve(&self, name: &str, stop_id: Option<&str>) -> Result<Option<Station>> {
+        if let Some(hit) = self.stations.lock().expect("cache poisoned").get(name) {
             return Ok(hit.clone());
         }
         let mut found = None;
-        for pattern in station_patterns(place) {
+        for pattern in station_patterns(name, stop_id) {
             let Some(xml) = self.get(&format!("/station/{}", urlencode(&pattern))).await? else {
                 continue;
             };
-            if let Some(station) = parse_stations(&xml)?.into_iter().find(|s| same_place(&s.name, &place.name)) {
-                found = Some(station);
+            let candidates = parse_stations(&xml)?;
+            // Prefer the exact name: searching "Fulda" also matches "Fulda-Horas".
+            let pick = candidates
+                .iter()
+                .find(|s| s.name == pattern)
+                .or_else(|| candidates.iter().find(|s| same_place(&s.name, name)));
+            if let Some(station) = pick {
+                found = Some(station.clone());
                 break;
             }
         }
         self.stations
             .lock()
             .expect("cache poisoned")
-            .insert(place.name.clone(), found.clone());
+            .insert(name.to_owned(), found.clone());
+        if let Some(dir) = &self.cache_dir {
+            use std::io::Write;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            let path = dir.join(STATION_CACHE);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| format!("opening {}", path.display()))?;
+            let (eva, db_name) = found.as_ref().map_or(("", ""), |s| (s.eva.as_str(), s.name.as_str()));
+            writeln!(file, "{name}\t{eva}\t{db_name}").with_context(|| format!("writing {}", path.display()))?;
+        }
         Ok(found)
     }
 
+    /// Planned board for one hour (`slot` = "YYMMDD/HH"), cached on disk:
+    /// plans for a day are fixed, changes come separately.
     async fn plan(&self, eva: &str, slot: &str) -> Result<Board> {
         let key = (eva.to_owned(), slot.to_owned());
-        let mut plans = self.plans.lock().await;
-        if let Some(hit) = plans.get(&key) {
+        if let Some(hit) = self.plans.lock().expect("cache poisoned").get(&key) {
             return Ok(hit.clone());
         }
-        let visits = match self.get(&format!("/plan/{eva}/{slot}")).await? {
-            Some(xml) => parse_visits(&xml)?,
-            None => Vec::new(),
+        let file = self
+            .cache_dir
+            .as_ref()
+            .map(|d| d.join("db-plan").join(format!("{eva}_{}.xml", slot.replace('/', "_"))));
+        let cached = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok());
+        let xml = match cached {
+            Some(xml) => Some(xml),
+            None => {
+                let xml = self.get(&format!("/plan/{eva}/{slot}")).await?;
+                if let (Some(xml), Some(file)) = (&xml, &file) {
+                    if let Some(dir) = file.parent() {
+                        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+                    }
+                    std::fs::write(file, xml).with_context(|| format!("writing {}", file.display()))?;
+                }
+                xml
+            }
         };
-        let visits = Arc::new(visits);
-        plans.insert(key, visits.clone());
-        Ok(visits)
+        let board = Arc::new(match xml {
+            Some(xml) => parse_visits(&xml)?.into_iter().map(|(_, v)| v).collect(),
+            None => Vec::new(),
+        });
+        self.plans.lock().expect("cache poisoned").insert(key, board.clone());
+        Ok(board)
     }
 
+    /// All known changes at a station, keyed by visit id. Live; never cached on disk.
     async fn changes(&self, eva: &str) -> Result<Arc<HashMap<String, Visit>>> {
-        let mut changes = self.changes.lock().await;
-        if let Some(hit) = changes.get(eva) {
+        if let Some(hit) = self.changes.lock().expect("cache poisoned").get(eva) {
             return Ok(hit.clone());
         }
-        let visits = match self.get(&format!("/fchg/{eva}")).await? {
+        let visits = Arc::new(match self.get(&format!("/fchg/{eva}")).await? {
             Some(xml) => parse_visits(&xml)?.into_iter().collect(),
             None => HashMap::new(),
-        };
-        let visits = Arc::new(visits);
-        changes.insert(eva.to_owned(), visits.clone());
+        });
+        self.changes
+            .lock()
+            .expect("cache poisoned")
+            .insert(eva.to_owned(), visits.clone());
         Ok(visits)
     }
 
-    /// What DB knows about train `number` of product `class` ('F', 'N', 'S')
-    /// arriving at / departing from `place` around `scheduled`.
-    pub async fn check(
-        &self,
-        place: &Place,
-        number: u32,
-        class: char,
-        scheduled: DateTime<Utc>,
-        kind: Kind,
-    ) -> Result<Check> {
-        let Some(station) = self.station(place).await? else {
-            return Ok(Check::NoData);
-        };
-        let mut slots: Vec<String> = [scheduled - MATCH_TOLERANCE, scheduled, scheduled + MATCH_TOLERANCE]
-            .iter()
-            .map(|t| t.with_timezone(&Berlin).format("%y%m%d/%H").to_string())
-            .collect();
-        slots.dedup();
-
-        let changes = self.changes(&station.eva).await?;
-        let mut visits: HashMap<String, Visit> = HashMap::new();
-        for slot in &slots {
-            for (id, visit) in self.plan(&station.eva, slot).await?.iter() {
-                visits.insert(id.clone(), visit.clone());
-            }
-        }
-        // Changes include trains added after planning, e.g. extra stops of a diversion.
-        for (id, change) in changes.iter() {
-            let visit = visits.entry(id.clone()).or_default();
-            visit.number = visit.number.or(change.number);
-            visit.class = visit.class.or(change.class);
-            for (mine, theirs) in [(&mut visit.arrival, &change.arrival), (&mut visit.departure, &change.departure)] {
-                if let Some(theirs) = theirs {
-                    mine.get_or_insert_with(Event::default).merge(theirs);
+    /// Trains at `eva` during the given hours, with live changes applied.
+    /// Also returns which product classes the board covers per hour.
+    pub async fn visits(&self, eva: &str, hours: &[DateTime<Utc>]) -> Result<(Vec<Visit>, Coverage)> {
+        let changes = self.changes(eva).await?;
+        let mut by_trip: HashMap<String, Visit> = HashMap::new();
+        let mut coverage = Coverage::default();
+        for hour in hours {
+            let slot = slot(*hour);
+            for visit in self.plan(eva, &slot).await?.iter() {
+                if let Some(class) = visit.class {
+                    coverage.0.push((slot.clone(), class));
                 }
+                by_trip.insert(visit_id(visit), visit.clone());
             }
         }
-        // Some boards lack whole products (e.g. S-Bahn platforms with their own EVA).
-        if !visits.values().any(|v| v.class == Some(class)) {
-            return Ok(Check::NoData);
+        for (id, change) in changes.iter() {
+            match by_trip.get_mut(id) {
+                Some(visit) => visit.merge(change),
+                // Trains added after planning (diversions, extra trains) come with full data.
+                None if change.number.is_some() => {
+                    let in_hours = [&change.arrival, &change.departure]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.planned)
+                        .any(|t| hours.iter().any(|h| slot(*h) == slot(t)));
+                    if in_hours {
+                        by_trip.insert(id.clone(), change.clone());
+                    }
+                }
+                None => {}
+            }
         }
-
-        let event = visits
-            .values()
-            .filter(|v| v.number == Some(number))
-            .filter_map(|v| {
-                let event = match kind {
-                    Kind::Arrival => v.arrival.as_ref(),
-                    Kind::Departure => v.departure.as_ref(),
-                }?;
-                let planned = event.planned?;
-                let off = (planned - scheduled).abs();
-                (off <= MATCH_TOLERANCE).then_some((off, event, planned))
-            })
-            .min_by_key(|(off, _, _)| *off);
-        Ok(match event {
-            Some((_, event, _)) if event.cancelled => Check::Cancelled { station: station.name },
-            Some((_, event, planned)) => Check::Confirmed {
-                planned,
-                actual: event.changed.unwrap_or(planned),
-                live: event.changed.is_some(),
-                platform: event.changed_platform.clone().or_else(|| event.planned_platform.clone()),
-            },
-            None => Check::NotServed { station: station.name },
-        })
+        coverage.0.sort();
+        coverage.0.dedup();
+        Ok((by_trip.into_values().collect(), coverage))
     }
 }
 
+fn parse_station_cache(text: &str) -> HashMap<String, Option<Station>> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (name, eva, db_name) = (fields.next()?, fields.next()?, fields.next()?);
+            let station = (!eva.is_empty()).then(|| Station { eva: eva.to_owned(), name: db_name.to_owned() });
+            Some((name.to_owned(), station))
+        })
+        .collect()
+}
+
+/// (slot, class) pairs a fetched board contains: if a board lists trains of a
+/// class for an hour, a train of that class missing from it does not call there.
+#[derive(Debug, Clone, Default)]
+pub struct Coverage(Vec<(String, char)>);
+
+impl Coverage {
+    pub fn covers(&self, at: DateTime<Utc>, class: char) -> bool {
+        let slot = slot(at);
+        self.0.iter().any(|(s, c)| *s == slot && *c == class)
+    }
+}
+
+/// "YYMMDD/HH" in German local time, the API's hour slot format.
+fn slot(t: DateTime<Utc>) -> String {
+    t.with_timezone(&Berlin).format("%y%m%d/%H").to_string()
+}
+
+fn visit_id(v: &Visit) -> String {
+    format!("{}-{}", v.trip, v.seq)
+}
+
 /// Candidate search patterns for the DB station search, best first.
-fn station_patterns(place: &Place) -> Vec<String> {
+fn station_patterns(name: &str, stop_id: Option<&str>) -> Vec<String> {
     let mut patterns = Vec::new();
-    if let Some(eva) = place.stop_id.as_deref().and_then(embedded_eva) {
+    if let Some(eva) = stop_id.and_then(embedded_eva) {
         patterns.push(eva);
     }
-    let name = place.name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf");
-    let name = name.replace(" (", "(").replace(") ", ")");
-    let name = name.replace("Südbahnhof", "Süd");
-    let name = name.strip_suffix(" Bahnhof").unwrap_or(&name).to_owned();
-    patterns.push(name);
-    if !patterns.contains(&place.name) {
-        patterns.push(place.name.clone());
+    let db_style = name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf");
+    let db_style = db_style.replace(" (", "(").replace(") ", ")");
+    let db_style = db_style.replace("Südbahnhof", "Süd");
+    let db_style = db_style.strip_suffix(" Bahnhof").unwrap_or(&db_style).to_owned();
+    patterns.push(db_style);
+    if !patterns.iter().any(|p| p == name) {
+        patterns.push(name.to_owned());
     }
     patterns
 }
 
 /// Lowercase ASCII-ish form so that "Koebenhavn H" and "København H" compare equal.
-fn fold(s: &str) -> String {
+pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars().flat_map(char::to_lowercase) {
         match c {
@@ -342,11 +439,11 @@ fn fold(s: &str) -> String {
             _ => out.push(' '),
         }
     }
-    out
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Guards against wrong EVA guesses: the DB name must contain the place's first word or vice versa.
-fn same_place(db_name: &str, place_name: &str) -> bool {
+pub fn same_place(db_name: &str, place_name: &str) -> bool {
     let (db, place) = (fold(db_name), fold(place_name));
     let first = |s: &str| s.split_whitespace().next().map(str::to_owned).unwrap_or_default();
     let (db_first, place_first) = (first(&db), first(&place));
@@ -393,35 +490,58 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
 
 fn parse_event(n: roxmltree::Node<'_, '_>) -> Event {
     let text = |a: &str| n.attribute(a).filter(|v| !v.is_empty()).map(str::to_owned);
+    let path = |a: &str| {
+        n.attribute(a)
+            .map(|p| p.split('|').filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>())
+    };
     Event {
         planned: n.attribute("pt").and_then(parse_time),
         changed: n.attribute("ct").and_then(parse_time),
         planned_platform: text("pp"),
         changed_platform: text("cp"),
         cancelled: n.attribute("cs") == Some("c"),
+        planned_path: path("ppth").unwrap_or_default(),
+        changed_path: path("cpth"),
     }
 }
 
-/// `<s>` elements of a plan or change document, keyed by stop id.
+/// `<s>` elements of a plan or change document, keyed by their id
+/// ("<run>-<YYMMDDHHmm>-<seq>").
 fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
     let doc = roxmltree::Document::parse(xml).context("parsing timetable XML")?;
     Ok(doc
         .descendants()
         .filter(|n| n.has_tag_name("s"))
         .filter_map(|s| {
-            let mut visit = Visit::default();
+            let id = s.attribute("id")?;
+            let (trip, seq) = id.rsplit_once('-')?;
+            let mut visit = Visit {
+                trip: trip.to_owned(),
+                seq: seq.parse().ok()?,
+                ..Visit::default()
+            };
             for child in s.children().filter(roxmltree::Node::is_element) {
                 match child.tag_name().name() {
                     "tl" => {
                         visit.number = child.attribute("n").and_then(|n| n.parse().ok());
                         visit.class = child.attribute("f").and_then(|f| f.chars().next());
+                        visit.category = child.attribute("c").map(str::to_owned);
                     }
-                    "ar" => visit.arrival = Some(parse_event(child)),
-                    "dp" => visit.departure = Some(parse_event(child)),
+                    "ar" | "dp" => {
+                        if visit.line.is_none() {
+                            visit.line = child.attribute("l").filter(|l| !l.is_empty()).map(str::to_owned);
+                        }
+                        let event = Some(parse_event(child));
+                        if child.tag_name().name() == "ar" {
+                            visit.arrival = event;
+                        } else {
+                            visit.departure = event;
+                        }
+                    }
                     _ => {}
                 }
             }
-            Some((s.attribute("id")?.to_owned(), visit))
+            Some((id.to_owned(), visit))
         })
         .collect())
 }
