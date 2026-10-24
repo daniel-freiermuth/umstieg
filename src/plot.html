@@ -191,32 +191,38 @@ function stayAt(spans, from, to, time, y, s) {
 // Per connection only the earliest cut forward and the latest backward
 // matter. Positions are (piece position, point): a wait at piece j belongs to
 // both halves; a train standing there is cut at the stop (points k-1, k).
-// Returns deduplicated piece slices [piece, first point, last point].
+// The stay at the cut is clipped to the reachable time: from t on forward, up
+// to t backward, so waits don't light up before anything reachable arrives.
+// Returns deduplicated piece slices [piece, first point, last point, clip
+// start, clip end] (clips null where not cut, applied to a flat end only).
 function reachSegments(items) {
   const from = new Map(), upTo = new Map();
   const before = (a, b) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
   for (const { spans, t, back, fwd } of items) for (const w of spans) {
     if (fwd && w.to >= t) {
-      const p = w.k === undefined ? [w.j, 0] : [w.j, w.k - 1], q = from.get(w.chain);
+      const p = w.k === undefined ? [w.j, 0, t] : [w.j, w.k - 1, t], q = from.get(w.chain);
       if (!q || before(p, q)) from.set(w.chain, p);
     }
     if (back && w.from <= t) {
       const n = D.pieces[D.chains[w.chain].pieces[w.j]].pts.length - 1;
-      const p = w.k === undefined ? [w.j, n] : [w.j, w.k], q = upTo.get(w.chain);
+      const p = w.k === undefined ? [w.j, n, t] : [w.j, w.k, t], q = upTo.get(w.chain);
       if (!q || before(q, p)) upTo.set(w.chain, p);
     }
   }
   const segs = new Map();
-  const add = (pi, k0, k1) => { const key = pi * 65536 + k0 * 256 + k1; if (!segs.has(key)) segs.set(key, [pi, k0, k1]); };
-  for (const [chain, [j, k0]] of from) {
+  const add = (pi, k0, k1, c0 = null, c1 = null) => {
+    const key = `${pi}:${k0}:${k1}:${c0}:${c1}`;
+    if (!segs.has(key)) segs.set(key, [pi, k0, k1, c0, c1]);
+  };
+  for (const [chain, [j, k0, t]] of from) {
     const ps = D.chains[chain].pieces;
-    add(ps[j], k0, D.pieces[ps[j]].pts.length - 1);
+    add(ps[j], k0, D.pieces[ps[j]].pts.length - 1, t, null);
     for (let q = j + 1; q < ps.length; q++) add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
   }
-  for (const [chain, [j, k1]] of upTo) {
+  for (const [chain, [j, k1, t]] of upTo) {
     const ps = D.chains[chain].pieces;
     for (let q = 0; q < j; q++) add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
-    add(ps[j], 0, k1);
+    add(ps[j], 0, k1, null, t);
   }
   return [...segs.values()];
 }
@@ -581,10 +587,14 @@ function refresh() {
   if (key !== view.overlayKey) {
     view.overlayKey = key;
     overlay.replaceChildren();
-    const draw = (pi, cls, k0 = 0, k1 = Infinity) => {
+    const draw = (pi, cls, k0 = 0, k1 = Infinity, c0 = null, c1 = null) => {
       const p = D.pieces[pi];
-      const line = el("polyline", { points: pts({ pts: p.pts.slice(k0, k1 + 1) }),
-                                    class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
+      const s = p.pts.slice(k0, k1 + 1);
+      // Clip a flat end (wait, standing at a stop) to the reachable time.
+      if (c0 !== null && s.length > 1 && s[0][2] === s[1][2]) s[0] = [Math.max(s[0][0], c0), s[0][1], s[0][2]];
+      const z = s.length - 1;
+      if (c1 !== null && z > 0 && s[z][2] === s[z - 1][2]) s[z] = [Math.min(s[z][0], c1), s[z][1], s[z][2]];
+      const line = el("polyline", { points: pts({ pts: s }), class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
       if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
     };
     const mine = new Set(strong.flatMap(i => D.chains[i].pieces));
@@ -592,10 +602,10 @@ function refresh() {
     const pieces = chains => new Set([...chains].flatMap(i => D.chains[i].pieces).filter(pi => !shown.has(pi)));
     const bright = pieces(soft);
     bright.forEach(pi => shown.add(pi));
-    if (reach && reachFaded) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft faded", k0, k1);
+    if (reach && reachFaded) for (const [pi, ...cut] of reach.segments) if (!shown.has(pi)) draw(pi, "soft faded", ...cut);
     for (const pi of pieces(faded)) draw(pi, "soft faded");
     for (const pi of bright) draw(pi, "soft");
-    if (reach && !reachFaded) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", k0, k1);
+    if (reach && !reachFaded) for (const [pi, ...cut] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", ...cut);
     for (const pi of mine) draw(pi, "strong");
   }
 
