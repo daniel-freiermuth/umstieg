@@ -297,7 +297,10 @@ pub async fn build(
                     cancelled: p.cancelled,
                     from_db: false,
                 })
+                // Stops passed without times (Limburg Süd for ICE 616) can't be used.
+                .filter(|c| c.arrival.is_some() || c.departure.is_some())
                 .collect();
+            let Some(last) = calls.len().checked_sub(1) else { continue };
             let from = match previous_end {
                 Some(end) => Some(end),
                 None if walk > TimeDelta::zero() => Some(end_station(&mut stations, &itinerary.legs[0].from, origin_idx)),
@@ -668,7 +671,10 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             for c in &motis.calls {
                 let (arr, dep) = (c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned));
                 for &(i, other_arr, other_dep) in at_station.get(&c.station).into_iter().flatten() {
-                    if close(arr, other_arr) || close(dep, other_dep) {
+                    // An S-Bahn keeps an ICE's times between Hamburg Hbf and
+                    // Altona; different product classes are different trains.
+                    let same_class = !matches!((motis.class, trips[i].class), (Some(a), Some(b)) if a != b);
+                    if same_class && (close(arr, other_arr) || close(dep, other_dep)) {
                         *shared.entry(i).or_default() += 1;
                     }
                 }
@@ -677,13 +683,23 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
         });
         match twin {
             Some(i) => {
+                // DB's route lists every stop; a stop unknown to DB between its
+                // first and last call is the same station under another name
+                // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
+                let db_times = trips[i].calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
+                let span = db_times.clone().min().zip(db_times.max());
                 let mut added = Vec::new();
                 for call in motis.calls {
-                    let off_route = stations[call.station]
-                        .db_name
-                        .as_ref()
-                        .is_some_and(|n| !routes[i].is_empty() && !routes[i].contains(n));
-                    if trips[i].call_at(call.station).is_none() && !off_route && !covered(&call, motis.class) {
+                    let name = stations[call.station].db_name.as_ref();
+                    let off_route = name.is_some_and(|n| !routes[i].is_empty() && !routes[i].contains(n));
+                    let unknown_inside = name.is_none()
+                        && !routes[i].is_empty()
+                        && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo < t && t < hi);
+                    if trips[i].call_at(call.station).is_none()
+                        && !off_route
+                        && !unknown_inside
+                        && !covered(&call, motis.class)
+                    {
                         added.push(call.clone());
                         trips[i].calls.push(call);
                     }

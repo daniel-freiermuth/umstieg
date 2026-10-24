@@ -418,11 +418,16 @@ fn station_patterns(name: &str, stop_id: Option<&str>) -> Vec<String> {
     if let Some(eva) = stop_id.and_then(embedded_eva) {
         patterns.push(eva);
     }
-    let db_style = name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf").replace(", Bahnhof", "");
-    let db_style = db_style.replace(" (", "(").replace(") ", ")");
-    let db_style = db_style.replace("Südbahnhof", "Süd");
-    let db_style = db_style.strip_suffix(" Bahnhof").unwrap_or(&db_style).to_owned();
-    patterns.push(db_style);
+    let base = name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf").replace(", Bahnhof", "");
+    let base = base.replace("Südbahnhof", "Süd");
+    let base = base.strip_suffix(" Bahnhof").unwrap_or(&base).to_owned();
+    patterns.push(base.replace(" (", "(").replace(") ", ")"));
+    // DB abbreviates and keeps the space after the bracket in some names:
+    // "Frankfurt (Main) Flughafen Fernbahnhof" is "Frankfurt(M) Flughafen Fernbf".
+    let short = base.replace(" (", "(").replace("(Main)", "(M)").replace("Fernbahnhof", "Fernbf");
+    if !patterns.contains(&short) {
+        patterns.push(short);
+    }
     if !patterns.iter().any(|p| p == name) {
         patterns.push(name.to_owned());
     }
