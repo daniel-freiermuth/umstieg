@@ -176,12 +176,13 @@ function runsOf(spans) {
   }
   return runs;
 }
-// The spans of a run covering the hovered time, and their extent to highlight.
+// The spans of a run covering the hovered time. The highlight is the whole
+// run: highlighting only the covering spans made one line look like several
+// waits (Mannheim Hbf until 08:03 before 06:58, until 10:03 after).
 function stayAt(spans, from, to, time, y, s) {
   const t = Math.min(to, Math.max(from, time));
   const here = spans.filter(w => w.from <= t && t <= w.to);
-  const a = Math.min(...here.map(w => w.from)), b = Math.max(...here.map(w => w.to));
-  return { t, here, pts: [[a, y, s], [b, y, s]] };
+  return { t, here, pts: [[from, y, s], [to, y, s]] };
 }
 
 // The smallest shared units, each drawn once and used as hover target, so
