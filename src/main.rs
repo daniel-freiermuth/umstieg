@@ -55,6 +55,10 @@ struct Cli {
     /// Also list connections that change to a train they could have boarded at an earlier stop.
     #[arg(long)]
     keep_detours: bool,
+    /// Only rides that reduce the best-case remaining travel time (no riding away
+    /// from the destination): fewer, more direct connections, much faster search.
+    #[arg(long)]
+    forward_only: bool,
     /// Search effort cap (explored states; ~1 s per million).
     #[arg(long, default_value_t = 20_000_000)]
     max_nodes: usize,
@@ -114,6 +118,7 @@ async fn main() -> Result<()> {
         extra_time: TimeDelta::seconds((cli.extra_hours * 3600.0) as i64),
         min_transfer,
         keep_detours: cli.keep_detours,
+        forward_only: cli.forward_only,
         max_nodes: cli.max_nodes,
     };
     let result = enumerate::enumerate(tt, &limits);
@@ -318,6 +323,7 @@ impl Fallbacks {
                 extra_time: FALLBACK_EXTRA,
                 min_transfer,
                 keep_detours: false,
+                forward_only: false,
                 max_nodes: FALLBACK_NODES,
             };
             let mut chains = enumerate::enumerate(tt, &limits).chains;

@@ -20,6 +20,10 @@ pub struct Limits {
     pub min_transfer: TimeDelta,
     /// Keep chains that take a train they could have boarded at an earlier stop.
     pub keep_detours: bool,
+    /// Only rides that reduce the best-case remaining travel time. Off by
+    /// default: riding away can pay off (S-Bahn to Heidelberg for an ECE
+    /// that skips Mannheim).
+    pub forward_only: bool,
     /// Search effort cap; deepening stops at the first change count exceeding it.
     pub max_nodes: usize,
 }
@@ -345,8 +349,8 @@ impl Search<'_> {
                 let worth_stopping = call.station == self.tt.destination
                     || !self.departures[call.station].is_empty()
                     || !self.walks[call.station].is_empty();
-                // Every train must bring you closer: no rides away from the destination.
-                let progress = self.lower_bound[call.station] < self.lower_bound[station];
+                let progress =
+                    !self.limits.forward_only || self.lower_bound[call.station] < self.lower_bound[station];
                 if !call.cancelled && worth_stopping && progress && self.reachable(call.station, arrival, deadline) {
                     self.presence.push((call.station, arrival + self.limits.min_transfer));
                     self.steps.push(Step::Ride { trip, board, alight });

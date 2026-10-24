@@ -50,8 +50,10 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
    changes, within these limits:
    - departure inside `--window`, travel time ≤ fastest + `--extra-hours`,
    - at most `--max-changes` changes, any transfer time (short ones flagged),
-   - no station twice (also not passing through), every train must bring you
-     closer to the destination,
+   - no station twice (also not passing through). Riding away from the
+     destination is allowed: S-Bahn Mannheim → Heidelberg for an ECE that skips
+     Mannheim can be worth it. `--forward-only` requires every train to reduce
+     the best-case remaining travel time (fewer results, ~8× less search),
    - no detours: a train is not boarded if the chain already stopped at an
      earlier station where it could have been caught comfortably — including
      leaving the origin later on the same train (`--keep-detours` disables).
