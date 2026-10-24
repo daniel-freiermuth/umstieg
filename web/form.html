@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>umstieg · search</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1d2129;
+        --muted: #6b7280;
+        --grid: #e5e7eb;
+        --panel: #f8fafc;
+        --accent: #d97706;
+        --warn: #dc2626;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111418;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --grid: #2a2f37;
+          --panel: #181c22;
+          --accent: #f59e0b;
+          --warn: #f87171;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.45 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 20px 16px 40px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      .lead {
+        color: var(--muted);
+        margin: 0 0 18px;
+      }
+      fieldset {
+        border: 1px solid var(--grid);
+        border-radius: 8px;
+        padding: 10px 14px 6px;
+        margin: 0 0 14px;
+        background: var(--panel);
+      }
+      legend {
+        font-weight: 600;
+        padding: 0 6px;
+      }
+      details > summary {
+        cursor: pointer;
+        font-weight: 600;
+        margin: 4px 0 8px;
+      }
+      .field {
+        display: grid;
+        grid-template-columns: 170px 1fr;
+        gap: 4px 12px;
+        align-items: start;
+        margin: 0 0 10px;
+      }
+      .field label {
+        padding-top: 5px;
+      }
+      .field .help {
+        grid-column: 2;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      input[type="text"],
+      input[type="number"],
+      input[type="datetime-local"],
+      select {
+        font: inherit;
+        width: 100%;
+        padding: 5px 8px;
+        border: 1px solid var(--grid);
+        border-radius: 5px;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      input[type="checkbox"] {
+        margin-top: 8px;
+      }
+      .error {
+        white-space: pre-wrap;
+        color: var(--warn);
+        border: 1px solid var(--warn);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 0 0 14px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 8px 18px;
+        border-radius: 6px;
+        border: 0;
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+      }
+      .note {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>umstieg</h1>
+      <p class="lead">Every connection within your limits, including those journey planners hide.</p>
+      <div id="error" class="error" hidden></div>
+      <form id="form" action="/search" method="get"></form>
+    </main>
+    <script id="spec" type="application/json">
+      /*__DATA__*/
+    </script>
+    <script type="module">
+      /*__SCRIPT__*/
+    </script>
+  </body>
+</html>

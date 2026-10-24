@@ -4,6 +4,7 @@ mod efa;
 mod enumerate;
 mod fallback;
 mod motis;
+mod page;
 mod plot;
 mod rough;
 mod search;

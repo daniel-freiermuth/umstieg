@@ -199,3 +199,12 @@ as an error, tests and rustdoc. The lint set lives in `Cargo.toml`: clippy's
 `unwrap`/`expect`/`panic`, stray `print`s and `allow`s without a reason.
 Deliberate exceptions use `#[expect(…, reason = "…")]`, so they fail once they
 no longer apply.
+
+The pages' scripts are TypeScript in `web/` (`plot.ts`, `form.ts`,
+`progress.ts`; templates next to them), compiled to `web/dist/` which is
+committed and embedded by the binary — building umstieg needs no Node. After
+changing them: `cd web && npm install` once, then `just web`. `just check` also
+type-checks them (`strict` plus `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes` & co.), lints with typescript-eslint's
+`strictTypeChecked` and `stylisticTypeChecked`, checks Prettier formatting and
+that `web/dist` matches a fresh build.

@@ -13,10 +13,9 @@ use serde::Serialize;
 
 use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::Fallbacks;
+use crate::page;
 use crate::text;
 use crate::timetable::{Timetable, meters};
-
-const TEMPLATE: &str = include_str!("plot.html");
 
 /// How a station's height is computed; all are "remaining", goal = 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -367,7 +366,5 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         fallbacks: fallback_out,
         chains,
     };
-    // Inline JSON must not close the surrounding <script>.
-    let json = serde_json::to_string(&data)?.replace("</", "<\\/");
-    Ok(TEMPLATE.replace("/*__DATA__*/null", &json))
+    page::PLOT.render(Some(&data))
 }

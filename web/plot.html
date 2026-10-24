@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>umstieg</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1d2129;
+        --muted: #6b7280;
+        --grid: #e5e7eb;
+        --wait: #9ca3af;
+        --panel: #f8fafc;
+        --accent: #d97706;
+        --warn: #dc2626;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111418;
+          --fg: #e5e7eb;
+          --muted: #9ca3af;
+          --grid: #2a2f37;
+          --wait: #6b7280;
+          --panel: #181c22;
+          --accent: #f59e0b;
+          --warn: #f87171;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          13px/1.4 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      header {
+        grid-column: 1 / 3;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--grid);
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      header h1 {
+        font-size: 16px;
+        margin: 0;
+      }
+      header p {
+        margin: 2px 0 0;
+        color: var(--muted);
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .controls label {
+        color: var(--muted);
+      }
+      .controls button,
+      .controls select,
+      .controls a {
+        font: inherit;
+        padding: 3px 10px;
+        border-radius: 4px;
+        border: 1px solid var(--grid);
+        background: var(--panel);
+        color: var(--fg);
+        cursor: pointer;
+        text-decoration: none;
+      }
+      #plot {
+        position: relative;
+        overflow: hidden;
+        cursor: grab;
+        user-select: none;
+      }
+      #plot:active {
+        cursor: grabbing;
+      }
+      aside {
+        border-left: 1px solid var(--grid);
+        background: var(--panel);
+        overflow: auto;
+        padding: 10px 12px;
+      }
+      aside h2 {
+        font-size: 13px;
+        margin: 10px 0 6px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .group:hover {
+        background: var(--grid);
+      }
+      .group.off {
+        opacity: 0.35;
+      }
+      .count {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      #details {
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+      #details .fb {
+        color: var(--accent);
+      }
+      .pick {
+        display: flex;
+        gap: 6px;
+        align-items: baseline;
+        padding: 3px 6px;
+        margin-bottom: 3px;
+        border-radius: 4px;
+        background: var(--grid);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .pick .x {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      .pick:hover .x {
+        color: var(--warn);
+      }
+      .pick-hint {
+        color: var(--muted);
+        font-size: 11px;
+        margin: 2px 0 4px;
+      }
+      #tip {
+        position: absolute;
+        pointer-events: none;
+        background: var(--panel);
+        border: 1px solid var(--grid);
+        border-radius: 6px;
+        padding: 6px 8px;
+        max-width: 560px;
+        font-size: 12px;
+        display: none;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      }
+      #tip b {
+        display: block;
+      }
+      svg {
+        display: block;
+      }
+      .axis text,
+      .station text {
+        fill: var(--muted);
+        font-size: 11px;
+      }
+      .axis line {
+        stroke: var(--grid);
+      }
+      .station line {
+        stroke: var(--grid);
+        stroke-dasharray: 2 3;
+      }
+      .station .leader {
+        fill: none;
+        stroke-width: 1;
+      }
+      .station .station-name {
+        cursor: pointer;
+      }
+      .station .station-name:hover {
+        fill: var(--fg);
+      }
+      /* Base: every stretch drawn once, rides coloured by train. */
+      .base .ride,
+      .overlay .ride {
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+      }
+      .base .wait,
+      .overlay .wait {
+        fill: none;
+        stroke: var(--wait);
+        stroke-width: 1;
+      }
+      .base .warn,
+      .overlay .warn {
+        stroke: var(--warn);
+      }
+      .base .walk,
+      .overlay .walk {
+        fill: none;
+        stroke: var(--wait);
+        stroke-width: 1;
+        stroke-dasharray: 3 3;
+      }
+      svg.focus .base {
+        opacity: 0.15;
+      }
+      /* Overlay: the previewed connections, and the selected one thick. */
+      .overlay .ride {
+        stroke-width: 2.4;
+      }
+      .overlay .wait,
+      .overlay .walk {
+        stroke-width: 1.6;
+      }
+      .overlay .strong.ride {
+        stroke-width: 4.5;
+      }
+      .overlay .strong.wait {
+        stroke-width: 3;
+      }
+      /* Other listed connections recede behind the selected / previewed one. */
+      .overlay .faded {
+        opacity: 0.3;
+      }
+      .overlay,
+      .fallback,
+      .change-labels {
+        pointer-events: none;
+      }
+      .fallback .ride {
+        fill: none;
+        stroke-width: 2.5;
+        stroke-dasharray: 7 4;
+      }
+      .fallback .wait,
+      .fallback .walk {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.5;
+        stroke-dasharray: 2 3;
+      }
+      .fallback .warn {
+        stroke: var(--warn);
+      }
+      .hit {
+        fill: none;
+        stroke: transparent;
+        stroke-width: 9;
+        pointer-events: stroke;
+      }
+      .change-labels text {
+        fill: var(--fg);
+        font-size: 11px;
+        paint-order: stroke;
+        stroke: var(--bg);
+        stroke-width: 3px;
+      }
+      .hover-piece {
+        fill: none;
+        stroke: var(--fg);
+        stroke-width: 7;
+        stroke-opacity: 0.3;
+        stroke-linecap: round;
+        pointer-events: none;
+      }
+      .candidate {
+        padding: 4px 6px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .candidate:hover,
+      .candidate.on {
+        background: var(--grid);
+      }
+      .candidate .route {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .back {
+        color: var(--accent);
+        cursor: pointer;
+        display: block;
+        margin-bottom: 6px;
+      }
+      kbd {
+        font: 11px monospace;
+        border: 1px solid var(--grid);
+        border-radius: 3px;
+        padding: 0 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1 id="title"></h1>
+        <p id="subtitle"></p>
+      </div>
+      <div class="controls">
+        <a id="new-search" hidden>← Change search</a>
+        <label
+          >Height
+          <select id="metric"></select
+        ></label>
+        <button id="reset" title="Or double-click the plot">Reset zoom</button>
+      </div>
+    </header>
+    <div id="plot"><div id="tip"></div></div>
+    <aside>
+      <div id="picks"></div>
+      <h2 id="panel-title">Selection</h2>
+      <div id="details"></div>
+      <h2>First … last train (hover to highlight, click to hide)</h2>
+      <div id="groups"></div>
+      <h2>Reading the plot</h2>
+      <div id="legend"></div>
+    </aside>
+    <script id="data" type="application/json">
+      /*__DATA__*/
+    </script>
+    <script type="module">
+      /*__SCRIPT__*/
+    </script>
+  </body>
+</html>

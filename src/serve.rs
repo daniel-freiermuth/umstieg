@@ -19,11 +19,10 @@ use serde::Serialize;
 use tokio::sync::Semaphore;
 
 use crate::motis::Motis;
+use crate::page;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
 use crate::sync::lock;
 
-const FORM: &str = include_str!("form.html");
-const PROGRESS: &str = include_str!("progress.html");
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
 /// Options not in the form: text output only, or chosen on the plot page itself
@@ -161,8 +160,7 @@ fn form_page(params: &[(String, String)], error: Option<&str>) -> Html<String> {
         error: Option<&'a str>,
     }
     let spec = Spec { fields: fields(), values: params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(), error };
-    let json = serde_json::to_string(&spec).unwrap_or_default().replace("</", "<\\/");
-    Html(FORM.replace("/*__SPEC__*/null", &json))
+    Html(page::FORM.render(Some(&spec)).unwrap_or_else(|e| format!("{e:#}")))
 }
 
 async fn form(Query(params): Query<Vec<(String, String)>>) -> Html<String> {
@@ -237,7 +235,7 @@ async fn progress(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response 
         return (StatusCode::NOT_FOUND, "No such search (finished searches are kept for a while only).")
             .into_response();
     }
-    Html(PROGRESS.replace("__ID__", &id.to_string())).into_response()
+    Html(page::PROGRESS.render(None::<&()>).unwrap_or_else(|e| format!("{e:#}"))).into_response()
 }
 
 async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
