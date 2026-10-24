@@ -5,9 +5,8 @@
 //! line are parallel lines.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -94,6 +93,8 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
 struct Data {
     title: String,
     subtitle: String,
+    /// Link back to the search form, if any.
+    back: Option<String>,
     tz: String,
     /// Every metric computable here; the page switches between them.
     metrics: Vec<MetricOut>,
@@ -259,10 +260,13 @@ pub struct Plot<'a> {
     pub groups: &'a [Group],
     pub metric: Metric,
     pub min_transfer: TimeDelta,
+    /// Link back to the search form that produced the plot (`umstieg serve`).
+    pub back: Option<String>,
 }
 
-/// Writes the plot of all connections in `plot.groups`, with fallbacks per change.
-pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<()> {
+/// The plot of all connections in `plot.groups`, with fallbacks per change, as
+/// a self-contained HTML page.
+pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<String> {
     let tt = net.tt;
     let mut metrics = Vec::new();
     let mut shown = 0;
@@ -336,6 +340,7 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
     let data = Data {
         title: plot.title.clone(),
         subtitle: plot.subtitle.clone(),
+        back: plot.back.clone(),
         tz: tt.stations[tt.origin].tz.clone().unwrap_or_else(|| "Europe/Berlin".to_owned()),
         metrics,
         metric: shown,
@@ -360,6 +365,5 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
     };
     // Inline JSON must not close the surrounding <script>.
     let json = serde_json::to_string(&data)?.replace("</", "<\\/");
-    let html = TEMPLATE.replace("/*__DATA__*/null", &json);
-    std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))
+    Ok(TEMPLATE.replace("/*__DATA__*/null", &json))
 }

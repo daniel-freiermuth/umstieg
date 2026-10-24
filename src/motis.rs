@@ -242,6 +242,20 @@ impl Motis {
         bail!("no stop named like {text:?} found (tried: {})", queries.join(", "))
     }
 
+    /// Stop names starting like `text`, best first, for autocompletion.
+    pub async fn suggest(&self, text: &str) -> Result<Vec<String>> {
+        let matches: Vec<GeocodeMatch> =
+            self.get("/api/v1/geocode", &[("text", text.to_owned()), ("type", "STOP".to_owned())]).await?;
+        let mut names: Vec<String> = Vec::new();
+        for m in matches.into_iter().filter(|m| m.kind == "STOP") {
+            if !names.contains(&m.name) {
+                names.push(m.name);
+            }
+        }
+        names.truncate(8);
+        Ok(names)
+    }
+
     /// Pareto-optimal itineraries departing within `[time, time + window]`
     /// (MOTIS may pad with later ones).
     pub async fn plan(&self, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {

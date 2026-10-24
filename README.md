@@ -88,6 +88,21 @@ distance ones, goal unreachable) are left out of it:
 With geographic metrics, riding sideways to the axis looks flat and moving away
 from the goal goes up (e.g. København → Malmö on the way to Göteborg).
 
+### In the browser
+
+```sh
+umstieg serve                     # http://127.0.0.1:8080/
+umstieg serve --addr 0.0.0.0:8080 --parallel 1
+```
+
+A form with every option of the command line (generated from them, so new
+options appear by themselves; text-only ones like `--detail` are left out),
+station names completed from Transitous. Submitting shows the search's
+progress, then the plot, whose "← Change search" link returns to the form with
+the same settings. Searches beyond `--parallel` wait their turn: each loads
+Transitous and the DB quota. The last 20 results stay available. There is no
+login; put it behind an authenticating proxy before exposing it.
+
 ## How it works
 
 1. **Rough routes** (MOTIS/Transitous): the planner's answers, plus
