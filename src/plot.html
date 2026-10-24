@@ -37,6 +37,7 @@
   .axis text, .station text { fill: var(--muted); font-size: 11px; }
   .axis line { stroke: var(--grid); }
   .station line { stroke: var(--grid); stroke-dasharray: 2 3; }
+  .station .leader { fill: none; stroke-width: 1; }
   .chain .ride { fill: none; stroke-width: 1.6; stroke-opacity: .45; stroke-linejoin: round; }
   .chain .wait { fill: none; stroke: var(--wait); stroke-width: 1; stroke-opacity: .6; }
   .chain .wait.warn { stroke: var(--warn); }
@@ -108,7 +109,7 @@ const pad = 10 * 60e3; t0 -= pad; t1 += pad;
 function render() {
   plotEl.querySelectorAll("svg").forEach(s => s.remove());
   const W = plotEl.clientWidth, H = plotEl.clientHeight;
-  const m = { l: 210, r: 16, t: 14, b: 28 };
+  const m = { l: 240, r: 16, t: 14, b: 28 };
   const x = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r);
   const y = v => m.t + (y1 - v) / (y1 || 1) * (H - m.t - m.b);
   const svg = el("svg", { width: W, height: H });
@@ -117,24 +118,34 @@ function render() {
   el("rect", { x: m.l, y: 0, width: W - m.l - m.r, height: H - m.b }, clip);
 
   // Station bands, alternating hue, so neighbouring stations are told apart.
+  const hue = i => (i * 47) % 360;
   const st = D.stations.map(s => ({ ...s, py: y(s.y) }));
   st.forEach((s, i) => {
     const above = i > 0 ? (st[i - 1].py + s.py) / 2 : m.t;
     const below = i < st.length - 1 ? (s.py + st[i + 1].py) / 2 : H - m.b;
     el("rect", { x: m.l, y: above, width: W - m.l - m.r, height: Math.max(0, below - above),
-                 fill: `hsl(${(i * 47) % 360}, 60%, 50%)`, "fill-opacity": 0.05 }, svg);
+                 fill: `hsl(${hue(i)}, 60%, 50%)`, "fill-opacity": 0.05 }, svg);
   });
-  const stations = el("g", { class: "station" }, svg);
-  let lastLabel = -Infinity;
-  for (const s of st) {
-    el("line", { x1: m.l, x2: W - m.r, y1: s.py, y2: s.py }, stations);
-    if (s.py - lastLabel >= 12) {
-      const t = el("text", { x: m.l - 6, y: s.py + 4, "text-anchor": "end" }, stations);
-      t.textContent = s.name.length > 32 ? s.name.slice(0, 31) + "…" : s.name;
-      el("title", {}, t).textContent = s.name;
-      lastLabel = s.py;
-    }
+
+  // Every station gets a label: labels of nearby stations are pushed apart
+  // and joined to their row by a leader line in the row's band colour.
+  const gap = Math.min(12, (H - m.t - m.b) / Math.max(1, st.length));
+  const at = st.map(s => s.py);
+  for (let i = 1; i < at.length; i++) at[i] = Math.max(at[i], at[i - 1] + gap);
+  if (at.length && at[at.length - 1] > H - m.b) {
+    at[at.length - 1] = H - m.b;
+    for (let i = at.length - 2; i >= 0; i--) at[i] = Math.min(at[i], at[i + 1] - gap);
   }
+  const stations = el("g", { class: "station" }, svg);
+  st.forEach((s, i) => {
+    el("line", { x1: m.l, x2: W - m.r, y1: s.py, y2: s.py }, stations);
+    el("polyline", { points: `${m.l - 26},${at[i]} ${m.l - 8},${s.py} ${m.l},${s.py}`, class: "leader",
+                     stroke: `hsl(${hue(i)}, 60%, 50%)` }, stations);
+    const t = el("text", { x: m.l - 30, y: at[i] + gap / 3, "text-anchor": "end",
+                           "font-size": Math.min(11, gap) }, stations);
+    t.textContent = s.name.length > 32 ? s.name.slice(0, 31) + "…" : s.name;
+    el("title", {}, t).textContent = s.name;
+  });
 
   const axis = el("g", { class: "axis" }, svg);
   const hour = 3600e3;
