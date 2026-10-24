@@ -203,8 +203,9 @@ function stayAt(spans, from, to, time, y, s) {
 // both halves; a train standing there is cut at the stop (points k-1, k).
 // The stay at the cut is clipped to the reachable time: from t on forward, up
 // to t backward, so waits don't light up before anything reachable arrives.
-// Returns deduplicated piece slices [piece, first point, last point, clip
-// start, clip end] (clips null where not cut, applied to a flat end only).
+// Returns per piece the reachable stretches as time intervals [piece, from,
+// to] (pieces run forward in time), merged, so highlights of several picks
+// can be intersected exactly.
 function reachSegments(items) {
   const from = new Map(), upTo = new Map();
   const before = (a, b) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
@@ -219,10 +220,16 @@ function reachSegments(items) {
       if (!q || before(q, p)) upTo.set(w.chain, p);
     }
   }
-  const segs = new Map();
+  const raw = new Map();
+  // Points k0..k1 of a piece; a flat end (wait, standing) is clipped to the cut time.
   const add = (pi, k0, k1, c0 = null, c1 = null) => {
-    const key = `${pi}:${k0}:${k1}:${c0}:${c1}`;
-    if (!segs.has(key)) segs.set(key, [pi, k0, k1, c0, c1]);
+    const s = D.pieces[pi].pts;
+    if (!s.length) return;
+    let a = s[k0][0], b = s[k1][0];
+    if (c0 !== null && k0 < k1 && s[k0][2] === s[k0 + 1][2]) a = Math.min(Math.max(a, c0), s[k0 + 1][0]);
+    if (c1 !== null && k1 > k0 && s[k1][2] === s[k1 - 1][2]) b = Math.max(Math.min(b, c1), s[k1 - 1][0]);
+    if (!raw.has(pi)) raw.set(pi, []);
+    raw.get(pi).push([a, b]);
   };
   for (const [chain, [j, k0, t]] of from) {
     const ps = D.chains[chain].pieces;
@@ -234,7 +241,42 @@ function reachSegments(items) {
     for (let q = 0; q < j; q++) add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
     add(ps[j], 0, k1, null, t);
   }
-  return [...segs.values()];
+  const out = [];
+  for (const [pi, list] of raw) for (const [a, b] of mergeIntervals(list)) out.push([pi, a, b]);
+  return out;
+}
+function mergeIntervals(list) {
+  const runs = [];
+  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    const last = runs[runs.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b); else runs.push([a, b]);
+  }
+  return runs;
+}
+// Stretches reachable through all of several highlights: per piece, the
+// intersection of their time intervals.
+function intersectReach(segmentLists) {
+  const maps = segmentLists.map(list => {
+    const m = new Map();
+    for (const [pi, a, b] of list) { if (!m.has(pi)) m.set(pi, []); m.get(pi).push([a, b]); }
+    return m;
+  });
+  const out = [];
+  for (const [pi, first] of maps[0]) {
+    let cur = first;
+    for (const m of maps.slice(1)) {
+      const other = m.get(pi);
+      if (!other) { cur = []; break; }
+      const next = [];
+      for (const [a, b] of cur) for (const [c, d] of other) {
+        const lo = Math.max(a, c), hi = Math.min(b, d);
+        if (lo <= hi) next.push([lo, hi]);
+      }
+      cur = next;
+    }
+    for (const [a, b] of cur) out.push([pi, a, b]);
+  }
+  return out;
 }
 
 // The smallest shared units, each drawn once and used as hover target, so
@@ -606,16 +648,11 @@ function applyPicks() {
   if (!picks.length) { candidates = null; pinned = null; return; }
   let chains = picks[0].chains.filter(i => !hidden.has(D.chains[i].group));
   for (const p of picks.slice(1)) { const s = new Set(p.chains); chains = chains.filter(i => s.has(i)); }
-  // Reachable through every pick: pieces all their highlights share, drawn
-  // as the latest pick cuts them.
+  // Reachable through every pick: per piece, the stretch all their highlights share.
   const reaches = picks.map(p => p.reach).filter(Boolean);
-  let reach = null;
-  if (reaches.length) {
-    const last = reaches[reaches.length - 1];
-    const sets = reaches.slice(0, -1).map(r => new Set(r.segments.map(s => s[0])));
-    reach = { key: picks.map(p => p.reach?.key ?? p.id).join("|"),
-              segments: last.segments.filter(s => sets.every(set => set.has(s[0]))) };
-  }
+  const reach = reaches.length
+    ? { key: picks.map(p => p.reach?.key ?? p.id).join("|"), segments: intersectReach(reaches.map(r => r.segments)) }
+    : null;
   candidates = { info: picks.map(p => p.info).join(" + "), chains, reach };
   pinned = chains.length === 1 ? chains[0] : chains.includes(pinned) ? pinned : null;
 }
@@ -644,13 +681,25 @@ function refresh() {
   if (key !== view.overlayKey) {
     view.overlayKey = key;
     overlay.replaceChildren();
-    const draw = (pi, cls, k0 = 0, k1 = Infinity, c0 = null, c1 = null) => {
+    // A piece, or its stretch between two times (reach highlights).
+    const draw = (pi, cls, from = -Infinity, to = Infinity) => {
       const p = D.pieces[pi];
-      const s = p.pts.slice(k0, k1 + 1);
-      // Clip a flat end (wait, standing at a stop) to the reachable time.
-      if (c0 !== null && s.length > 1 && s[0][2] === s[1][2]) s[0] = [Math.max(s[0][0], c0), s[0][1], s[0][2]];
-      const z = s.length - 1;
-      if (c1 !== null && z > 0 && s[z][2] === s[z - 1][2]) s[z] = [Math.min(s[z][0], c1), s[z][1], s[z][2]];
+      let s = p.pts;
+      if (from > -Infinity || to < Infinity) {
+        // Each edge clipped to [from, to]; time runs forward along a piece.
+        const at = (a, b, t) => [t, a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]), a[2]];
+        const cut = [];
+        const push = q => { const l = cut[cut.length - 1]; if (!l || l[0] !== q[0] || l[1] !== q[1]) cut.push(q); };
+        for (let k = 1; k < s.length; k++) {
+          const [a, b] = [s[k - 1], s[k]];
+          if (b[0] < from || a[0] > to) continue;
+          if (a[0] === b[0]) { push(a); push(b); continue; }
+          push(at(a, b, Math.max(a[0], from)));
+          push(at(a, b, Math.min(b[0], to)));
+        }
+        s = cut;
+      }
+      if (s.length < 2 && p.pts.length >= 2) return;
       const line = el("polyline", { points: pts({ pts: s }), class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
       if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
     };
