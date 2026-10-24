@@ -150,14 +150,19 @@ pub fn earliest_arrival(tt: &Timetable, start: usize, t0: DateTime<Utc>) -> Vec<
 
 /// Lower bound on the remaining travel time from each station, ignoring waits:
 /// fastest ride per segment over the whole timetable, summed along the best path.
+/// Ride times are planned ones: live times of delayed trains are often squeezed
+/// to zero (ICE 1091 Ludwigshafen 05:15 → Mannheim 05:15 at +10/+6), and
+/// cancelled stops are skipped (ICE 857 "Wuppertal 09:41 → Hagen 09:41").
 fn lower_bounds(tt: &Timetable) -> Vec<Option<TimeDelta>> {
     let n = tt.stations.len();
     let mut reverse: Vec<Vec<(usize, TimeDelta)>> = vec![Vec::new(); n];
     for trip in &tt.trips {
-        for pair in trip.calls.windows(2) {
-            if let (Some(d), Some(a)) = (pair[0].departure_time(), pair[1].arrival_time()) {
-                reverse[pair[1].station].push((pair[0].station, (a - d).max(TimeDelta::zero())));
+        let mut previous: Option<(usize, DateTime<Utc>)> = None;
+        for call in trip.calls.iter().filter(|c| !c.cancelled) {
+            if let (Some((from, departure)), Some(arrival)) = (previous, call.arrival) {
+                reverse[call.station].push((from, (arrival.planned - departure).max(TimeDelta::zero())));
             }
+            previous = call.departure.map(|d| (call.station, d.planned));
         }
     }
     for fp in &tt.footpaths {
