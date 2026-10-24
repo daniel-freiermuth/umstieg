@@ -52,8 +52,10 @@ connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 previews and clicking selects one (the other listed connections then fade to
 30 %);
 `↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
-labelled and its fallbacks drawn dashed. Hovering a group (first … last train)
-highlights it, clicking hides it.
+labelled and its fallbacks drawn dashed in train colours, starting with a
+dotted wait from the missed departure; hovering a fallback stretch names it and
+the fallback. Hovering a group (first … last train) highlights it, clicking
+hides it.
 
 The mouse wheel zooms around the pointer (`Shift`: time only, `Alt`: height
 only), dragging pans, double-click or "Reset zoom" shows everything again.

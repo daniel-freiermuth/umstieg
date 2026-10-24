@@ -177,10 +177,12 @@ impl Builder<'_> {
     }
 
     /// Pieces of `chain`, up to boarding ride `until` (exclusive) if given.
-    fn pieces(&mut self, chain: &Chain, until: Option<usize>) -> Vec<usize> {
+    /// `start`: where and from when the chain's first ride is waited for (a
+    /// fallback, from the missed departure on).
+    fn pieces(&mut self, chain: &Chain, until: Option<usize>, start: Option<(usize, DateTime<Utc>)>) -> Vec<usize> {
         let tt = self.tt;
         let mut out = Vec::new();
-        let mut here: Option<(usize, DateTime<Utc>)> = None;
+        let mut here = start;
         let mut ride = 0;
         for step in &chain.steps {
             match *step {
@@ -204,8 +206,13 @@ impl Builder<'_> {
                             .into_iter()
                             .flatten()
                             .collect();
-                        let info = format!("{} at {}", text::buffer(wait, self.min_transfer), tt.stations[b.station].name);
-                        let warn = wait < self.min_transfer;
+                        let station = &tt.stations[b.station].name;
+                        // Waiting after a missed train is no change that could be too short.
+                        let (info, warn) = if ride == 0 && start.is_some() {
+                            (format!("{} at {station} after the missed train", text::duration(wait)), false)
+                        } else {
+                            (format!("{} at {station}", text::buffer(wait, self.min_transfer)), wait < self.min_transfer)
+                        };
                         out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts }));
                     }
                     self.used.insert(b.station);
@@ -278,7 +285,11 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
                         None => {
                             fallback_out.push(FallbackOut {
                                 at: tt.stations[transfer.station].name.clone(),
-                                pieces: builder.pieces(&fallback.chain, fallback.rejoins_at),
+                                pieces: builder.pieces(
+                                    &fallback.chain,
+                                    fallback.rejoins_at,
+                                    Some((transfer.station, transfer.departure)),
+                                ),
                                 line: fallback.line,
                             });
                             fallback_index.insert(key, fallback_out.len() - 1);
@@ -295,7 +306,7 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
                 group: g,
                 header: text::header(tt, chain, plot.min_transfer),
                 route: text::route(tt, chain, plot.min_transfer, &HashSet::new()),
-                pieces: builder.pieces(chain, None),
+                pieces: builder.pieces(chain, None, None),
                 fallbacks: refs,
             });
         }

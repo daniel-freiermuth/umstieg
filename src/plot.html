@@ -54,8 +54,9 @@
   /* Other listed connections recede behind the selected / previewed one. */
   .overlay .faded { opacity: .3; }
   .overlay, .fallback, .change-labels { pointer-events: none; }
-  .fallback .ride { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 4; }
+  .fallback .ride { fill: none; stroke-width: 2.5; stroke-dasharray: 7 4; }
   .fallback .wait, .fallback .walk { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 3; }
+  .fallback .warn { stroke: var(--warn); }
   .hit { fill: none; stroke: transparent; stroke-width: 9; pointer-events: stroke; }
   .change-labels text { fill: var(--fg); font-size: 11px; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
   .hover-piece { fill: none; stroke: var(--fg); stroke-width: 7; stroke-opacity: .3; stroke-linecap: round; pointer-events: none; }
@@ -103,7 +104,7 @@ document.getElementById("subtitle").textContent = D.subtitle;
 document.getElementById("legend").innerHTML =
   `x: time (${D.tz}). y: ${D.metric} (${D.unit}), goal at the bottom.<br>` +
   `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
-  `Parallel lines: same route later. Steeper: faster. Dashed orange: fallbacks of the selection.<br>` +
+  `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` +
   `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` +
   `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;
 
@@ -285,6 +286,11 @@ function render() {
 
   const hoverLayer = el("g", { "clip-path": "url(#area)" }, svg);
   const fbLayer = el("g", { class: "fallback", "clip-path": "url(#area)" }, svg);
+  const fbTargetAt = e => view.fbTargets?.[e.target.dataset?.f] ?? null;
+  fbLayer.addEventListener("mousemove", e => { if (drag) return; hoverTarget = fbTargetAt(e); refresh(); moveTip(e); });
+  fbLayer.addEventListener("mouseout", () => { hoverTarget = null; refresh(); });
+  // Clicking a fallback keeps the selection it belongs to.
+  fbLayer.addEventListener("click", e => e.stopPropagation());
   const labels = el("g", { class: "change-labels", "clip-path": "url(#area)" }, svg);
   svg.addEventListener("click", () => { if (dragged) return; pinned = null; candidates = null; refresh(); });
 
@@ -404,14 +410,28 @@ function refresh() {
   hoverLayer.replaceChildren();
   if (hoverTarget) el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
 
-  fbLayer.replaceChildren();
-  labels.replaceChildren();
+  // Fallbacks of the selection, dashed in train colours, hoverable. Redrawn
+  // only when the selection changes, so hovering them doesn't replace them.
+  const fbKey = focus => (focus === pinned ? focus : null);
   const focus = preview ?? pinned;
-  if (focus !== null) {
-    if (focus === pinned) for (const f of D.chains[pinned].fallbacks) {
+  if (fbKey(focus) !== view.fbKey) {
+    view.fbKey = fbKey(focus);
+    fbLayer.replaceChildren();
+    view.fbTargets = [];
+    if (view.fbKey !== null) for (const f of D.chains[pinned].fallbacks) {
       const g = el("g", {}, fbLayer);
-      for (const p of f.pieces) el("polyline", { points: pts(p), class: p.kind }, g);
+      for (const p of f.pieces) {
+        const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""}` }, g);
+        if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
+      }
+      for (const p of f.pieces) {
+        view.fbTargets.push({ info: p.info, trip: p.trip ?? undefined, chains: [], fallback: f, pts: p.pts });
+        el("polyline", { points: pts(p), class: "hit", "data-f": view.fbTargets.length - 1 }, g);
+      }
     }
+  }
+  labels.replaceChildren();
+  if (focus !== null) {
     // Name the changes: their station rows are often too close to tell apart.
     for (const p of D.chains[focus].pieces.map(i => D.pieces[i]).filter(p => p.kind === "wait" && p.pts.length)) {
       const [t, v] = p.pts[0];
@@ -423,7 +443,11 @@ function refresh() {
     const { info, chains, trip } = hoverTarget;
     const swatch = trip === undefined ? "" : `<span style="color:${trainColor(trip)}">■</span> `;
     let who;
-    if (chains.length === 1) {
+    if (hoverTarget.fallback) {
+      const f = hoverTarget.fallback;
+      who = `<br><span style="color:var(--accent)">If the change at ${esc(f.at)} is missed:</span>`
+        + `<br><span style="color:var(--muted)">${esc(f.line)} · arrive ${esc(f.arrive)}</span>`;
+    } else if (chains.length === 1) {
       const c = D.chains[chains[0]];
       who = `<br><b>${esc(c.header)}</b><span style="color:var(--muted)">${esc(c.route)}</span>`;
     } else {
