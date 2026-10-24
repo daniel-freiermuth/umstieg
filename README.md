@@ -40,9 +40,15 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
 station with the goal at the bottom. Riding is a thick coloured line, waiting a
 thin horizontal one (red below `--min-transfer`), walking dotted. Later
 departures of the same route run parallel, faster trains are steeper and
-overtake slower ones. Hovering shows a connection; clicking pins it, names its
-changes and draws its fallbacks dashed. Groups (first … last train) can be
-hidden in the side panel.
+overtake slower ones.
+
+Hovering only previews: it highlights every connection using the line under
+the mouse and says how many there are. Clicking selects: a line used by one
+connection selects it; a shared line (e.g. the ICE 378 used by 42 connections)
+lists them in the side panel, where hovering previews and clicking selects one;
+`↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
+labelled and its fallbacks drawn dashed. Hovering a group (first … last train)
+highlights it, clicking hides it.
 
 `--metric` sets the station height:
 

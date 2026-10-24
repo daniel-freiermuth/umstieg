@@ -44,9 +44,9 @@
   .chain .walk { fill: none; stroke: var(--wait); stroke-width: 1; stroke-dasharray: 3 3; }
   .chain.off { display: none; }
   /* Hundreds of overlapping lines add up: dim to grey, not just transparent. */
-  svg.focus .chain:not(.hl) { opacity: .25; }
-  svg.focus .chain:not(.hl) .ride { stroke: var(--grid) !important; stroke-opacity: 1; }
-  svg.focus .chain:not(.hl) .wait, svg.focus .chain:not(.hl) .walk { stroke: var(--grid); }
+  svg.focus .chain:not(.hl):not(.soft) { opacity: .25; }
+  svg.focus .chain:not(.hl):not(.soft) .ride { stroke: var(--grid) !important; stroke-opacity: 1; }
+  svg.focus .chain:not(.hl):not(.soft) .wait, svg.focus .chain:not(.hl):not(.soft) .walk { stroke: var(--grid); }
   .chain.hl .ride { stroke-width: 3.5; stroke-opacity: 1; }
   .chain.hl .wait { stroke-width: 2.5; stroke-opacity: 1; }
   .fallback .ride { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 4; }
@@ -54,15 +54,23 @@
   .hit { fill: none; stroke: transparent; stroke-width: 9; pointer-events: stroke; }
   .fallback, .change-labels { pointer-events: none; }
   .change-labels text { fill: var(--fg); font-size: 11px; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+  svg.focus .chain.soft { opacity: 1; }
+  svg.focus .chain.soft .ride { stroke-opacity: .9; }
+  .hover-piece { fill: none; stroke: var(--fg); stroke-width: 5; stroke-opacity: .35; stroke-linecap: round; pointer-events: none; }
+  .candidate { padding: 4px 6px; border-radius: 4px; cursor: pointer; border-left: 3px solid transparent; }
+  .candidate:hover, .candidate.on { background: var(--grid); }
+  .candidate .route { color: var(--muted); font-size: 11px; }
+  .back { color: var(--accent); cursor: pointer; display: block; margin-bottom: 6px; }
+  kbd { font: 11px monospace; border: 1px solid var(--grid); border-radius: 3px; padding: 0 3px; }
 </style>
 </head>
 <body>
 <header><h1 id="title"></h1><p id="subtitle"></p></header>
 <div id="plot"><div id="tip"></div></div>
 <aside>
-  <h2>Selected connection</h2>
-  <div id="details">Hover a line to see it, click to pin it and show its fallbacks (dashed).</div>
-  <h2>First … last train (click to hide)</h2>
+  <h2 id="panel-title">Selection</h2>
+  <div id="details"></div>
+  <h2>First … last train (hover to highlight, click to hide)</h2>
   <div id="groups"></div>
   <h2>Reading the plot</h2>
   <div id="legend"></div>
@@ -73,17 +81,27 @@ const NS = "http://www.w3.org/2000/svg";
 const plotEl = document.getElementById("plot");
 const tip = document.getElementById("tip");
 const details = document.getElementById("details");
+const panelTitle = document.getElementById("panel-title");
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: D.tz });
 const color = g => `hsl(${(g * 137.508) % 360}, 70%, 48%)`;
-const hidden = new Set();
-let pinned = null;
+const HINT = "Hover a line to see which connections use it. Click it to select: a line used by one connection " +
+  "selects that connection, a shared line lists all connections using it.";
+
+// Interaction state. Selection only changes on click; hovering only previews.
+const hidden = new Set();   // hidden groups
+let pinned = null;          // selected connection
+let candidates = null;      // connections using the clicked line: { piece, chains }
+let hoverPiece = null;      // line under the mouse
+let preview = null;         // connection hovered in the candidate list
+let softGroup = null;       // group hovered in the group list
 
 document.getElementById("title").textContent = D.title;
 document.getElementById("subtitle").textContent = D.subtitle;
 document.getElementById("legend").innerHTML =
   `x: time (${D.tz}). y: ${D.metric} (${D.unit}), goal at the bottom.<br>` +
   `Thick coloured: riding · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
-  `Parallel lines: same route later. Steeper: faster.`;
+  `Parallel lines: same route later. Steeper: faster. Dashed orange: fallbacks of the selection.<br>` +
+  `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.`;
 
 function el(name, attrs, parent) {
   const e = document.createElementNS(NS, name);
@@ -91,20 +109,22 @@ function el(name, attrs, parent) {
   if (parent) parent.appendChild(e);
   return e;
 }
+function esc(s) {
+  return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
 
 // Points come as (unix minutes, height × 100); pieces and fallbacks by index.
 for (const p of D.pieces) p.pts = p.pts.map(([m, h]) => [m * 60e3, h / 100]);
 for (const f of D.fallbacks) f.pieces = f.pieces.map(i => D.pieces[i]);
-for (const c of D.chains) {
-  c.pieces = c.pieces.map(i => D.pieces[i]);
-  c.fallbacks = c.fallbacks.map(([i, arrive]) => ({ ...D.fallbacks[i], arrive }));
-}
+for (const c of D.chains) c.fallbacks = c.fallbacks.map(([i, arrive]) => ({ ...D.fallbacks[i], arrive }));
 
 // Domain over the connections; fallbacks reaching beyond are clipped.
 let t0 = Infinity, t1 = -Infinity, y1 = 0;
-for (const c of D.chains) for (const p of c.pieces)
-  for (const [t, y] of p.pts) { t0 = Math.min(t0, t); t1 = Math.max(t1, t); y1 = Math.max(y1, y); }
+for (const c of D.chains) for (const i of c.pieces)
+  for (const [t, y] of D.pieces[i].pts) { t0 = Math.min(t0, t); t1 = Math.max(t1, t); y1 = Math.max(y1, y); }
 const pad = 10 * 60e3; t0 -= pad; t1 += pad;
+
+let view = null; // per-render drawing context
 
 function render() {
   plotEl.querySelectorAll("svg").forEach(s => s.remove());
@@ -152,98 +172,173 @@ function render() {
   const step = (t1 - t0) / hour > 30 ? 3 * hour : (t1 - t0) / hour > 14 ? 2 * hour : hour;
   for (let t = Math.ceil(t0 / hour) * hour; t <= t1; t += step) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
-    const lbl = el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis);
-    lbl.textContent = timeFmt.format(t);
+    el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = timeFmt.format(t);
   }
 
   const pts = p => p.pts.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const lines = el("g", { "clip-path": "url(#area)" }, svg);
   const chainEls = D.chains.map((c, i) => {
-    const g = el("g", { class: "chain" + (hidden.has(c.group) ? " off" : ""), "data-i": i }, lines);
-    for (const p of c.pieces) {
+    const g = el("g", { class: "chain" + (hidden.has(c.group) ? " off" : "") }, lines);
+    for (const pi of c.pieces) {
+      const p = D.pieces[pi];
       const line = el("polyline", { points: pts(p), class: p.kind + (p.warn ? " warn" : "") }, g);
       if (p.kind === "ride") line.setAttribute("stroke", color(c.group));
     }
     return g;
   });
-  // Wide invisible strokes on top make thin lines easy to hover.
-  const hits = el("g", {}, svg);
+
+  // One invisible wide hit line per distinct visible piece: a shared ride is
+  // one target, listing all connections using it, not an arbitrary one of them.
+  const users = new Map();
   D.chains.forEach((c, i) => {
     if (hidden.has(c.group)) return;
-    for (const p of c.pieces) {
-      const h = el("polyline", { points: pts(p), class: "hit" }, hits);
-      h.addEventListener("mousemove", e => hover(i, p, e));
-      h.addEventListener("mouseleave", () => hover(null));
-      h.addEventListener("click", e => { e.stopPropagation(); pin(i); });
-    }
+    for (const pi of c.pieces) (users.get(pi) ?? users.set(pi, []).get(pi)).push(i);
   });
+  const hits = el("g", {}, svg);
+  for (const [pi, chains] of users) {
+    const h = el("polyline", { points: pts(D.pieces[pi]), class: "hit", "data-piece": pi }, hits);
+    h.addEventListener("mousemove", e => { hoverPiece = { piece: pi, chains }; refresh(); moveTip(e); });
+    h.addEventListener("mouseleave", () => { hoverPiece = null; refresh(); });
+    h.addEventListener("click", e => { e.stopPropagation(); choose(pi, chains); });
+  }
+  const hoverLayer = el("g", { "clip-path": "url(#area)" }, svg);
   const fbLayer = el("g", { class: "fallback", "clip-path": "url(#area)" }, svg);
   const labels = el("g", { class: "change-labels" }, svg);
-  svg.addEventListener("click", () => pin(null));
+  svg.addEventListener("click", () => { pinned = null; candidates = null; refresh(); });
 
-  function highlight(i) {
-    chainEls.forEach(g => g.classList.remove("hl"));
-    labels.replaceChildren();
-    svg.classList.toggle("focus", i !== null);
-    if (i === null) return;
-    chainEls[i].classList.add("hl");
-    lines.appendChild(chainEls[i]);
-    // Name the changes: their station rows are often too close to be labelled on the axis.
-    for (const p of D.chains[i].pieces.filter(p => p.kind === "wait" && p.pts.length)) {
+  view = { svg, x, y, pts, lines, chainEls, hoverLayer, fbLayer, labels };
+  refresh();
+}
+
+// Clicking a line: one connection selects it, several are listed to choose from.
+function choose(piece, chains) {
+  if (chains.length === 1) { candidates = null; pinned = chains[0]; }
+  else { candidates = { piece, chains }; pinned = chains.includes(pinned) ? pinned : null; }
+  refresh();
+}
+
+function refresh() {
+  if (!view) return;
+  const { svg, x, y, pts, lines, chainEls, hoverLayer, fbLayer, labels } = view;
+  const strong = new Set([pinned, preview].filter(i => i !== null));
+  const soft = new Set();
+  if (hoverPiece) hoverPiece.chains.forEach(i => soft.add(i));
+  if (candidates) candidates.chains.forEach(i => soft.add(i));
+  if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup) soft.add(i); });
+
+  svg.classList.toggle("focus", strong.size > 0 || soft.size > 0);
+  chainEls.forEach((g, i) => {
+    g.classList.toggle("hl", strong.has(i));
+    g.classList.toggle("soft", soft.has(i) && !strong.has(i));
+  });
+  for (const i of soft) lines.appendChild(chainEls[i]);
+  for (const i of strong) lines.appendChild(chainEls[i]);
+
+  hoverLayer.replaceChildren();
+  if (hoverPiece) el("polyline", { points: pts(D.pieces[hoverPiece.piece]), class: "hover-piece" }, hoverLayer);
+
+  fbLayer.replaceChildren();
+  labels.replaceChildren();
+  const focus = preview ?? pinned;
+  if (focus !== null) {
+    if (focus === pinned) for (const f of D.chains[pinned].fallbacks) {
+      const g = el("g", {}, fbLayer);
+      for (const p of f.pieces) el("polyline", { points: pts(p), class: p.kind }, g);
+    }
+    // Name the changes: their station rows are often too close to tell apart.
+    for (const p of D.chains[focus].pieces.map(i => D.pieces[i]).filter(p => p.kind === "wait" && p.pts.length)) {
       const [t, v] = p.pts[0];
       el("text", { x: x(t) + 4, y: y(v) - 5 }, labels).textContent = p.info;
     }
   }
-  function hover(i, piece, e) {
-    if (i === null) { tip.style.display = "none"; highlight(pinned); return; }
-    highlight(i);
-    const c = D.chains[i];
-    tip.innerHTML = `<b>${esc(c.header)}</b>${esc(piece.info)}<br><span style="color:var(--muted)">${esc(c.route)}</span>`;
+
+  if (hoverPiece) {
+    const { piece, chains } = hoverPiece;
+    const p = D.pieces[piece];
+    const who = chains.length === 1
+      ? `<br><b>${esc(D.chains[chains[0]].header)}</b><span style="color:var(--muted)">${esc(D.chains[chains[0]].route)}</span>`
+      : `<br><span style="color:var(--muted)">used by ${chains.length} connections · click to list them</span>`;
+    tip.innerHTML = `<b>${esc(p.info)}</b>${who}`;
     tip.style.display = "block";
-    const r = plotEl.getBoundingClientRect();
-    const left = Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 8);
-    tip.style.left = left + "px";
-    tip.style.top = (e.clientY - r.top + 14) + "px";
-    if (pinned === null) showDetails(i);
+  } else {
+    tip.style.display = "none";
   }
-  function pin(i) {
-    pinned = i;
-    fbLayer.replaceChildren();
-    highlight(i);
-    if (i === null) { details.textContent = "Hover a line to see it, click to pin it and show its fallbacks (dashed)."; return; }
-    for (const f of D.chains[i].fallbacks) {
-      const g = el("g", {}, fbLayer);
-      for (const p of f.pieces) el("polyline", { points: pts(p), class: p.kind }, g);
+  renderPanel();
+}
+
+function moveTip(e) {
+  const r = plotEl.getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 8) + "px";
+  tip.style.top = (e.clientY - r.top + 14) + "px";
+}
+
+let panelKey = null; // avoid rebuilding the panel (and losing its hover) on every mouse move
+function renderPanel() {
+  const key = JSON.stringify([pinned, candidates && candidates.piece, candidates && candidates.chains.length]);
+  if (key === panelKey) return;
+  panelKey = key;
+  if (pinned !== null) {
+    panelTitle.textContent = "Selected connection";
+    const c = D.chains[pinned];
+    let html = candidates
+      ? `<span class="back" id="back">← ${candidates.chains.length} connections using ${esc(D.pieces[candidates.piece].info)}</span>`
+      : "";
+    html += `<b>${esc(c.header)}</b>\n${esc(c.route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
+    let at = null;
+    for (const f of c.fallbacks) {
+      if (f.at !== at) { html += `\n\n<span class="fb">If the change at ${esc(f.at)} is missed:</span>`; at = f.at; }
+      html += `\n<span class="fb">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`;
     }
-    showDetails(i);
+    details.innerHTML = html;
+    document.getElementById("back")?.addEventListener("click", () => { pinned = null; refresh(); });
+  } else if (candidates) {
+    panelTitle.textContent = `${candidates.chains.length} connections use ${D.pieces[candidates.piece].info}`;
+    details.replaceChildren();
+    for (const i of candidates.chains) {
+      const c = D.chains[i];
+      const row = document.createElement("div");
+      row.className = "candidate";
+      row.style.borderLeftColor = color(c.group);
+      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(c.route)}</div>`;
+      row.addEventListener("mouseenter", () => { preview = i; refresh(); });
+      row.addEventListener("mouseleave", () => { preview = null; refresh(); });
+      row.addEventListener("click", () => { preview = null; pinned = i; refresh(); });
+      details.appendChild(row);
+    }
+  } else {
+    panelTitle.textContent = "Selection";
+    details.textContent = HINT;
   }
-  if (pinned !== null) pin(pinned);
 }
 
-function showDetails(i) {
-  const c = D.chains[i];
-  let html = `<b>${esc(c.header)}</b>\n${esc(c.route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
-  let at = null;
-  for (const f of c.fallbacks) {
-    if (f.at !== at) { html += `\n\n<span class="fb">If the change at ${esc(f.at)} is missed:</span>`; at = f.at; }
-    html += `\n<span class="fb">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`;
-  }
-  details.innerHTML = html;
-}
-
-function esc(s) {
-  return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
-}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { pinned = null; candidates = null; preview = null; refresh(); return; }
+  if (!candidates || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+  e.preventDefault();
+  const list = candidates.chains;
+  const now = list.indexOf(pinned);
+  const next = now < 0 ? 0 : (now + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
+  pinned = list[next];
+  refresh();
+});
 
 const groupsEl = document.getElementById("groups");
 D.groups.forEach((g, i) => {
   const row = document.createElement("div");
   row.className = "group";
   row.innerHTML = `<span class="swatch" style="background:${color(i)}"></span><span>${esc(g.label)}</span><span class="count">${g.count}</span>`;
+  row.addEventListener("mouseenter", () => { softGroup = hidden.has(i) ? null : i; refresh(); });
+  row.addEventListener("mouseleave", () => { softGroup = null; refresh(); });
   row.addEventListener("click", () => {
     hidden.has(i) ? hidden.delete(i) : hidden.add(i);
     row.classList.toggle("off", hidden.has(i));
+    softGroup = null;
     if (pinned !== null && D.chains[pinned].group === i) pinned = null;
+    if (candidates) {
+      candidates.chains = candidates.chains.filter(c => !hidden.has(D.chains[c].group));
+      if (!candidates.chains.length) candidates = null;
+    }
+    panelKey = null;
     render();
   });
   groupsEl.appendChild(row);
