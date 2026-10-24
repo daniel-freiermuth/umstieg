@@ -50,7 +50,9 @@ stacks) that is every connection arriving by then, up to the station, and every
 one leaving from then on, from the station, later departures included. On a
 ride it is every connection on that train between those two stops, plus what
 could lead onto the train (arriving at an earlier stop by its departure there)
-and what it leads to (leaving a later stop from its arrival there on). Clicking selects: if one
+and what it leads to (leaving a later stop from its arrival there on).
+Reachability is transitive over everything plotted, so changes no listed
+connection makes count too (ICE 774 to Kassel, then ICE 772). Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
 previews and clicking selects one (the other listed connections then fade to
