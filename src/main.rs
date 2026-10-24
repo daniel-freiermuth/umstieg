@@ -38,14 +38,17 @@ enum Command {
         /// Transitous and the DB quota).
         #[arg(long, default_value_t = 1)]
         parallel: usize,
+        /// Services and contact used by every search; not settable from the page.
+        #[command(flatten)]
+        endpoints: search::Endpoints,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(Command::Serve { addr, parallel }) = cli.command {
-        return serve::serve(addr, parallel).await;
+    if let Some(Command::Serve { addr, parallel, endpoints }) = cli.command {
+        return serve::serve(addr, parallel, endpoints).await;
     }
     let args = cli.search.context("FROM and TO are required")?;
     let events = |event: search::Event<'_>| {

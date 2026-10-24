@@ -19,16 +19,17 @@ use serde::Serialize;
 use tokio::sync::Semaphore;
 
 use crate::motis::Motis;
-use crate::search::{self, Event, SearchArgs};
+use crate::search::{self, Endpoints, Event, SearchArgs};
 
 const FORM: &str = include_str!("form.html");
 const PROGRESS: &str = include_str!("progress.html");
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
-/// Options not in the form: text output only, or chosen on the plot page itself (metric).
-const NOT_IN_FORM: [&str; 6] = ["html", "detail", "per_group", "metric", "help", "version"];
+/// Options not in the form: text output only, chosen on the plot page itself
+/// (metric), or the server's (endpoints, given to `umstieg serve`).
+const NOT_IN_FORM: [&str; 9] = ["html", "detail", "per_group", "metric", "help", "version", "efa", "api", "contact"];
 /// Options shown folded under "Advanced".
-const ADVANCED: [&str; 7] = ["hubs", "max_nodes", "no_db", "all_stops", "efa", "api", "contact"];
+const ADVANCED: [&str; 4] = ["hubs", "max_nodes", "no_db", "all_stops"];
 
 /// The search options as a command line, for validation and defaults.
 #[derive(Parser)]
@@ -51,20 +52,17 @@ struct App {
     next: AtomicU64,
     permits: Semaphore,
     motis: Motis,
+    /// Used by every search, whatever the form says.
+    endpoints: Endpoints,
 }
 
-pub async fn serve(addr: SocketAddr, parallel: usize) -> Result<()> {
-    let contact = Form::command()
-        .get_arguments()
-        .find(|a| a.get_id() == "contact")
-        .and_then(|a| a.get_default_values().first().map(|v| v.to_string_lossy().into_owned()))
-        .unwrap_or_default();
-    let user_agent = format!("umstieg/{} ({})", env!("CARGO_PKG_VERSION"), std::env::var("UMSTIEG_CONTACT").unwrap_or(contact));
+pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
     let app = Arc::new(App {
         jobs: Mutex::new(HashMap::new()),
         next: AtomicU64::new(1),
         permits: Semaphore::new(parallel.max(1)),
-        motis: Motis::new("https://api.transitous.org", &user_agent)?,
+        motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
+        endpoints,
     });
     let router = Router::new()
         .route("/", get(form))
@@ -189,10 +187,12 @@ async fn start(
     RawQuery(raw): RawQuery,
     Query(params): Query<Vec<(String, String)>>,
 ) -> Response {
-    let args = match parse(&params) {
+    let mut args = match parse(&params) {
         Ok(args) => args,
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
+    // Not settable from the page, even by hand-crafted URLs.
+    args.endpoints = app.endpoints.clone();
     let id = app.next.fetch_add(1, Ordering::Relaxed);
     {
         let mut jobs = app.jobs.lock().expect("jobs poisoned");

@@ -92,13 +92,15 @@ from the goal goes up (e.g. København → Malmö on the way to Göteborg).
 
 ```sh
 umstieg serve                     # http://127.0.0.1:8080/
-umstieg serve --addr 0.0.0.0:8080 --parallel 1
+umstieg serve --addr 127.0.0.1:8765 --parallel 1 --contact you@example.org
 ```
 
-A form with every option of the command line (generated from them, so new
-options appear by themselves; text-only ones like `--detail` and `--metric`,
-which the plot page switches itself, are left out),
-station names completed from Transitous. Submitting shows the search's
+A form with every search option of the command line (generated from them, so
+new options appear by themselves). Left out: text-only ones like `--detail`,
+`--metric` (the plot page switches it), and the services and contact
+(`--api`, `--efa`, `--contact`), which `umstieg serve` takes and uses for every
+search; the page can't change them. Station names complete from Transitous.
+Submitting shows the search's
 progress, then the plot, whose "← Change search" link returns to the form with
 the same settings. Searches beyond `--parallel` wait their turn: each loads
 Transitous and the DB quota. The last 20 results stay available. There is no

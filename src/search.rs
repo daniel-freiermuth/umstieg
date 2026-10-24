@@ -77,6 +77,15 @@ pub struct SearchArgs {
     /// diversions, extra trains) still applies.
     #[arg(long)]
     pub planned: bool,
+    #[command(flatten)]
+    pub endpoints: Endpoints,
+}
+
+/// Services asked and how we identify to them: set by whoever runs umstieg
+/// (the command line, or `umstieg serve` for all its searches), not per search
+/// in the web form.
+#[derive(clap::Args, Clone)]
+pub struct Endpoints {
     /// EFA journey planner asked for local legs between German stops (empty: none).
     /// It knows trams and buses Transitous can miss.
     #[arg(long, default_value = "https://www.vrn.de/mngvrn")]
@@ -87,6 +96,12 @@ pub struct SearchArgs {
     /// Contact sent in the User-Agent, as the Transitous usage policy requires.
     #[arg(long, env = "UMSTIEG_CONTACT", default_value = "https://github.com/daniel-freiermuth")]
     pub contact: String,
+}
+
+impl Endpoints {
+    pub fn user_agent(&self) -> String {
+        format!("umstieg/{} ({})", env!("CARGO_PKG_VERSION"), self.contact)
+    }
 }
 
 /// Progress of a running search.
@@ -105,9 +120,10 @@ pub struct Outcome {
 /// Runs a search. `plot_back` asks for the plot page, with that link back to
 /// the search form (`Some(None)`: plot without link).
 pub async fn run(args: &SearchArgs, plot_back: Option<Option<String>>, events: &(dyn Fn(Event<'_>) + Sync)) -> Result<Outcome> {
-    let user_agent = format!("umstieg/{} ({})", env!("CARGO_PKG_VERSION"), args.contact);
-    let motis = Motis::new(&args.api, &user_agent)?;
-    let efa = (!args.efa.is_empty()).then(|| efa::Efa::new(&args.efa, &user_agent)).transpose()?;
+    let endpoints = &args.endpoints;
+    let user_agent = endpoints.user_agent();
+    let motis = Motis::new(&endpoints.api, &user_agent)?;
+    let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;
     let db = match (args.no_db, db::Credentials::load()?) {
         (false, Some(credentials)) => Some(db::Db::new(credentials, &user_agent)?),
         (false, None) => {
