@@ -48,6 +48,8 @@
   .overlay .wait, .overlay .walk { stroke-width: 1.6; }
   .overlay .strong.ride { stroke-width: 4.5; }
   .overlay .strong.wait { stroke-width: 3; }
+  /* Other listed connections recede behind the selected / previewed one. */
+  .overlay .faded { opacity: .3; }
   .overlay, .fallback, .change-labels { pointer-events: none; }
   .fallback .ride { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 4; }
   .fallback .wait, .fallback .walk { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 3; }
@@ -271,15 +273,17 @@ function refresh() {
   if (!view) return;
   const { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels } = view;
   const strong = [pinned, preview].filter(i => i !== null);
-  const soft = new Set();
+  // Hovered stretch and hovered group show at full strength; the rest of a
+  // clicked list recedes once one of its connections is selected or previewed.
+  const soft = new Set(), faded = new Set();
   if (hoverTarget) hoverTarget.chains.forEach(i => soft.add(i));
-  if (candidates) candidates.chains.forEach(i => soft.add(i));
   if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup && !hidden.has(c.group)) soft.add(i); });
-  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0);
+  if (candidates) candidates.chains.forEach(i => (strong.length ? faded : soft).add(i));
+  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0);
 
   // Overlay: previewed connections in train colours, the selection thick on top.
   // Redrawn only when the set changes, not on every mouse move.
-  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b)]);
+  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b), [...faded].sort((a, b) => a - b)]);
   if (key !== view.overlayKey) {
     view.overlayKey = key;
     overlay.replaceChildren();
@@ -289,8 +293,12 @@ function refresh() {
       if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
     };
     const mine = new Set(strong.flatMap(i => D.chains[i].pieces));
-    const others = new Set([...soft].flatMap(i => D.chains[i].pieces).filter(pi => !mine.has(pi)));
-    for (const pi of others) draw(pi, "soft");
+    const shown = new Set(mine);
+    const pieces = chains => new Set([...chains].flatMap(i => D.chains[i].pieces).filter(pi => !shown.has(pi)));
+    const bright = pieces(soft);
+    bright.forEach(pi => shown.add(pi));
+    for (const pi of pieces(faded)) draw(pi, "soft faded");
+    for (const pi of bright) draw(pi, "soft");
     for (const pi of mine) draw(pi, "strong");
   }
 

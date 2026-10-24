@@ -49,7 +49,8 @@ train between those two stops, wherever it boards or leaves; on a wait, every
 connection waiting at that station at that time. Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
-previews and clicking selects one;
+previews and clicking selects one (the other listed connections then fade to
+30 %);
 `↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
 labelled and its fallbacks drawn dashed. Hovering a group (first … last train)
 highlights it, clicking hides it.
