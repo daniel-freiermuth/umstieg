@@ -133,7 +133,7 @@ pub struct Build {
 }
 
 /// What is known about a station when it is first seen.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Sighting<'a> {
     name: &'a str,
     eva: Option<&'a str>,
@@ -155,26 +155,18 @@ impl Stations {
     fn intern(&mut self, s: Sighting<'_>) -> usize {
         let name_key = format!("name:{}", db::fold(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
-        let found = eva_key
-            .as_ref()
-            .and_then(|k| self.by_key.get(k))
-            .or_else(|| self.by_key.get(&name_key))
-            .copied()
-            .or_else(|| {
-                let here = s.position?;
-                self.list.iter().position(|st| {
-                    let compatible = st.eva.is_none() || s.eva.is_none();
-                    compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
-                })
-            });
+        let found =
+            eva_key.as_ref().and_then(|k| self.by_key.get(k)).or_else(|| self.by_key.get(&name_key)).copied().or_else(
+                || {
+                    let here = s.position?;
+                    self.list.iter().position(|st| {
+                        let compatible = st.eva.is_none() || s.eva.is_none();
+                        compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
+                    })
+                },
+            );
         let idx = found.unwrap_or_else(|| {
-            self.list.push(Station {
-                name: s.name.to_owned(),
-                eva: None,
-                db_name: None,
-                tz: None,
-                position: None,
-            });
+            self.list.push(Station { name: s.name.to_owned(), eva: None, db_name: None, tz: None, position: None });
             self.list.len() - 1
         });
         let station = &mut self.list[idx];
@@ -206,25 +198,25 @@ fn sighting<'a>(
     position: Option<(f64, f64)>,
 ) -> Sighting<'a> {
     let db = resolved.get(name);
-    Sighting {
-        name,
-        eva: db.map(|s| s.eva.as_str()),
-        db_name: db.map(|s| s.name.as_str()),
-        tz,
-        position,
-    }
+    Sighting { name, eva: db.map(|s| s.eva.as_str()), db_name: db.map(|s| s.name.as_str()), tz, position }
 }
 
 /// Great-circle distance between (lat, lon) pairs.
 pub fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
-    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    let h = ((la2 - la1) / 2.0)
+        .sin()
+        .mul_add(((la2 - la1) / 2.0).sin(), la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2));
     2.0 * 6_371_000.0 * h.sqrt().asin()
 }
 
 /// `all_stops`: fetch DB boards for every stop of the rough routes' trains,
 /// not only where they start or end. More change points (e.g. RE7 to
 /// Schleswig to catch the RJ there), roughly three times the DB requests.
+#[expect(
+    clippy::too_many_lines,
+    reason = "MOTIS legs to trips, boards, merge and footpaths in one pass over shared state"
+)]
 pub async fn build(
     motis: &Motis,
     db: Option<&Db>,
@@ -303,7 +295,9 @@ pub async fn build(
             let Some(last) = calls.len().checked_sub(1) else { continue };
             let from = match previous_end {
                 Some(end) => Some(end),
-                None if walk > TimeDelta::zero() => Some(end_station(&mut stations, &itinerary.legs[0].from, origin_idx)),
+                None if walk > TimeDelta::zero() => {
+                    Some(end_station(&mut stations, &itinerary.legs[0].from, origin_idx))
+                }
                 None => None,
             };
             if let Some(from) = from.filter(|&from| from != calls[0].station) {
@@ -371,15 +365,13 @@ pub async fn build(
             let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
             let distance = meters(pa, pb);
             if distance <= SAME_STATION_METERS {
-                let walk = TimeDelta::seconds((distance / WALK_METERS_PER_SECOND) as i64).max(MIN_WALK);
+                let walk = TimeDelta::seconds(whole_seconds(distance / WALK_METERS_PER_SECOND)).max(MIN_WALK);
                 footpaths.entry((a, b)).or_insert(walk);
             }
         }
     }
-    let mut footpaths: Vec<Footpath> = footpaths
-        .into_iter()
-        .map(|((from, to), duration)| Footpath { from, to, duration })
-        .collect();
+    let mut footpaths: Vec<Footpath> =
+        footpaths.into_iter().map(|((from, to), duration)| Footpath { from, to, duration }).collect();
     footpaths.sort_by_key(|f| (f.from, f.to));
 
     Build {
@@ -418,10 +410,7 @@ fn propagate_delays(calls: &mut [Call]) {
 }
 
 fn leg_places(leg: &Leg) -> Vec<&Place> {
-    std::iter::once(&leg.from)
-        .chain(&leg.intermediate_stops)
-        .chain(std::iter::once(&leg.to))
-        .collect()
+    std::iter::once(&leg.from).chain(&leg.intermediate_stops).chain(std::iter::once(&leg.to)).collect()
 }
 
 /// Fetched DB boards per station index.
@@ -441,9 +430,8 @@ fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
 }
 
 async fn load_boards(db: &Db, wanted: Vec<(usize, String, Vec<DateTime<Utc>>)>, warnings: &mut Vec<String>) -> Boards {
-    let fetches = wanted
-        .into_iter()
-        .map(|(idx, eva, hours)| async move { (idx, eva.clone(), db.visits(&eva, &hours).await) });
+    let fetches =
+        wanted.into_iter().map(|(idx, eva, hours)| async move { (idx, eva.clone(), db.visits(&eva, &hours).await) });
     let mut boards = Boards::new();
     for (idx, eva, result) in join_all(fetches).await {
         match result {
@@ -473,10 +461,8 @@ async fn fetch_boards(
         .collect();
     let mut boards = load_boards(db, wanted, warnings).await;
 
-    let by_db_name: HashMap<String, usize> = boards
-        .keys()
-        .filter_map(|&idx| Some((stations.list[idx].db_name.clone()?, idx)))
-        .collect();
+    let by_db_name: HashMap<String, usize> =
+        boards.keys().filter_map(|&idx| Some((stations.list[idx].db_name.clone()?, idx))).collect();
     let mut between: HashMap<String, (usize, DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     for (visits, _) in boards.values() {
         for visit in visits.iter().filter(|v| v.class == Some('F')) {
@@ -504,12 +490,7 @@ async fn fetch_boards(
     // DB station plus a position from MOTIS, so feeds naming it differently unify.
     let lookups = between.iter().map(|(name, _)| async move {
         let station = db.resolve(name, None).await;
-        let position = motis
-            .stop(name)
-            .await
-            .ok()
-            .filter(|s| db::same_place(&s.name, name))
-            .and_then(|s| s.position);
+        let position = motis.stop(name).await.ok().filter(|s| db::same_place(&s.name, name)).and_then(|s| s.position);
         (station, position)
     });
     let mut wanted = Vec::new();
@@ -536,9 +517,21 @@ async fn fetch_boards(
     boards
 }
 
+/// Whole seconds of a float, rounded and clamped to what a timetable needs.
+#[expect(clippy::cast_possible_truncation, reason = "rounded and clamped to a range i64 holds")]
+pub const fn whole_seconds(s: f64) -> i64 {
+    s.round().clamp(-1e12, 1e12) as i64
+}
+
+/// A DB train's calls as (station, planned arrival, planned departure).
+type Signature = Vec<(usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
+/// A train seen at a station: (trip, planned arrival, planned departure).
+type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
 /// DB trains from the boards, MOTIS trains merged into them by number. DB wins
 /// where it has data: a MOTIS stop is dropped if the DB train's route omits the
 /// station, or the station's board lists other trains of that class for the hour.
+#[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
 fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> Vec<Trip> {
     let mut runs: HashMap<&str, Vec<(usize, &Visit)>> = HashMap::new();
     for (&idx, (visits, _)) in boards {
@@ -575,10 +568,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             label,
             numbers,
             class: calls.iter().find_map(|(_, v)| v.class),
-            headsign: calls
-                .iter()
-                .rev()
-                .find_map(|(_, v)| v.departure.as_ref()?.path().last().cloned()),
+            headsign: calls.iter().rev().find_map(|(_, v)| v.departure.as_ref()?.path().last().cloned()),
             calls: calls
                 .iter()
                 .map(|&(station, v)| Call {
@@ -600,7 +590,6 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
     }
     // Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
     // same timetable; while they run together they are one train for us.
-    type Signature = Vec<(usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
     let mut seen: HashMap<Signature, usize> = HashMap::new();
     let mut kept: Vec<Trip> = Vec::new();
     let mut kept_routes: Vec<HashSet<String>> = Vec::new();
@@ -610,18 +599,15 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             .iter()
             .map(|c| (c.station, c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned)))
             .collect();
-        match seen.get(&signature) {
-            Some(&i) => {
-                let other = &mut kept[i];
-                other.label = format!("{} + {}", other.label, trip.label);
-                other.numbers.extend(trip.numbers);
-                kept_routes[i].extend(route);
-            }
-            None => {
-                seen.insert(signature, kept.len());
-                kept.push(trip);
-                kept_routes.push(route);
-            }
+        if let Some(&i) = seen.get(&signature) {
+            let other = &mut kept[i];
+            other.label = format!("{} + {}", other.label, trip.label);
+            other.numbers.extend(trip.numbers);
+            kept_routes[i].extend(route);
+        } else {
+            seen.insert(signature, kept.len());
+            kept.push(trip);
+            kept_routes.push(route);
         }
     }
     let (mut trips, mut routes) = (kept, kept_routes);
@@ -638,7 +624,6 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
     };
     // Feeds disagree on train numbers ("ICE 76" vs " (2558)"); the same
     // timetable at two stations identifies the same train too.
-    type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
     let mut at_station: HashMap<usize, Vec<Seen>> = HashMap::new();
     let index = |at_station: &mut HashMap<usize, Vec<Seen>>, i: usize, calls: &[Call]| {
         for c in calls {
@@ -646,9 +631,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             at_station.entry(c.station).or_default().push((i, arr, dep));
         }
     };
-    let close = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| {
-        matches!((a, b), (Some(a), Some(b)) if (a - b).abs() <= SAME_TIME)
-    };
+    let close = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| matches!((a, b), (Some(a), Some(b)) if (a - b).abs() <= SAME_TIME);
     for (i, t) in trips.iter().enumerate() {
         index(&mut at_station, i, &t.calls);
     }
@@ -681,38 +664,35 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             }
             shared.into_iter().filter(|&(_, n)| n >= 2).max_by_key(|&(i, n)| (n, Reverse(i))).map(|(i, _)| i)
         });
-        match twin {
-            Some(i) => {
-                // DB's route lists every stop; a stop unknown to DB between its
-                // first and last call is the same station under another name
-                // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
-                let db_times = trips[i].calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
-                let span = db_times.clone().min().zip(db_times.max());
-                let mut added = Vec::new();
-                for call in motis.calls {
-                    let name = stations[call.station].db_name.as_ref();
-                    let off_route = name.is_some_and(|n| !routes[i].is_empty() && !routes[i].contains(n));
-                    let unknown_inside = name.is_none()
-                        && !routes[i].is_empty()
-                        && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo < t && t < hi);
-                    if trips[i].call_at(call.station).is_none()
-                        && !off_route
-                        && !unknown_inside
-                        && !covered(&call, motis.class)
-                    {
-                        added.push(call.clone());
-                        trips[i].calls.push(call);
-                    }
+        if let Some(i) = twin {
+            // DB's route lists every stop; a stop unknown to DB between its
+            // first and last call is the same station under another name
+            // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
+            let db_times = trips[i].calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
+            let span = db_times.clone().min().zip(db_times.max());
+            let mut added = Vec::new();
+            for call in motis.calls {
+                let name = stations[call.station].db_name.as_ref();
+                let off_route = name.is_some_and(|n| !routes[i].is_empty() && !routes[i].contains(n));
+                let unknown_inside = name.is_none()
+                    && !routes[i].is_empty()
+                    && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo < t && t < hi);
+                if trips[i].call_at(call.station).is_none()
+                    && !off_route
+                    && !unknown_inside
+                    && !covered(&call, motis.class)
+                {
+                    added.push(call.clone());
+                    trips[i].calls.push(call);
                 }
-                index(&mut at_station, i, &added);
             }
-            None => {
-                let class = motis.class;
-                let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();
-                index(&mut at_station, trips.len(), &calls);
-                trips.push(Trip { calls, ..motis });
-                routes.push(HashSet::new());
-            }
+            index(&mut at_station, i, &added);
+        } else {
+            let class = motis.class;
+            let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();
+            index(&mut at_station, trips.len(), &calls);
+            trips.push(Trip { calls, ..motis });
+            routes.push(HashSet::new());
         }
     }
     trips

@@ -67,16 +67,19 @@ impl Chain {
         self.rides().count() - 1
     }
 
+    #[expect(clippy::expect_used, reason = "a chain has a ride, boarded at a call that departs")]
     pub fn departure(&self, tt: &Timetable) -> DateTime<Utc> {
         let (trip, board, _) = self.rides().next().expect("chain has a ride");
         tt.trips[trip].calls[board].departure_time().expect("boarded calls depart")
     }
 
+    #[expect(clippy::expect_used, reason = "a chain has a ride, left at a call that arrives")]
     pub fn arrival(&self, tt: &Timetable) -> DateTime<Utc> {
         let (trip, _, alight) = self.rides().last().expect("chain has a ride");
         tt.trips[trip].calls[alight].arrival_time().expect("alighted calls arrive")
     }
 
+    #[expect(clippy::expect_used, reason = "chains only board calls that depart and alight at calls that arrive")]
     pub fn transfers(&self, tt: &Timetable) -> Vec<Transfer> {
         let mut out = Vec::new();
         let mut previous: Option<(usize, DateTime<Utc>)> = None;
@@ -90,7 +93,8 @@ impl Chain {
                     if let Some((station, arrival)) = previous {
                         out.push(Transfer { station, departure, walk, slack: departure - arrival - walk });
                     }
-                    previous = Some((calls[alight].station, calls[alight].arrival_time().expect("alighted calls arrive")));
+                    previous =
+                        Some((calls[alight].station, calls[alight].arrival_time().expect("alighted calls arrive")));
                     walk = TimeDelta::zero();
                 }
             }
@@ -382,6 +386,10 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Enumeration {
 
 impl Search<'_> {
     /// At `station`, ready to leave at `ready`. `deadline` is set once the first train is chosen.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the search step: walks, then trains and their stops, sharing the backtracking state"
+    )]
     fn explore(&mut self, station: usize, ready: DateTime<Utc>, deadline: Option<DateTime<Utc>>, walked: bool) {
         self.nodes += 1;
         if self.nodes > self.limits.max_nodes {
@@ -466,10 +474,10 @@ impl Search<'_> {
                 let worth_stopping = call.station == self.tt.destination
                     || !self.departures[call.station].is_empty()
                     || !self.walks[call.station].is_empty();
-                let progress =
-                    !self.limits.forward_only || self.lower_bound[call.station] < self.lower_bound[station];
+                let progress = !self.limits.forward_only || self.lower_bound[call.station] < self.lower_bound[station];
                 if !call.cancelled && worth_stopping && progress && self.reachable(call.station, arrival, deadline) {
-                    let at = Presence { station: call.station, arrival: Some(arrival), since: arrival, slack_out: None };
+                    let at =
+                        Presence { station: call.station, arrival: Some(arrival), since: arrival, slack_out: None };
                     self.presence.push(at);
                     self.steps.push(Step::Ride { trip, board, alight });
                     self.explore(call.station, arrival, Some(deadline), false);
@@ -513,7 +521,9 @@ impl Search<'_> {
                     None => return true,
                     Some(arrival) => {
                         let direct = d - arrival;
-                        if direct >= self.limits.min_transfer && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX)) {
+                        if direct >= self.limits.min_transfer
+                            && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX))
+                        {
                             return true;
                         }
                     }

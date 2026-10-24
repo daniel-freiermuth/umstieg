@@ -1,8 +1,8 @@
 //! Minimal client for the MOTIS routing API (as served by Transitous).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -11,13 +11,14 @@ use tokio::sync::Semaphore;
 
 use crate::cache::DiskCache;
 use crate::db::fold;
+use crate::sync::lock;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
 /// Attempts per request on 429 Too Many Requests and transport errors.
 const MAX_ATTEMPTS: u32 = 4;
 /// How long plan answers are reused from disk.
-const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(10);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +65,7 @@ pub struct Leg {
 
 impl Leg {
     /// Walking, cycling etc. have no trip.
-    pub fn is_transit(&self) -> bool {
+    pub const fn is_transit(&self) -> bool {
         self.trip_id.is_some()
     }
 
@@ -150,10 +151,8 @@ pub struct Motis {
 
 impl Motis {
     pub fn new(base: &str, user_agent: &str) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(user_agent)
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?;
+        let http =
+            reqwest::Client::builder().user_agent(user_agent).timeout(std::time::Duration::from_secs(60)).build()?;
         Ok(Self {
             http,
             base: base.trim_end_matches('/').to_owned(),
@@ -202,8 +201,8 @@ impl Motis {
             }
             match resp.text().await {
                 Ok(text) => return Ok(text),
-                Err(_) if attempt < MAX_ATTEMPTS => continue,
-                Err(e) => return Err(e).with_context(|| format!("reading {url}")),
+                Err(e) if attempt >= MAX_ATTEMPTS => return Err(e).with_context(|| format!("reading {url}")),
+                Err(_) => {}
             }
         }
         unreachable!("loop returns or bails")
@@ -222,9 +221,8 @@ impl Motis {
         let bare = text.split_whitespace().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
         let queries = [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
         for query in &queries {
-            let matches: Vec<GeocodeMatch> = self
-                .get("/api/v1/geocode", &[("text", query.clone()), ("type", "STOP".to_owned())])
-                .await?;
+            let matches: Vec<GeocodeMatch> =
+                self.get("/api/v1/geocode", &[("text", query.clone()), ("type", "STOP".to_owned())]).await?;
             let mut fitting: Vec<GeocodeMatch> = matches
                 .into_iter()
                 .filter(|m| m.kind == "STOP")
@@ -266,18 +264,13 @@ impl Motis {
             ("searchWindow", window.num_seconds().max(0).to_string()),
         ];
         let key = format!("{query:?}");
-        if let Some(hit) = self.cache.lock().expect("cache poisoned").get(&key) {
+        if let Some(hit) = lock(&self.cache).get(&key) {
             return Ok(hit.clone());
         }
-        let text = self
-            .disk
-            .get_or_fetch(&format!("{}{key}", self.base), self.get_text("/api/v5/plan", &query))
-            .await?;
+        let text =
+            self.disk.get_or_fetch(&format!("{}{key}", self.base), self.get_text("/api/v5/plan", &query)).await?;
         let resp: PlanResponse = serde_json::from_str(&text).context("decoding plan")?;
-        self.cache
-            .lock()
-            .expect("cache poisoned")
-            .insert(key, resp.itineraries.clone());
+        lock(&self.cache).insert(key, resp.itineraries.clone());
         Ok(resp.itineraries)
     }
 }

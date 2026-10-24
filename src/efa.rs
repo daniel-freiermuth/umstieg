@@ -16,7 +16,7 @@ use crate::motis::{Itinerary, Leg, Place};
 
 /// Trips asked for per request; EFA answers with about this many departures.
 const TRIPS_PER_REQUEST: &str = "6";
-const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const CACHE_TTL: Duration = Duration::from_mins(10);
 const ATTEMPTS: u32 = 3;
 
 #[derive(Deserialize)]
@@ -106,10 +106,7 @@ pub fn dhid(stop_id: &str) -> Option<String> {
 impl Efa {
     pub fn new(base: &str, user_agent: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder()
-                .user_agent(user_agent)
-                .timeout(Duration::from_secs(60))
-                .build()?,
+            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(60)).build()?,
             base: base.trim_end_matches('/').to_owned(),
             disk: DiskCache::new("efa", CACHE_TTL),
             requests: AtomicUsize::new(0),
@@ -161,7 +158,7 @@ impl Efa {
 }
 
 /// MOTIS mode for an EFA product class; `None` for walks.
-fn mode(class: i64) -> Option<&'static str> {
+const fn mode(class: i64) -> Option<&'static str> {
     Some(match class {
         0 | 13 => "REGIONAL_RAIL",
         14..=16 => "HIGHSPEED_RAIL",
@@ -215,7 +212,8 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         let run = properties.and_then(|p| p.trip_code).unwrap_or_default();
         let day = from.scheduled_departure.unwrap_or(start).with_timezone(&Berlin).format("%Y%m%d");
         let stops = &leg.stop_sequence;
-        let intermediate = if stops.len() > 2 { stops[1..stops.len() - 1].iter().map(place).collect() } else { Vec::new() };
+        let intermediate =
+            if stops.len() > 2 { stops[1..stops.len() - 1].iter().map(place).collect() } else { Vec::new() };
         legs.push(Leg {
             mode: mode.to_owned(),
             from,

@@ -8,6 +8,7 @@ mod plot;
 mod rough;
 mod search;
 mod serve;
+mod sync;
 mod text;
 mod timetable;
 
@@ -47,6 +48,7 @@ enum Command {
 }
 
 #[tokio::main]
+#[expect(clippy::print_stdout, clippy::print_stderr, reason = "the command line's report and warnings")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(Command::Serve { addr, parallel, endpoints }) = cli.command {
@@ -58,7 +60,8 @@ async fn main() -> Result<()> {
             eprintln!("warning: {warning}");
         }
     };
-    let outcome = search::run(&args, &cli.endpoints, args.html.as_ref().map(|_| None), &events).await?;
+    let plot = args.html.as_ref().map(|_| search::PlotPage { back: None });
+    let outcome = search::run(&args, &cli.endpoints, plot, &events).await?;
     print!("{}", outcome.text);
     if let (Some(path), Some(html)) = (&args.html, &outcome.html) {
         std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))?;

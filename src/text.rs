@@ -10,30 +10,23 @@ use crate::timetable::{Time, Timetable};
 
 /// "HH:MM" in the station's time zone, or local time if unknown.
 pub fn clock(t: DateTime<Utc>, tz: Option<&str>) -> String {
-    match tz.and_then(|tz| tz.parse::<Tz>().ok()) {
-        Some(tz) => t.with_timezone(&tz).format("%H:%M").to_string(),
-        None => t.with_timezone(&Local).format("%H:%M").to_string(),
-    }
+    let format = "%H:%M";
+    tz.and_then(|tz| tz.parse::<Tz>().ok()).map_or_else(
+        || t.with_timezone(&Local).format(format).to_string(),
+        |tz| t.with_timezone(&tz).format(format).to_string(),
+    )
 }
 
 pub fn duration(d: TimeDelta) -> String {
     let m = d.num_minutes();
-    if m.abs() >= 60 {
-        format!("{}h{:02}", m / 60, (m % 60).abs())
-    } else {
-        format!("{m}m")
-    }
+    if m.abs() >= 60 { format!("{}h{:02}", m / 60, (m % 60).abs()) } else { format!("{m}m") }
 }
 
 /// Time plus live delay, e.g. "11:51" or "11:55 (+4)".
 pub fn timed(t: Option<Time>, tz: Option<&str>) -> String {
     let Some(t) = t else { return "--:--".to_owned() };
     let delay = t.delay().num_minutes();
-    if delay != 0 {
-        format!("{} ({delay:+})", clock(t.actual, tz))
-    } else {
-        clock(t.actual, tz)
-    }
+    if delay != 0 { format!("{} ({delay:+})", clock(t.actual, tz)) } else { clock(t.actual, tz) }
 }
 
 /// "12m", "3m⚠" below the minimum transfer, "missed 2m✗" for a change that
@@ -50,9 +43,7 @@ pub fn buffer(slack: TimeDelta, min_transfer: TimeDelta) -> String {
 pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) -> String {
     let departure = chain.departure(tt);
     let arrival = chain.arrival(tt);
-    let min = chain
-        .min_slack(tt)
-        .map_or_else(|| "direct".to_owned(), |s| format!("min {}", buffer(s, min_transfer)));
+    let min = chain.min_slack(tt).map_or_else(|| "direct".to_owned(), |s| format!("min {}", buffer(s, min_transfer)));
     format!(
         "{} → {}  {}  {}×  {}",
         clock(departure, tt.stations[tt.origin].tz.as_deref()),

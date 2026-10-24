@@ -19,7 +19,8 @@ use serde::Serialize;
 use tokio::sync::Semaphore;
 
 use crate::motis::Motis;
-use crate::search::{self, Endpoints, Event, SearchArgs};
+use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
+use crate::sync::lock;
 
 const FORM: &str = include_str!("form.html");
 const PROGRESS: &str = include_str!("progress.html");
@@ -56,6 +57,7 @@ struct App {
     endpoints: Endpoints,
 }
 
+#[expect(clippy::print_stderr, reason = "the server's one startup line on the terminal")]
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
     let app = Arc::new(App {
         jobs: Mutex::new(HashMap::new()),
@@ -110,7 +112,7 @@ fn fields() -> Vec<Field> {
             };
             let choices = if kind == "flag" { Vec::new() } else { choices };
             Field {
-                help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+                help: a.get_help().map(ToString::to_string).unwrap_or_default(),
                 advanced: ADVANCED.contains(&name.as_str()),
                 name,
                 kind,
@@ -158,11 +160,7 @@ fn form_page(params: &[(String, String)], error: Option<&str>) -> Html<String> {
         values: HashMap<&'a str, &'a str>,
         error: Option<&'a str>,
     }
-    let spec = Spec {
-        fields: fields(),
-        values: params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
-        error,
-    };
+    let spec = Spec { fields: fields(), values: params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(), error };
     let json = serde_json::to_string(&spec).unwrap_or_default().replace("</", "<\\/");
     Html(FORM.replace("/*__SPEC__*/null", &json))
 }
@@ -193,7 +191,7 @@ async fn start(
     };
     let id = app.next.fetch_add(1, Ordering::Relaxed);
     {
-        let mut jobs = app.jobs.lock().expect("jobs poisoned");
+        let mut jobs = lock(&app.jobs);
         // Forget the oldest finished searches.
         let mut done: Vec<u64> = jobs.iter().filter(|(_, j)| j.result.is_some()).map(|(&i, _)| i).collect();
         done.sort_unstable();
@@ -208,35 +206,36 @@ async fn start(
 
 async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     let note = |line: String| {
-        if let Some(job) = app.jobs.lock().expect("jobs poisoned").get_mut(&id) {
+        if let Some(job) = lock(&app.jobs).get_mut(&id) {
             let secs = job.started.elapsed().as_secs();
-            job.log.push(format!("{:>3}s  {line}", secs));
+            job.log.push(format!("{secs:>3}s  {line}"));
         }
     };
     if app.permits.available_permits() == 0 {
         note("Waiting for another search to finish".to_owned());
     }
     let Ok(_permit) = app.permits.acquire().await else { return };
-    let back = app.jobs.lock().expect("jobs poisoned").get(&id).map(|j| format!("/?{}", j.query));
+    let back = lock(&app.jobs).get(&id).map(|j| format!("/?{}", j.query));
     let events = |event: Event<'_>| match event {
         Event::Stage(stage) => note(stage.to_owned()),
         Event::Warning(warning) => note(format!("warning: {warning}")),
     };
     // The server's services, whatever the URL says.
-    let result = search::run(&args, &app.endpoints, Some(back), &events).await;
+    let result = search::run(&args, &app.endpoints, Some(PlotPage { back }), &events).await;
     let result = match result {
         Ok(outcome) => outcome.html.ok_or(outcome.text),
         Err(e) => Err(format!("{e:#}")),
     };
     note(if result.is_ok() { "Done".to_owned() } else { "Failed".to_owned() });
-    if let Some(job) = app.jobs.lock().expect("jobs poisoned").get_mut(&id) {
+    if let Some(job) = lock(&app.jobs).get_mut(&id) {
         job.result = Some(result);
     }
 }
 
 async fn progress(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
-    if !app.jobs.lock().expect("jobs poisoned").contains_key(&id) {
-        return (StatusCode::NOT_FOUND, "No such search (finished searches are kept for a while only).").into_response();
+    if !lock(&app.jobs).contains_key(&id) {
+        return (StatusCode::NOT_FOUND, "No such search (finished searches are kept for a while only).")
+            .into_response();
     }
     Html(PROGRESS.replace("__ID__", &id.to_string())).into_response()
 }
@@ -250,7 +249,7 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         error: Option<&'a str>,
         back: String,
     }
-    let jobs = app.jobs.lock().expect("jobs poisoned");
+    let jobs = lock(&app.jobs);
     let Some(job) = jobs.get(&id) else { return StatusCode::NOT_FOUND.into_response() };
     let status = Status {
         log: &job.log,
@@ -261,11 +260,13 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         },
         back: format!("/?{}", job.query),
     };
-    axum::Json(status).into_response()
+    let response = axum::Json(status).into_response();
+    drop(jobs);
+    response
 }
 
 async fn plot(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
-    let jobs = app.jobs.lock().expect("jobs poisoned");
+    let jobs = lock(&app.jobs);
     match jobs.get(&id).and_then(|j| j.result.as_ref()) {
         Some(Ok(html)) => ([(header::CACHE_CONTROL, "private, max-age=3600")], Html(html.clone())).into_response(),
         _ => (StatusCode::NOT_FOUND, "No plot for this search.").into_response(),

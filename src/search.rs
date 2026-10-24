@@ -18,6 +18,7 @@ use crate::{db, efa, plot, rough, timetable};
 /// Stations, time and every limit of a search. The web form is generated from
 /// these arguments, so options added here show up there too.
 #[derive(clap::Args, Clone)]
+#[expect(clippy::struct_excessive_bools, reason = "command-line switches, one field each")]
 pub struct SearchArgs {
     /// Origin station (free text).
     pub from: String,
@@ -120,12 +121,18 @@ pub struct Outcome {
     pub html: Option<String>,
 }
 
-/// Runs a search. `plot_back` asks for the plot page, with that link back to
-/// the search form (`Some(None)`: plot without link).
+/// Asks `run` for the plot page.
+pub struct PlotPage {
+    /// Link back to the search form that started the search.
+    pub back: Option<String>,
+}
+
+/// Runs a search; with `plot`, also renders the plot page.
+#[expect(clippy::too_many_lines, reason = "the search pipeline, stage after stage, with the report in between")]
 pub async fn run(
     args: &SearchArgs,
     endpoints: &Endpoints,
-    plot_back: Option<Option<String>>,
+    plot: Option<PlotPage>,
     events: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Outcome> {
     let user_agent = endpoints.user_agent();
@@ -134,7 +141,9 @@ pub async fn run(
     let db = match (args.no_db, db::Credentials::load()?) {
         (false, Some(credentials)) => Some(db::Db::new(credentials, &user_agent)?),
         (false, None) => {
-            events(Event::Warning("no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only"));
+            events(Event::Warning(
+                "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
+            ));
             None
         }
         (true, _) => None,
@@ -171,7 +180,7 @@ pub async fn run(
             depart_from: time,
             depart_until: time + window,
             max_changes: args.max_changes,
-            extra_time: TimeDelta::seconds((args.extra_hours * 3600.0) as i64),
+            extra_time: TimeDelta::seconds(timetable::whole_seconds(args.extra_hours * 3600.0).max(0)),
             min_transfer,
             missed_by: TimeDelta::minutes(args.missed_by.max(0)),
             keep_detours: args.keep_detours,
@@ -221,13 +230,23 @@ pub async fn run(
             limits.max_changes,
             total,
             groups.len(),
-            if missed > 0 { format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by)) } else { String::new() },
+            if missed > 0 {
+                format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by))
+            } else {
+                String::new()
+            },
         );
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 
         let mut fallbacks = Fallbacks::new(&net, min_transfer);
         for group in &groups {
-            writeln!(out, "■ {} … {}  ({})", tt.trips[group.first].label, tt.trips[group.last].label, group.chains.len())?;
+            writeln!(
+                out,
+                "■ {} … {}  ({})",
+                tt.trips[group.first].label,
+                tt.trips[group.last].label,
+                group.chains.len()
+            )?;
             let shown = if args.per_group == 0 { group.chains.len() } else { args.per_group };
             for chain in group.chains.iter().take(shown) {
                 if args.detail {
@@ -248,8 +267,8 @@ pub async fn run(
             writeln!(out, "      Deutsche Bahn Timetables API.")?;
         }
 
-        let html = match plot_back {
-            Some(back) => {
+        let html = match plot {
+            Some(PlotPage { back }) => {
                 events(Event::Stage("Drawing the plot"));
                 let plot = plot::Plot {
                     title,
@@ -309,7 +328,13 @@ fn write_detail(
                 let (b, a) = (&t.calls[board], &t.calls[alight]);
                 let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
                 let platform = |p: &Option<String>| p.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default();
-                let source = if b.from_db && a.from_db { "DB" } else if b.from_db || a.from_db { "DB/T" } else { "T" };
+                let source = if b.from_db && a.from_db {
+                    "DB"
+                } else if b.from_db || a.from_db {
+                    "DB/T"
+                } else {
+                    "T"
+                };
                 writeln!(
                     out,
                     "    {} {}{} → {} {}{}   {}{}  ({source})",

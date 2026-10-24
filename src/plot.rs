@@ -31,29 +31,29 @@ pub enum Metric {
     /// (distance to goal − distance from start + D) / 2 (km): hyperbolas with
     /// start and goal as foci.
     Hyperbolic,
-    /// Distance left along the start–goal axis (km), from d_start² − d_goal²:
+    /// Distance left along the start–goal axis (km), from `d_start²` − `d_goal²`:
     /// straight lines perpendicular to the axis.
     Axis,
-    /// d_goal / (d_start + d_goal) in percent: Apollonius circles.
+    /// `d_goal` / (`d_start` + `d_goal`) in percent: Apollonius circles.
     Ratio,
 }
 
 impl Metric {
-    fn unit(self) -> &'static str {
+    const fn unit(self) -> &'static str {
         match self {
-            Metric::RemainingTime | Metric::FastestReal => "min",
-            Metric::Hyperbolic | Metric::Axis => "km",
-            Metric::Ratio => "%",
+            Self::RemainingTime | Self::FastestReal => "min",
+            Self::Hyperbolic | Self::Axis => "km",
+            Self::Ratio => "%",
         }
     }
 
-    fn description(self) -> &'static str {
+    const fn description(self) -> &'static str {
         match self {
-            Metric::RemainingTime => "fastest possible remaining ride time",
-            Metric::FastestReal => "fastest real remaining journey, any departure",
-            Metric::Hyperbolic => "(distance to goal − distance from start + D) / 2",
-            Metric::Axis => "distance left along the start–goal axis",
-            Metric::Ratio => "distance to goal / (distance from start + distance to goal)",
+            Self::RemainingTime => "fastest possible remaining ride time",
+            Self::FastestReal => "fastest real remaining journey, any departure",
+            Self::Hyperbolic => "(distance to goal − distance from start + D) / 2",
+            Self::Axis => "distance left along the start–goal axis",
+            Self::Ratio => "distance to goal / (distance from start + distance to goal)",
         }
     }
 }
@@ -62,7 +62,7 @@ impl Metric {
 /// the goal is unreachable from there).
 fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
     let tt = net.tt;
-    let minutes = |d: &Option<TimeDelta>| d.map(|d| d.num_seconds() as f64 / 60.0);
+    let minutes = |d: &Option<TimeDelta>| d.map(|d| d.as_seconds_f64() / 60.0);
     match metric {
         Metric::RemainingTime => return Ok(net.lower_bound.iter().map(minutes).collect()),
         Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt).iter().map(minutes).collect()),
@@ -81,8 +81,8 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
             let (a, b) = (km(p, start), km(p, goal));
             Some(match metric {
                 Metric::RemainingTime | Metric::FastestReal => unreachable!("handled above"),
-                Metric::Hyperbolic => (b - a + total) / 2.0,
-                Metric::Axis => total - (total * total + a * a - b * b) / (2.0 * total),
+                Metric::Hyperbolic => f64::midpoint(b - a, total),
+                Metric::Axis => total - f64::mul_add(b, -b, f64::mul_add(a, a, total * total)) / (2.0 * total),
                 Metric::Ratio => 100.0 * b / (a + b).max(f64::EPSILON),
             })
         })
@@ -170,7 +170,7 @@ struct Builder<'a> {
     index: HashMap<Piece, usize>,
 }
 
-fn point(station: usize, t: DateTime<Utc>) -> (i64, usize) {
+const fn point(station: usize, t: DateTime<Utc>) -> (i64, usize) {
     (t.timestamp() / 60, station)
 }
 
@@ -187,6 +187,7 @@ impl Builder<'_> {
     /// Pieces of `chain`, up to boarding ride `until` (exclusive) if given.
     /// `start`: where and from when the chain's first ride is waited for (a
     /// fallback, from the missed departure on).
+    #[expect(clippy::expect_used, reason = "chains only board calls that depart and alight at calls that arrive")]
     fn pieces(&mut self, chain: &Chain, until: Option<usize>, start: Option<(usize, DateTime<Utc>)>) -> Vec<usize> {
         let tt = self.tt;
         let mut out = Vec::new();
@@ -218,7 +219,10 @@ impl Builder<'_> {
                         let (info, warn) = if ride == 0 && start.is_some() {
                             (format!("{} at {station} after the missed train", text::duration(wait)), false)
                         } else {
-                            (format!("{} at {station}", text::buffer(wait, self.min_transfer)), wait < self.min_transfer)
+                            (
+                                format!("{} at {station}", text::buffer(wait, self.min_transfer)),
+                                wait < self.min_transfer,
+                            )
                         };
                         out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts }));
                     }
@@ -282,7 +286,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         if m == plot.metric {
             shown = metrics.len();
         }
-        let id = m.to_possible_value().expect("metrics are named").get_name().to_owned();
+        let id = m.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
         let heights = heights.into_iter().map(|h| h.map(|h| (h * 100.0).round() / 100.0)).collect();
         metrics.push(MetricOut { id, unit: m.unit(), description: m.description(), heights });
     }
@@ -304,25 +308,23 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             for (change, transfer) in chain.transfers(tt).iter().enumerate() {
                 for fallback in fallbacks.for_change(chain, change) {
                     let key = (transfer.station, transfer.departure, fallback.line.clone());
-                    let i = match fallback_index.get(&key) {
-                        Some(&i) => i,
-                        None => {
-                            fallback_out.push(FallbackOut {
-                                at: tt.stations[transfer.station].name.clone(),
-                                pieces: builder.pieces(
-                                    &fallback.chain,
-                                    fallback.rejoins_at,
-                                    Some((transfer.station, transfer.departure)),
-                                ),
-                                line: fallback.line,
-                            });
-                            fallback_index.insert(key, fallback_out.len() - 1);
-                            fallback_out.len() - 1
-                        }
+                    let i = if let Some(&i) = fallback_index.get(&key) {
+                        i
+                    } else {
+                        fallback_out.push(FallbackOut {
+                            at: tt.stations[transfer.station].name.clone(),
+                            pieces: builder.pieces(
+                                &fallback.chain,
+                                fallback.rejoins_at,
+                                Some((transfer.station, transfer.departure)),
+                            ),
+                            line: fallback.line,
+                        });
+                        fallback_index.insert(key, fallback_out.len() - 1);
+                        fallback_out.len() - 1
                     };
                     let late = (fallback.lands - chain.arrival(tt)).max(TimeDelta::zero());
-                    let arrive =
-                        format!("{} (+{})", text::clock(fallback.lands, destination_tz), text::duration(late));
+                    let arrive = format!("{} (+{})", text::clock(fallback.lands, destination_tz), text::duration(late));
                     refs.push((i, arrive));
                 }
             }

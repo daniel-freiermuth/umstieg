@@ -12,6 +12,8 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
 use tokio::sync::Semaphore;
 
+use crate::sync::lock;
+
 const BASE: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
 /// Free plan quota.
 const REQUESTS_PER_MINUTE: usize = 60;
@@ -81,7 +83,7 @@ pub struct Event {
 }
 
 impl Event {
-    fn merge(&mut self, change: &Event) {
+    fn merge(&mut self, change: &Self) {
         self.planned = self.planned.or(change.planned);
         self.changed = change.changed.or(self.changed);
         if self.planned_platform.is_none() {
@@ -125,7 +127,7 @@ pub struct Visit {
 }
 
 impl Visit {
-    fn merge(&mut self, change: &Visit) {
+    fn merge(&mut self, change: &Self) {
         self.number = self.number.or(change.number);
         self.class = self.class.or(change.class);
         if self.category.is_none() {
@@ -176,10 +178,7 @@ impl Db {
             .map(|text| parse_station_cache(&text))
             .unwrap_or_default();
         Ok(Self {
-            http: reqwest::Client::builder()
-                .user_agent(user_agent)
-                .timeout(Duration::from_secs(30))
-                .build()?,
+            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(30)).build()?,
             credentials,
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             recent: tokio::sync::Mutex::new(VecDeque::new()),
@@ -203,7 +202,7 @@ impl Db {
             if oldest.elapsed() >= minute {
                 recent.pop_front();
             } else if recent.len() >= REQUESTS_PER_MINUTE {
-                tokio::time::sleep(minute - oldest.elapsed()).await;
+                tokio::time::sleep(minute.saturating_sub(oldest.elapsed())).await;
             } else {
                 break;
             }
@@ -251,7 +250,7 @@ impl Db {
 
     /// Map a station known by name (and maybe a foreign stop id) to a DB station.
     pub async fn resolve(&self, name: &str, stop_id: Option<&str>) -> Result<Option<Station>> {
-        if let Some(hit) = self.stations.lock().expect("cache poisoned").get(name) {
+        if let Some(hit) = lock(&self.stations).get(name) {
             return Ok(hit.clone());
         }
         let mut found = None;
@@ -270,10 +269,7 @@ impl Db {
                 break;
             }
         }
-        self.stations
-            .lock()
-            .expect("cache poisoned")
-            .insert(name.to_owned(), found.clone());
+        lock(&self.stations).insert(name.to_owned(), found.clone());
         if let Some(dir) = &self.cache_dir {
             use std::io::Write;
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -293,48 +289,42 @@ impl Db {
     /// plans for a day are fixed, changes come separately.
     async fn plan(&self, eva: &str, slot: &str) -> Result<Board> {
         let key = (eva.to_owned(), slot.to_owned());
-        if let Some(hit) = self.plans.lock().expect("cache poisoned").get(&key) {
+        if let Some(hit) = lock(&self.plans).get(&key) {
             return Ok(hit.clone());
         }
-        let file = self
-            .cache_dir
-            .as_ref()
-            .map(|d| d.join("db-plan").join(format!("{eva}_{}.xml", slot.replace('/', "_"))));
+        let file =
+            self.cache_dir.as_ref().map(|d| d.join("db-plan").join(format!("{eva}_{}.xml", slot.replace('/', "_"))));
         let cached = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok());
-        let xml = match cached {
-            Some(xml) => Some(xml),
-            None => {
-                let xml = self.get(&format!("/plan/{eva}/{slot}")).await?;
-                if let (Some(xml), Some(file)) = (&xml, &file) {
-                    if let Some(dir) = file.parent() {
-                        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-                    }
-                    std::fs::write(file, xml).with_context(|| format!("writing {}", file.display()))?;
+        let xml = if let Some(xml) = cached {
+            Some(xml)
+        } else {
+            let xml = self.get(&format!("/plan/{eva}/{slot}")).await?;
+            if let (Some(xml), Some(file)) = (&xml, &file) {
+                if let Some(dir) = file.parent() {
+                    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
                 }
-                xml
+                std::fs::write(file, xml).with_context(|| format!("writing {}", file.display()))?;
             }
+            xml
         };
         let board = Arc::new(match xml {
             Some(xml) => parse_visits(&xml)?.into_iter().map(|(_, v)| v).collect(),
             None => Vec::new(),
         });
-        self.plans.lock().expect("cache poisoned").insert(key, board.clone());
+        lock(&self.plans).insert(key, board.clone());
         Ok(board)
     }
 
     /// All known changes at a station, keyed by visit id. Live; never cached on disk.
     async fn changes(&self, eva: &str) -> Result<Arc<HashMap<String, Visit>>> {
-        if let Some(hit) = self.changes.lock().expect("cache poisoned").get(eva) {
+        if let Some(hit) = lock(&self.changes).get(eva) {
             return Ok(hit.clone());
         }
         let visits = Arc::new(match self.get(&format!("/fchg/{eva}")).await? {
             Some(xml) => parse_visits(&xml)?.into_iter().collect(),
             None => HashMap::new(),
         });
-        self.changes
-            .lock()
-            .expect("cache poisoned")
-            .insert(eva.to_owned(), visits.clone());
+        lock(&self.changes).insert(eva.to_owned(), visits.clone());
         Ok(visits)
     }
 
@@ -456,16 +446,15 @@ pub fn same_place(db_name: &str, place_name: &str) -> bool {
     let (db, place) = (fold(db_name), fold(place_name));
     let first = |s: &str| s.split_whitespace().next().map(str::to_owned).unwrap_or_default();
     let (db_first, place_first) = (first(&db), first(&place));
-    !db_first.is_empty() && !place_first.is_empty() && (db.contains(&place_first) || place.contains(&db_first))
+    if db_first.is_empty() || place_first.is_empty() {
+        return false;
+    }
+    db.contains(&place_first) || place.contains(&db_first)
 }
 
 /// German and many European stop ids end in the 7-digit UIC/EVA number (80xxxxx, 86xxxxx, …).
 fn embedded_eva(stop_id: &str) -> Option<String> {
-    let digits: String = stop_id
-        .rsplit(|c: char| !c.is_ascii_digit())
-        .next()?
-        .trim_start_matches('0')
-        .to_owned();
+    let digits: String = stop_id.rsplit(|c: char| !c.is_ascii_digit()).next()?.trim_start_matches('0').to_owned();
     (digits.len() == 7 && digits.starts_with('8')).then_some(digits)
 }
 
@@ -489,12 +478,7 @@ fn parse_stations(xml: &str) -> Result<Vec<Station>> {
     Ok(doc
         .descendants()
         .filter(|n| n.has_tag_name("station"))
-        .filter_map(|n| {
-            Some(Station {
-                eva: n.attribute("eva")?.to_owned(),
-                name: n.attribute("name")?.to_owned(),
-            })
-        })
+        .filter_map(|n| Some(Station { eva: n.attribute("eva")?.to_owned(), name: n.attribute("name")?.to_owned() }))
         .filter(|s| is_rail_eva(&s.eva))
         .collect())
 }
@@ -506,10 +490,8 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
 
 fn parse_event(n: roxmltree::Node<'_, '_>) -> Event {
     let text = |a: &str| n.attribute(a).filter(|v| !v.is_empty()).map(str::to_owned);
-    let path = |a: &str| {
-        n.attribute(a)
-            .map(|p| p.split('|').filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>())
-    };
+    let path =
+        |a: &str| n.attribute(a).map(|p| p.split('|').filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>());
     Event {
         planned: n.attribute("pt").and_then(parse_time),
         changed: n.attribute("ct").and_then(parse_time),
@@ -522,7 +504,7 @@ fn parse_event(n: roxmltree::Node<'_, '_>) -> Event {
 }
 
 /// `<s>` elements of a plan or change document, keyed by their id
-/// ("<run>-<YYMMDDHHmm>-<seq>").
+/// (`"<run>-<YYMMDDHHmm>-<seq>"`).
 fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
     let doc = roxmltree::Document::parse(xml).context("parsing timetable XML")?;
     Ok(doc
@@ -531,11 +513,7 @@ fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
         .filter_map(|s| {
             let id = s.attribute("id")?;
             let (trip, seq) = id.rsplit_once('-')?;
-            let mut visit = Visit {
-                trip: trip.to_owned(),
-                seq: seq.parse().ok()?,
-                ..Visit::default()
-            };
+            let mut visit = Visit { trip: trip.to_owned(), seq: seq.parse().ok()?, ..Visit::default() };
             for child in s.children().filter(roxmltree::Node::is_element) {
                 match child.tag_name().name() {
                     "tl" => {

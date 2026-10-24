@@ -190,3 +190,12 @@ DB.
   global `--min-transfer` is used for flagging.
 - DB boards cover German stations (and a few abroad); elsewhere times come from
   Transitous.
+
+## Development
+
+`just check` runs what must pass: `cargo fmt --check`, clippy with every lint
+as an error, tests and rustdoc. The lint set lives in `Cargo.toml`: clippy's
+`pedantic`, `nursery` and `cargo` groups plus restriction lints against
+`unwrap`/`expect`/`panic`, stray `print`s and `allow`s without a reason.
+Deliberate exceptions use `#[expect(…, reason = "…")]`, so they fail once they
+no longer apply.
