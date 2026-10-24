@@ -55,8 +55,9 @@ Reachability is transitive over everything plotted, so changes no listed
 connection makes count too (ICE 774 to Kassel, then ICE 772). Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
-previews and clicking selects one (the other listed connections then fade to
-30 %);
+previews and clicking selects one. The clicked point's reachability stays
+highlighted; it and the other listed connections fade to 30 % once one is
+selected or previewed;
 `↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
 labelled and its fallbacks drawn dashed in train colours, starting with a
 dotted wait from the missed departure; hovering a fallback stretch names it and

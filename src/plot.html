@@ -550,8 +550,11 @@ document.getElementById("reset").addEventListener("click", () => { dom = { ...fu
 // Clicking a line: one connection selects it, several are listed to choose from.
 function choose(target) {
   if (!target.chains.length) return;
-  if (target.chains.length === 1) { candidates = null; pinned = target.chains[0]; }
-  else { candidates = { info: target.info, chains: target.chains }; pinned = target.chains.includes(pinned) ? pinned : null; }
+  // The clicked point's reachability stays highlighted with its list, also
+  // when only one connection passes there.
+  candidates = target.chains.length > 1 || target.reach
+    ? { info: target.info, chains: target.chains, reach: target.reach ?? null } : null;
+  pinned = target.chains.length === 1 ? target.chains[0] : target.chains.includes(pinned) ? pinned : null;
   refresh();
 }
 
@@ -562,18 +565,19 @@ function refresh() {
   // Hovered stretch and hovered group show at full strength; the rest of a
   // clicked list recedes once one of its connections is selected or previewed.
   const soft = new Set(), faded = new Set();
-  // A hovered stay highlights what is reachable from there (reach segments);
-  // other hovered lines highlight their connections.
-  const reach = hoverTarget?.reach ?? null;
-  if (hoverTarget && !reach) hoverTarget.chains.forEach(i => soft.add(i));
-  if (reach?.with) reach.with.forEach(i => soft.add(i));
+  // Hovering shows what is reachable through the point; a clicked point keeps
+  // showing it, receding once one of its connections is selected or previewed.
+  const reach = hoverTarget?.reach ?? candidates?.reach ?? null;
+  const reachFaded = !hoverTarget?.reach && strong.length > 0;
+  if (hoverTarget && !hoverTarget.reach) hoverTarget.chains.forEach(i => soft.add(i));
+  if (hoverTarget?.reach?.with) hoverTarget.reach.with.forEach(i => soft.add(i));
   if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup && !hidden.has(c.group)) soft.add(i); });
   if (candidates) candidates.chains.forEach(i => (strong.length ? faded : soft).add(i));
   svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);
 
   // Overlay: previewed connections in train colours, the selection thick on top.
   // Redrawn only when the set changes, not on every mouse move.
-  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b), [...faded].sort((a, b) => a - b), reach?.key]);
+  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b), [...faded].sort((a, b) => a - b), reach?.key, reachFaded]);
   if (key !== view.overlayKey) {
     view.overlayKey = key;
     overlay.replaceChildren();
@@ -588,9 +592,10 @@ function refresh() {
     const pieces = chains => new Set([...chains].flatMap(i => D.chains[i].pieces).filter(pi => !shown.has(pi)));
     const bright = pieces(soft);
     bright.forEach(pi => shown.add(pi));
+    if (reach && reachFaded) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft faded", k0, k1);
     for (const pi of pieces(faded)) draw(pi, "soft faded");
     for (const pi of bright) draw(pi, "soft");
-    if (reach) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", k0, k1);
+    if (reach && !reachFaded) for (const [pi, k0, k1] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", k0, k1);
     for (const pi of mine) draw(pi, "strong");
   }
 
