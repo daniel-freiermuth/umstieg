@@ -49,7 +49,7 @@ change is missed. `umstieg --help` lists all options.
    buffer. If the effort cap (`--max-nodes`) is hit, the output says up to
    how many changes the list is complete.
 
-Without DB credentials, steps 2's DB part is skipped and the timetable consists
+Without DB credentials, the DB part of step 2 is skipped and the timetable consists
 of the MOTIS trains only.
 
 ## Data
