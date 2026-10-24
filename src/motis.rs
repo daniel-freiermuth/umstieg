@@ -9,6 +9,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
+use crate::cache::DiskCache;
 use crate::db::fold;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
@@ -143,7 +144,7 @@ pub struct Motis {
     base: String,
     permits: Semaphore,
     cache: Mutex<HashMap<String, Vec<Itinerary>>>,
-    cache_dir: Option<std::path::PathBuf>,
+    disk: DiskCache,
     requests: AtomicUsize,
 }
 
@@ -158,10 +159,7 @@ impl Motis {
             base: base.trim_end_matches('/').to_owned(),
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             cache: Mutex::new(HashMap::new()),
-            cache_dir: std::env::var_os("XDG_CACHE_HOME")
-                .map(std::path::PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-                .map(|d| d.join("umstieg").join("motis")),
+            disk: DiskCache::new("motis", PLAN_CACHE_TTL),
             requests: AtomicUsize::new(0),
         })
     }
@@ -257,36 +255,15 @@ impl Motis {
         if let Some(hit) = self.cache.lock().expect("cache poisoned").get(&key) {
             return Ok(hit.clone());
         }
-        let resp: PlanResponse = serde_json::from_str(&self.plan_text(&key, &query).await?).context("decoding plan")?;
+        let text = self
+            .disk
+            .get_or_fetch(&format!("{}{key}", self.base), self.get_text("/api/v5/plan", &query))
+            .await?;
+        let resp: PlanResponse = serde_json::from_str(&text).context("decoding plan")?;
         self.cache
             .lock()
             .expect("cache poisoned")
             .insert(key, resp.itineraries.clone());
         Ok(resp.itineraries)
-    }
-
-    /// Plan answers are kept on disk for a few minutes: repeated searches (and
-    /// the many sliced queries) don't hit the volunteer-run server again, while
-    /// live data stays fresh.
-    async fn plan_text(&self, key: &str, query: &[(&str, String)]) -> Result<String> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (&self.base, key).hash(&mut hasher);
-        let file = self.cache_dir.as_ref().map(|d| d.join(format!("{:016x}.json", hasher.finish())));
-        let fresh = file.as_ref().and_then(|f| {
-            let age = std::fs::metadata(f).ok()?.modified().ok()?.elapsed().ok()?;
-            (age < PLAN_CACHE_TTL).then(|| std::fs::read_to_string(f).ok()).flatten()
-        });
-        if let Some(text) = fresh {
-            return Ok(text);
-        }
-        let text = self.get_text("/api/v5/plan", query).await?;
-        if let Some(file) = &file {
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-            }
-            std::fs::write(file, &text).with_context(|| format!("writing {}", file.display()))?;
-        }
-        Ok(text)
     }
 }

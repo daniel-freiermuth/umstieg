@@ -1,4 +1,6 @@
+mod cache;
 mod db;
+mod efa;
 mod enumerate;
 mod fallback;
 mod motis;
@@ -79,6 +81,10 @@ struct Cli {
     /// they start or end: more change points, ~3× the DB requests on a cold cache.
     #[arg(long)]
     all_stops: bool,
+    /// EFA journey planner asked for local legs between German stops (empty: none).
+    /// It knows trams and buses Transitous can miss.
+    #[arg(long, default_value = "https://www.vrn.de/mngvrn")]
+    efa: String,
     /// MOTIS API base URL.
     #[arg(long, default_value = "https://api.transitous.org")]
     api: String,
@@ -92,6 +98,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let user_agent = format!("umstieg/{} ({})", env!("CARGO_PKG_VERSION"), cli.contact);
     let motis = Motis::new(&cli.api, &user_agent)?;
+    let efa = (!cli.efa.is_empty()).then(|| efa::Efa::new(&cli.efa, &user_agent)).transpose()?;
     let db = match (cli.no_db, db::Credentials::load()?) {
         (false, Some(credentials)) => Some(db::Db::new(credentials, &user_agent)?),
         (false, None) => {
@@ -107,7 +114,7 @@ async fn main() -> Result<()> {
     let vias = try_join_all(cli.via.iter().map(|v| motis.stop(v))).await?;
 
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: cli.hubs };
-    let rough = rough::collect(&motis, &query).await?;
+    let rough = rough::collect(&motis, efa.as_ref(), &query).await?;
     let built = timetable::build(
         &motis,
         db.as_ref(),
@@ -143,11 +150,14 @@ async fn main() -> Result<()> {
     let departing = format!("departing {}–{}", clock(time, None), clock(time + window, None));
     println!("{title}, {departing}");
     println!(
-        "timetable: {} stations, {} trains · rough routes via {} · {} Transitous requests{}",
+        "timetable: {} stations, {} trains · rough routes via {} · {} Transitous requests{}{}",
         tt.stations.len(),
         tt.trips.len(),
         rough.hubs.join(", "),
         motis.request_count(),
+        efa.as_ref()
+            .map(|efa| format!(", {} EFA requests", efa.request_count()))
+            .unwrap_or_default(),
         db.as_ref()
             .map(|db| format!(", {} DB requests", db.request_count()))
             .unwrap_or_default(),

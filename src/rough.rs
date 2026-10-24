@@ -1,5 +1,6 @@
-//! Rough routes from MOTIS. They decide which stations and trains the
-//! timetable covers; the connections themselves are enumerated later.
+//! Rough routes from MOTIS, plus an EFA journey planner for local legs where
+//! stops are German. They decide which stations and trains the timetable
+//! covers; the connections themselves are enumerated later.
 
 use std::collections::{HashMap, HashSet};
 
@@ -7,6 +8,7 @@ use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
 
+use crate::efa::{self, Efa};
 use crate::motis::{Itinerary, Leg, Motis, Stop};
 
 /// How far past the latest hub arrival we look for onward connections.
@@ -15,6 +17,8 @@ const ONWARD_WINDOW: TimeDelta = TimeDelta::hours(3);
 const EARLIER_ONWARD: TimeDelta = TimeDelta::hours(2);
 /// Width of the departure slices the planner is asked for separately.
 const SLICE: TimeDelta = TimeDelta::hours(1);
+/// EFA answers with several trips per request; ask it this often across a window.
+const EFA_STEP: TimeDelta = TimeDelta::hours(1);
 
 pub struct Query {
     pub origin: Stop,
@@ -34,16 +38,26 @@ pub struct Rough {
 
 /// The planner's answers plus origin→hub and hub→destination halves for hubs
 /// taken from those answers. Halves reach trains the planner never combines.
-pub async fn collect(motis: &Motis, q: &Query) -> Result<Rough> {
-    let baseline = sliced(motis, &q.origin.id, &q.destination.id, q.time, q.window).await?;
-    let hubs = pick_hubs(&baseline, q);
-    let halves = join_all(hubs.iter().map(|hub| via_hub(motis, q, hub))).await;
+/// With an EFA planner, the halves are also asked there.
+pub async fn collect(motis: &Motis, efa: Option<&Efa>, q: &Query) -> Result<Rough> {
+    let answers = sliced(motis, &q.origin.id, &q.destination.id, q.time, q.window).await?;
+    // Later departures the planner pads with still show the corridor, which
+    // matters when only local services (missing in Transitous) run in the window.
+    let hubs = pick_hubs(&answers, q);
+    let baseline = departing(answers, q.time, q.window);
+    let halves = join_all(hubs.iter().map(|hub| via_hub(motis, efa, q, hub))).await;
 
     let mut itineraries = baseline;
     let mut warnings = Vec::new();
+    if let (Some(efa), Some(from), Some(to)) = (efa, efa::dhid(&q.origin.id), efa::dhid(&q.destination.id)) {
+        itineraries.extend(efa_window(efa, &from, &to, q.time, q.window, &mut warnings).await);
+    }
     for (hub, result) in hubs.iter().zip(halves) {
         match result {
-            Ok(found) => itineraries.extend(found),
+            Ok((found, notes)) => {
+                itineraries.extend(found);
+                warnings.extend(notes);
+            }
             Err(e) => warnings.push(format!("hub {}: {e:#}", hub.name)),
         }
     }
@@ -86,25 +100,60 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
     hubs
 }
 
-async fn via_hub(motis: &Motis, q: &Query, hub: &Stop) -> Result<Vec<Itinerary>> {
+async fn via_hub(motis: &Motis, efa: Option<&Efa>, q: &Query, hub: &Stop) -> Result<(Vec<Itinerary>, Vec<String>)> {
+    let mut notes = Vec::new();
     let mut first = departing(motis.plan(&q.origin.id, &hub.id, q.time, q.window).await?, q.time, q.window);
+    let (origin, at_hub, destination) = (efa::dhid(&q.origin.id), efa::dhid(&hub.id), efa::dhid(&q.destination.id));
+    if let (Some(efa), Some(o), Some(h)) = (efa, &origin, &at_hub) {
+        first.extend(efa_window(efa, o, h, q.time, q.window, &mut notes).await);
+    }
     let arrivals = first.iter().filter_map(|i| i.legs.last().map(|l| l.end_time));
     let (Some(lo), Some(hi)) = (arrivals.clone().min(), arrivals.max()) else {
-        return Ok(first);
+        return Ok((first, notes));
     };
     // MOTIS's own arrivals at the hub can be later than what the DB-corrected
     // timetable reaches (a delay making its best change infeasible, a stop it
     // doesn't know), so onward trains are collected from before them as well.
     let from = (lo - EARLIER_ONWARD).max(q.time);
-    let second = sliced(motis, &hub.id, &q.destination.id, from, hi - from + ONWARD_WINDOW).await?;
+    let onward = hi - from + ONWARD_WINDOW;
+    let second = departing(sliced(motis, &hub.id, &q.destination.id, from, onward).await?, from, onward);
     first.extend(second);
-    Ok(first)
+    if let (Some(efa), Some(h), Some(d)) = (efa, &at_hub, &destination) {
+        first.extend(efa_window(efa, h, d, from, onward, &mut notes).await);
+    }
+    Ok((first, notes))
+}
+
+/// EFA journeys departing within the window. Failures only cost coverage.
+async fn efa_window(
+    efa: &Efa,
+    from: &str,
+    to: &str,
+    time: DateTime<Utc>,
+    window: TimeDelta,
+    notes: &mut Vec<String>,
+) -> Vec<Itinerary> {
+    let mut starts = Vec::new();
+    let mut t = time;
+    while t < time + window {
+        starts.push(t);
+        t += EFA_STEP;
+    }
+    let mut found = Vec::new();
+    for result in join_all(starts.iter().map(|&t| efa.trips(from, to, t))).await {
+        match result {
+            Ok(trips) => found.extend(trips),
+            Err(e) => notes.push(format!("EFA {from} → {to}: {e:#}")),
+        }
+    }
+    departing(found, time, window)
 }
 
 /// The planner drops a departure if a later one arrives as early (06:38 ICE
 /// 378 at Mannheim vs. 08:03 ICE 774, both reaching Göteborg at 22:05). Such
 /// earlier departures are the buffer-rich alternatives this tool is about, so
 /// the window is asked for in slices: each slice keeps its own best departures.
+/// Answers are unfiltered: MOTIS pads them with later departures.
 async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
     let mut starts = Vec::new();
     let mut t = time;
@@ -112,10 +161,7 @@ async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window
         starts.push(t);
         t += SLICE;
     }
-    let slices = futures::future::try_join_all(starts.iter().map(|&t| async move {
-        motis.plan(from, to, t, SLICE).await.map(|found| departing(found, t, SLICE))
-    }))
-    .await?;
+    let slices = futures::future::try_join_all(starts.iter().map(|&t| motis.plan(from, to, t, SLICE))).await?;
     Ok(slices.into_iter().flatten().collect())
 }
 

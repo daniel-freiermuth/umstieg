@@ -122,6 +122,15 @@ Set `UMSTIEG_CONTACT` for the User-Agent, as the
 [usage policy](https://transitous.org/api/) requires. `--api` points at another
 MOTIS instance.
 
+Local legs between German stops are also asked from an EFA journey planner,
+by default the VRN's (`--efa URL`, `--efa ''` disables). Transitous can miss
+local services: on Saturday 24 October 2026 it had no trams at Bad Dürkheim,
+while the VRN knew RNV 4 at 05:13. EFA is asked origin → hub, hub →
+destination and origin → destination, hourly across the window, wherever both
+ends have a German stop id (DHID, from Transitous's DELFI ids). Answers are
+cached in `~/.cache/umstieg/efa/` for 10 minutes. DB's own journey planners
+(bahn.de, DB Navigator) block automated access.
+
 DB data comes from the [Timetables API](https://developers.deutschebahn.com)
 (free plan; subscribe your application to it). Credentials come from
 `DB_CLIENT_ID`/`DB_API_KEY` or `~/.config/umstieg/db.env` (`KEY=value` lines).
