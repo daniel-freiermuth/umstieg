@@ -204,7 +204,7 @@ fn sighting<'a>(
 }
 
 /// Great-circle distance between (lat, lon) pairs.
-fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
+pub fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
     let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
     2.0 * 6_371_000.0 * h.sqrt().asin()

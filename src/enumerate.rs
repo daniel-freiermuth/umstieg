@@ -148,7 +148,8 @@ pub fn earliest_arrival(tt: &Timetable, start: usize, t0: DateTime<Utc>) -> Vec<
     }
 }
 
-/// Lower bound on the remaining travel time from each station, ignoring waits.
+/// Lower bound on the remaining travel time from each station, ignoring waits:
+/// fastest ride per segment over the whole timetable, summed along the best path.
 fn lower_bounds(tt: &Timetable) -> Vec<Option<TimeDelta>> {
     let n = tt.stations.len();
     let mut reverse: Vec<Vec<(usize, TimeDelta)>> = vec![Vec::new(); n];
@@ -181,13 +182,43 @@ fn lower_bounds(tt: &Timetable) -> Vec<Option<TimeDelta>> {
     best
 }
 
-struct Search<'a> {
-    tt: &'a Timetable,
-    limits: &'a Limits,
+/// Per-timetable indexes shared by all searches on it (main and fallbacks).
+pub struct Network<'a> {
+    pub tt: &'a Timetable,
     /// Per station: (trip, call) sorted by departure.
     departures: Vec<Vec<(usize, usize)>>,
     walks: Vec<Vec<usize>>,
-    lower_bound: Vec<Option<TimeDelta>>,
+    pub lower_bound: Vec<Option<TimeDelta>>,
+}
+
+impl<'a> Network<'a> {
+    pub fn new(tt: &'a Timetable) -> Self {
+        let n = tt.stations.len();
+        let mut departures: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+        for (t, trip) in tt.trips.iter().enumerate() {
+            for (c, call) in trip.calls.iter().enumerate().take(trip.calls.len().saturating_sub(1)) {
+                if call.departure_time().is_some() && !call.cancelled {
+                    departures[call.station].push((t, c));
+                }
+            }
+        }
+        for list in &mut departures {
+            list.sort_by_key(|&(t, c)| tt.trips[t].calls[c].departure_time());
+        }
+        let mut walks = vec![Vec::new(); n];
+        for (i, fp) in tt.footpaths.iter().enumerate() {
+            walks[fp.from].push(i);
+        }
+        Self { tt, departures, walks, lower_bound: lower_bounds(tt) }
+    }
+}
+
+struct Search<'a> {
+    tt: &'a Timetable,
+    limits: &'a Limits,
+    departures: &'a [Vec<(usize, usize)>],
+    walks: &'a [Vec<usize>],
+    lower_bound: &'a [Option<TimeDelta>],
     max_duration: TimeDelta,
     visited: Vec<bool>,
     used: Vec<bool>,
@@ -203,25 +234,9 @@ struct Search<'a> {
     truncated: bool,
 }
 
-pub fn enumerate(tt: &Timetable, limits: &Limits) -> Enumeration {
-    let n = tt.stations.len();
-    let mut departures: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
-    for (t, trip) in tt.trips.iter().enumerate() {
-        for (c, call) in trip.calls.iter().enumerate().take(trip.calls.len().saturating_sub(1)) {
-            if call.departure_time().is_some() && !call.cancelled {
-                departures[call.station].push((t, c));
-            }
-        }
-    }
-    for list in &mut departures {
-        list.sort_by_key(|&(t, c)| tt.trips[t].calls[c].departure_time());
-    }
-    let mut walks = vec![Vec::new(); n];
-    for (i, fp) in tt.footpaths.iter().enumerate() {
-        walks[fp.from].push(i);
-    }
-
-    let fastest = departures[limits.origin]
+pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Enumeration {
+    let tt = net.tt;
+    let fastest = net.departures[limits.origin]
         .iter()
         .filter_map(|&(t, c)| tt.trips[t].calls[c].departure_time())
         .filter(|d| (limits.depart_from..=limits.depart_until).contains(d))
@@ -234,11 +249,11 @@ pub fn enumerate(tt: &Timetable, limits: &Limits) -> Enumeration {
     let mut search = Search {
         tt,
         limits,
-        departures,
-        walks,
-        lower_bound: lower_bounds(tt),
+        departures: &net.departures,
+        walks: &net.walks,
+        lower_bound: &net.lower_bound,
         max_duration: fastest_duration + limits.extra_time,
-        visited: vec![false; n],
+        visited: vec![false; tt.stations.len()],
         used: vec![false; tt.trips.len()],
         steps: Vec::new(),
         rides: 0,

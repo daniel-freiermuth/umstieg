@@ -33,6 +33,29 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
           12:52 S1 (41620) → 13:04 Altona ‖4m⚠‖ 13:08 RJ 384 (back on plan) · arrive 22:05 (+0m)
 ```
 
+### Plot
+
+`--html out.html` writes a self-contained interactive time–distance diagram
+(a Marey chart generalised to a network): x is time, y a fixed height per
+station with the goal at the bottom. Riding is a thick coloured line, waiting a
+thin horizontal one (red below `--min-transfer`), walking dotted. Later
+departures of the same route run parallel, faster trains are steeper and
+overtake slower ones. Hovering shows a connection; clicking pins it, names its
+changes and draws its fallbacks dashed. Groups (first … last train) can be
+hidden in the side panel.
+
+`--metric` sets the station height:
+
+| Metric | Height | Equidistant lines |
+|---|---|---|
+| `remaining-time` (default) | fastest possible remaining ride time, ignoring waits | network-based; riding is never flat, at most 45°, exactly 45° on the fastest train |
+| `hyperbolic` | (d_goal − d_start + D) / 2 | hyperbolas, start and goal as foci |
+| `axis` | distance left along the start–goal axis (from d_start² − d_goal²) | straight lines perpendicular to the axis |
+| `ratio` | d_goal / (d_start + d_goal) | Apollonius circles |
+
+With geographic metrics, riding sideways to the axis looks flat and moving away
+from the goal goes up (e.g. København → Malmö on the way to Göteborg).
+
 ## How it works
 
 1. **Rough routes** (MOTIS/Transitous): the planner's answers, plus
