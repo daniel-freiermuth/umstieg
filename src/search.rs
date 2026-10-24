@@ -38,6 +38,10 @@ pub struct SearchArgs {
     /// Changes shorter than this many minutes are flagged with ⚠.
     #[arg(long, default_value_t = 5)]
     pub min_transfer: i64,
+    /// Also list changes that live data says are missed by up to this many
+    /// minutes (marked ✗): delays can still shift either way. 0 = only feasible ones.
+    #[arg(long, default_value_t = 5)]
+    pub missed_by: i64,
     /// Connections listed per (first train, last train) group; 0 = all.
     #[arg(long, default_value_t = 5)]
     pub per_group: usize,
@@ -169,12 +173,14 @@ pub async fn run(
             max_changes: args.max_changes,
             extra_time: TimeDelta::seconds((args.extra_hours * 3600.0) as i64),
             min_transfer,
+            missed_by: TimeDelta::minutes(args.missed_by.max(0)),
             keep_detours: args.keep_detours,
             forward_only: args.forward_only,
             max_nodes: args.max_nodes,
         };
         let result = enumerate::enumerate(&net, &limits);
         let total = result.chains.len();
+        let missed = result.chains.iter().filter(|c| c.min_slack(tt).is_some_and(|s| s < TimeDelta::zero())).count();
         let groups = enumerate::group(tt, result.chains);
 
         let mut out = String::new();
@@ -209,12 +215,13 @@ pub async fn run(
             None => ", incomplete even without changes; raise --max-nodes".to_owned(),
         };
         let summary = format!(
-            "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups",
+            "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups{}",
             duration(fastest),
             duration(fastest + limits.extra_time),
             limits.max_changes,
             total,
             groups.len(),
+            if missed > 0 { format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by)) } else { String::new() },
         );
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 

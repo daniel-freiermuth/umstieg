@@ -36,7 +36,12 @@ pub fn timed(t: Option<Time>, tz: Option<&str>) -> String {
     }
 }
 
+/// "12m", "3m⚠" below the minimum transfer, "missed 2m✗" for a change that
+/// live data says is gone (listed with `--missed-by`: delays may still shift).
 pub fn buffer(slack: TimeDelta, min_transfer: TimeDelta) -> String {
+    if slack < TimeDelta::zero() {
+        return format!("missed {}✗", duration(-slack));
+    }
     let warn = if slack < min_transfer { "⚠" } else { "" };
     format!("{}{warn}", duration(slack))
 }

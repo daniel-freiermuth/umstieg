@@ -20,7 +20,10 @@ fastest 9h39 · limits: ≤ 12h39 travel time, ≤ 15 changes · 1090 connection
 ```
 
 `‖42m‖` is the buffer at a change, `⚠` marks buffers below `--min-transfer`,
-`(+5)` live delays. `umstieg --help` lists all options.
+`(+5)` live delays. `‖missed 2m✗‖` is a change live data says is gone by that
+much: `--missed-by` (default 5 min, 0 = off) lists those too, since delays can
+still shift either way; they sort after the feasible connections of their
+group, and their fallbacks show what still works. `umstieg --help` lists all options.
 
 `--detail` adds platforms and, for every change, up to three fallbacks if the
 next train is missed: connections leaving within 2 h with at most 3 changes,
@@ -124,7 +127,8 @@ login; put it behind an authenticating proxy before exposing it.
 3. **Enumeration**: depth-first over that timetable, deepening by number of
    changes, within these limits:
    - departure inside `--window`, travel time ≤ fastest + `--extra-hours`,
-   - at most `--max-changes` changes, any transfer time (short ones flagged),
+   - at most `--max-changes` changes, any transfer time (short ones flagged;
+     missed by up to `--missed-by` listed as ✗),
    - no station twice (also not passing through). Riding away from the
      destination is allowed: S-Bahn Mannheim → Heidelberg for an ECE that skips
      Mannheim can be worth it. `--forward-only` requires every train to reduce

@@ -18,6 +18,9 @@ pub struct Limits {
     pub extra_time: TimeDelta,
     /// Changes shorter than this are flagged; detour pruning assumes it.
     pub min_transfer: TimeDelta,
+    /// Changes live data says are missed by up to this much are listed too:
+    /// delays may still shift either way.
+    pub missed_by: TimeDelta,
     /// Keep chains that take a train they could have boarded at an earlier stop.
     pub keep_detours: bool,
     /// Only rides that reduce the best-case remaining travel time. Off by
@@ -420,7 +423,7 @@ impl Search<'_> {
             let deadline = match deadline {
                 Some(d) if departure > d => break,
                 Some(d) => {
-                    if departure < ready {
+                    if departure < ready - self.limits.missed_by {
                         continue;
                     }
                     d
@@ -539,15 +542,18 @@ pub struct Group {
     pub chains: Vec<Chain>,
 }
 
-/// Groups by (first train, last train), each sorted by arrival, changes, buffer;
-/// groups ordered by their best connection.
+/// Groups by (first train, last train), each sorted feasible first, then by
+/// arrival, changes, buffer; groups ordered by their best connection.
 pub fn group(tt: &Timetable, chains: Vec<Chain>) -> Vec<Group> {
     let mut groups: HashMap<(usize, usize), Vec<Chain>> = HashMap::new();
     for chain in chains {
         let trips = chain.trips();
         groups.entry((trips[0], trips[trips.len() - 1])).or_default().push(chain);
     }
-    let key = |c: &Chain| (c.arrival(tt), c.changes(), Reverse(c.min_slack(tt).unwrap_or(TimeDelta::MAX)));
+    let key = |c: &Chain| {
+        let slack = c.min_slack(tt).unwrap_or(TimeDelta::MAX);
+        (slack < TimeDelta::zero(), c.arrival(tt), c.changes(), Reverse(slack))
+    };
     let mut out: Vec<Group> = groups
         .into_iter()
         .map(|((first, last), mut chains)| {

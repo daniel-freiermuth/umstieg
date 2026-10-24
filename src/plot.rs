@@ -210,7 +210,9 @@ impl Builder<'_> {
                     let departure = b.departure_time().expect("boarded calls depart");
                     if let Some((_, since)) = here {
                         let wait = departure - since;
-                        let pts = vec![point(b.station, since), point(b.station, departure)];
+                        // A missed change (`--missed-by`) leaves before the arrival: drawn
+                        // forward over the gap, red like other too-short changes.
+                        let pts = vec![point(b.station, since.min(departure)), point(b.station, since.max(departure))];
                         let station = &tt.stations[b.station].name;
                         // Waiting after a missed train is no change that could be too short.
                         let (info, warn) = if ride == 0 && start.is_some() {

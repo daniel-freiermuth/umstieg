@@ -123,7 +123,7 @@ function writeLegend() {
   const metric = D.metrics[metricIndex];
   legend.innerHTML =
     `x: time (${D.tz}). y: ${metric.description} (${metric.unit}), goal at the bottom.<br>` +
-    `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
+    `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer, or missed by live data ✗) · dotted: walking.<br>` +
     `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` +
     `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` +
     `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;

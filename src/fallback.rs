@@ -49,6 +49,8 @@ impl<'n> Fallbacks<'n> {
                 max_changes: CHANGES,
                 extra_time: EXTRA,
                 min_transfer,
+                // What to do once the change is missed: only what still works.
+                missed_by: TimeDelta::zero(),
                 keep_detours: false,
                 forward_only: false,
                 max_nodes: NODES,
