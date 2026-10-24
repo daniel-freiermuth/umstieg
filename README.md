@@ -112,8 +112,12 @@ of the MOTIS trains only.
 ## Data
 
 MOTIS data comes from [Transitous](https://transitous.org)
-([sources](https://transitous.org/sources/)), a volunteer-run instance. One
-search makes roughly 10–40 requests, two in parallel, backing off on HTTP 429.
+([sources](https://transitous.org/sources/)), a volunteer-run instance. The
+planner drops departures that a later one arrives as early as, so departure
+windows are asked for in one-hour slices; a search makes roughly 50–100
+requests, two in parallel, retrying on HTTP 429 and transport errors. Answers
+are cached in `~/.cache/umstieg/motis/` for 10 minutes, so repeating or
+tweaking a search costs nothing.
 Set `UMSTIEG_CONTACT` for the User-Agent, as the
 [usage policy](https://transitous.org/api/) requires. `--api` points at another
 MOTIS instance.

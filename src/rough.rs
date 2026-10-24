@@ -13,6 +13,8 @@ use crate::motis::{Itinerary, Leg, Motis, Stop};
 const ONWARD_WINDOW: TimeDelta = TimeDelta::hours(3);
 /// How far before MOTIS's earliest hub arrival onward connections are collected.
 const EARLIER_ONWARD: TimeDelta = TimeDelta::hours(2);
+/// Width of the departure slices the planner is asked for separately.
+const SLICE: TimeDelta = TimeDelta::hours(1);
 
 pub struct Query {
     pub origin: Stop,
@@ -33,9 +35,7 @@ pub struct Rough {
 /// The planner's answers plus origin→hub and hub→destination halves for hubs
 /// taken from those answers. Halves reach trains the planner never combines.
 pub async fn collect(motis: &Motis, q: &Query) -> Result<Rough> {
-    let baseline = motis
-        .plan(&q.origin.id, &q.destination.id, q.time, q.window)
-        .await?;
+    let baseline = sliced(motis, &q.origin.id, &q.destination.id, q.time, q.window).await?;
     let hubs = pick_hubs(&baseline, q);
     let halves = join_all(hubs.iter().map(|hub| via_hub(motis, q, hub))).await;
 
@@ -87,7 +87,7 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
 }
 
 async fn via_hub(motis: &Motis, q: &Query, hub: &Stop) -> Result<Vec<Itinerary>> {
-    let mut first = motis.plan(&q.origin.id, &hub.id, q.time, q.window).await?;
+    let mut first = departing(motis.plan(&q.origin.id, &hub.id, q.time, q.window).await?, q.time, q.window);
     let arrivals = first.iter().filter_map(|i| i.legs.last().map(|l| l.end_time));
     let (Some(lo), Some(hi)) = (arrivals.clone().min(), arrivals.max()) else {
         return Ok(first);
@@ -96,9 +96,35 @@ async fn via_hub(motis: &Motis, q: &Query, hub: &Stop) -> Result<Vec<Itinerary>>
     // timetable reaches (a delay making its best change infeasible, a stop it
     // doesn't know), so onward trains are collected from before them as well.
     let from = (lo - EARLIER_ONWARD).max(q.time);
-    let second = motis
-        .plan(&hub.id, &q.destination.id, from, hi - from + ONWARD_WINDOW)
-        .await?;
+    let second = sliced(motis, &hub.id, &q.destination.id, from, hi - from + ONWARD_WINDOW).await?;
     first.extend(second);
     Ok(first)
+}
+
+/// The planner drops a departure if a later one arrives as early (06:38 ICE
+/// 378 at Mannheim vs. 08:03 ICE 774, both reaching Göteborg at 22:05). Such
+/// earlier departures are the buffer-rich alternatives this tool is about, so
+/// the window is asked for in slices: each slice keeps its own best departures.
+async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
+    let mut starts = Vec::new();
+    let mut t = time;
+    while t < time + window {
+        starts.push(t);
+        t += SLICE;
+    }
+    let slices = futures::future::try_join_all(starts.iter().map(|&t| async move {
+        motis.plan(from, to, t, SLICE).await.map(|found| departing(found, t, SLICE))
+    }))
+    .await?;
+    Ok(slices.into_iter().flatten().collect())
+}
+
+/// MOTIS pads short answers with later departures, up to days later when
+/// nothing runs; keep the asked-for window.
+fn departing(itineraries: Vec<Itinerary>, time: DateTime<Utc>, window: TimeDelta) -> Vec<Itinerary> {
+    let span = time..=time + window;
+    itineraries
+        .into_iter()
+        .filter(|i| i.legs.iter().find(|l| l.is_transit()).is_some_and(|l| span.contains(&l.start_time)))
+        .collect()
 }

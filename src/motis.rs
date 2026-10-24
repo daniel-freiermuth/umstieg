@@ -13,8 +13,10 @@ use crate::db::fold;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
-/// Attempts per request when the server answers 429 Too Many Requests.
+/// Attempts per request on 429 Too Many Requests and transport errors.
 const MAX_ATTEMPTS: u32 = 4;
+/// How long plan answers are reused from disk.
+const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +143,7 @@ pub struct Motis {
     base: String,
     permits: Semaphore,
     cache: Mutex<HashMap<String, Vec<Itinerary>>>,
+    cache_dir: Option<std::path::PathBuf>,
     requests: AtomicUsize,
 }
 
@@ -155,6 +158,10 @@ impl Motis {
             base: base.trim_end_matches('/').to_owned(),
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             cache: Mutex::new(HashMap::new()),
+            cache_dir: std::env::var_os("XDG_CACHE_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+                .map(|d| d.join("umstieg").join("motis")),
             requests: AtomicUsize::new(0),
         })
     }
@@ -164,17 +171,24 @@ impl Motis {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T> {
+        let text = self.get_text(path, query).await?;
+        serde_json::from_str(&text).with_context(|| format!("decoding {path}"))
+    }
+
+    /// Body of a GET, retrying 429 (honouring Retry-After) and transport errors.
+    async fn get_text(&self, path: &str, query: &[(&str, String)]) -> Result<String> {
         let _permit = self.permits.acquire().await?;
         let url = format!("{}{}", self.base, path);
         for attempt in 1.. {
             self.requests.fetch_add(1, Ordering::Relaxed);
-            let resp = self
-                .http
-                .get(&url)
-                .query(query)
-                .send()
-                .await
-                .with_context(|| format!("GET {url}"))?;
+            let sent = self.http.get(&url).query(query).send().await;
+            let resp = match sent {
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+                    continue;
+                }
+                other => other.with_context(|| format!("GET {url}"))?,
+            };
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_ATTEMPTS {
                 let wait = resp
@@ -188,7 +202,11 @@ impl Motis {
             if !status.is_success() {
                 bail!("GET {url} failed: {status}");
             }
-            return resp.json().await.with_context(|| format!("decoding {url}"));
+            match resp.text().await {
+                Ok(text) => return Ok(text),
+                Err(_) if attempt < MAX_ATTEMPTS => continue,
+                Err(e) => return Err(e).with_context(|| format!("reading {url}")),
+            }
         }
         unreachable!("loop returns or bails")
     }
@@ -226,7 +244,8 @@ impl Motis {
         bail!("no stop named like {text:?} found (tried: {})", queries.join(", "))
     }
 
-    /// Pareto-optimal itineraries departing within `[time, time + window]`.
+    /// Pareto-optimal itineraries departing within `[time, time + window]`
+    /// (MOTIS may pad with later ones).
     pub async fn plan(&self, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
         let query = [
             ("fromPlace", from.to_owned()),
@@ -238,11 +257,36 @@ impl Motis {
         if let Some(hit) = self.cache.lock().expect("cache poisoned").get(&key) {
             return Ok(hit.clone());
         }
-        let resp: PlanResponse = self.get("/api/v5/plan", &query).await?;
+        let resp: PlanResponse = serde_json::from_str(&self.plan_text(&key, &query).await?).context("decoding plan")?;
         self.cache
             .lock()
             .expect("cache poisoned")
             .insert(key, resp.itineraries.clone());
         Ok(resp.itineraries)
+    }
+
+    /// Plan answers are kept on disk for a few minutes: repeated searches (and
+    /// the many sliced queries) don't hit the volunteer-run server again, while
+    /// live data stays fresh.
+    async fn plan_text(&self, key: &str, query: &[(&str, String)]) -> Result<String> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.base, key).hash(&mut hasher);
+        let file = self.cache_dir.as_ref().map(|d| d.join(format!("{:016x}.json", hasher.finish())));
+        let fresh = file.as_ref().and_then(|f| {
+            let age = std::fs::metadata(f).ok()?.modified().ok()?.elapsed().ok()?;
+            (age < PLAN_CACHE_TTL).then(|| std::fs::read_to_string(f).ok()).flatten()
+        });
+        if let Some(text) = fresh {
+            return Ok(text);
+        }
+        let text = self.get_text("/api/v5/plan", query).await?;
+        if let Some(file) = &file {
+            if let Some(dir) = file.parent() {
+                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            }
+            std::fs::write(file, &text).with_context(|| format!("writing {}", file.display()))?;
+        }
+        Ok(text)
     }
 }

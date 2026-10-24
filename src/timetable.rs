@@ -259,6 +259,12 @@ pub async fn build(
     let mut corridor: HashMap<usize, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     let mut footpaths: HashMap<(usize, usize), TimeDelta> = HashMap::new();
     for itinerary in itineraries {
+        // Walks at the ends lead from / to the queried place: coordinates
+        // (no stop id) stand for our origin or destination, stops for a hub.
+        let end_station = |stations: &mut Stations, p: &Place, coordinate: usize| match p.stop_id {
+            Some(_) => stations.intern(self::sighting(&resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
+            None => coordinate,
+        };
         let mut previous_end: Option<usize> = None;
         let mut walk = TimeDelta::zero();
         for leg in &itinerary.legs {
@@ -280,7 +286,12 @@ pub async fn build(
                     from_db: false,
                 })
                 .collect();
-            if let Some(from) = previous_end.filter(|&from| from != calls[0].station) {
+            let from = match previous_end {
+                Some(end) => Some(end),
+                None if walk > TimeDelta::zero() => Some(end_station(&mut stations, &itinerary.legs[0].from, origin_idx)),
+                None => None,
+            };
+            if let Some(from) = from.filter(|&from| from != calls[0].station) {
                 let entry = footpaths.entry((from, calls[0].station)).or_insert(walk);
                 *entry = (*entry).min(walk);
             }
@@ -312,7 +323,15 @@ pub async fn build(
                 }
             }
         }
+        if let (Some(from), Some(last)) = (previous_end, itinerary.legs.last().filter(|l| !l.is_transit())) {
+            let to = end_station(&mut stations, &last.to, destination_idx);
+            if from != to {
+                let entry = footpaths.entry((from, to)).or_insert(walk);
+                *entry = (*entry).min(walk);
+            }
+        }
     }
+
     let mut discovered = Vec::new();
     let trips = match db {
         Some(db) => {
