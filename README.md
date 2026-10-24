@@ -88,11 +88,15 @@ from the goal goes up (e.g. København → Malmö on the way to Göteborg).
      destination is allowed: S-Bahn Mannheim → Heidelberg for an ECE that skips
      Mannheim can be worth it. `--forward-only` requires every train to reduce
      the best-case remaining travel time (fewer results, ~8× less search),
-   - no detours: a train is not boarded if the chain already stopped at an
-     earlier station where it could have been caught comfortably — including
-     leaving the origin later on the same train (`--keep-detours` disables).
-     Example: arriving at Hamburg Hbf 11:51, taking the RE7 to Schleswig to
-     board the RJ that left Hamburg Hbf at 12:38 is such a detour.
+   - no pointless detours: a train is not boarded if the chain already stopped
+     at an earlier station where it could have been caught comfortably
+     (≥ `--min-transfer`) with at least the smallest buffer the detour's changes
+     leave — and never after leaving the origin before the same train
+     (`--keep-detours` disables). Arriving at Hamburg Hbf 11:51 and taking the
+     RE7 to Schleswig (11 min change) for the RJ that leaves Hamburg Hbf at
+     12:38 is pruned; arriving 12:36 and taking the S1 to Altona (16 and 18 min
+     changes) instead of a 14 min change to the same RJ stays, as it raises
+     the worst buffer.
 
    One variant per train sequence is kept, the one with the largest minimum
    buffer. If the effort cap (`--max-nodes`) is hit, the output says up to

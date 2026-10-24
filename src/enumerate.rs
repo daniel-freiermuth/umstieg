@@ -213,6 +213,17 @@ impl<'a> Network<'a> {
     }
 }
 
+/// A station the chain stopped at.
+struct Presence {
+    station: usize,
+    /// Arrival; `None` at the origin.
+    arrival: Option<DateTime<Utc>>,
+    /// From when trains there count as catchable (the origin: the chain's first departure).
+    since: DateTime<Utc>,
+    /// Buffer of the change made here, once the next train is chosen.
+    slack_out: Option<TimeDelta>,
+}
+
 struct Search<'a> {
     tt: &'a Timetable,
     limits: &'a Limits,
@@ -227,7 +238,7 @@ struct Search<'a> {
     /// Rides allowed in the current deepening round.
     max_rides: usize,
     /// Stations where the chain stopped, and from when another train could be caught there.
-    presence: Vec<(usize, DateTime<Utc>)>,
+    presence: Vec<Presence>,
     /// Best variant per train sequence.
     found: HashMap<Vec<usize>, Chain>,
     nodes: usize,
@@ -301,7 +312,7 @@ impl Search<'_> {
                     continue;
                 }
                 self.visited[to] = true;
-                self.presence.push((to, arrive + self.limits.min_transfer));
+                self.presence.push(Presence { station: to, arrival: Some(arrive), since: arrive, slack_out: None });
                 self.steps.push(Step::Walk { footpath: self.walks[station][i] });
                 self.explore(to, arrive, Some(deadline), true);
                 self.steps.pop();
@@ -338,14 +349,16 @@ impl Search<'_> {
                     departure + self.max_duration
                 }
             };
-            if !self.limits.keep_detours && self.is_detour(station, &calls[..board]) {
+            if !self.limits.keep_detours && self.is_detour(station, &calls[..board], departure) {
                 continue;
             }
 
             let first = self.rides == 0;
-            if first {
+            match self.presence.last_mut() {
+                // The change made here, for detour comparisons further on.
+                Some(here) if !first => here.slack_out = here.arrival.map(|a| departure - a),
                 // Leaving later on the same train from the origin is never worse.
-                self.presence.push((station, departure));
+                _ => self.presence.push(Presence { station, arrival: None, since: departure, slack_out: None }),
             }
             self.used[trip] = true;
             self.rides += 1;
@@ -367,7 +380,8 @@ impl Search<'_> {
                 let progress =
                     !self.limits.forward_only || self.lower_bound[call.station] < self.lower_bound[station];
                 if !call.cancelled && worth_stopping && progress && self.reachable(call.station, arrival, deadline) {
-                    self.presence.push((call.station, arrival + self.limits.min_transfer));
+                    let at = Presence { station: call.station, arrival: Some(arrival), since: arrival, slack_out: None };
+                    self.presence.push(at);
                     self.steps.push(Step::Ride { trip, board, alight });
                     self.explore(call.station, arrival, Some(deadline), false);
                     self.steps.pop();
@@ -384,6 +398,8 @@ impl Search<'_> {
             self.used[trip] = false;
             if first {
                 self.presence.pop();
+            } else if let Some(here) = self.presence.last_mut() {
+                here.slack_out = None;
             }
             if self.truncated {
                 return;
@@ -391,15 +407,32 @@ impl Search<'_> {
         }
     }
 
-    /// Boarding this train here is a detour if it already called, comfortably
-    /// catchable, at a station the chain stopped at earlier.
-    fn is_detour(&self, station: usize, earlier_calls: &[Call]) -> bool {
-        self.presence.iter().any(|&(at, from)| {
-            at != station
-                && earlier_calls
-                    .iter()
-                    .any(|c| c.station == at && c.departure_time().is_some_and(|d| d >= from))
-        })
+    /// Boarding this train here is a detour if it already called at a station
+    /// the chain stopped at earlier, catchable there comfortably and with at
+    /// least the buffer the detour's changes leave. Detours that raise the
+    /// worst buffer (S1 to Altona instead of a short change at Hamburg Hbf)
+    /// stay. At the origin, any later departure of the train counts.
+    fn is_detour(&self, station: usize, earlier_calls: &[Call], departure: DateTime<Utc>) -> bool {
+        let Some((here, before)) = self.presence.split_last() else { return false };
+        debug_assert_eq!(here.station, station, "the chain stands where it boards");
+        // Worst buffer of the detour from an earlier stop up to boarding here.
+        let mut worst = here.arrival.map_or(TimeDelta::MAX, |a| departure - a);
+        for p in before.iter().rev() {
+            let caught = earlier_calls.iter().find(|c| c.station == p.station).and_then(Call::departure_time);
+            if let Some(d) = caught.filter(|&d| d >= p.since) {
+                match p.arrival {
+                    None => return true,
+                    Some(arrival) => {
+                        let direct = d - arrival;
+                        if direct >= self.limits.min_transfer && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            worst = worst.min(p.slack_out.unwrap_or(TimeDelta::MAX));
+        }
+        false
     }
 
     fn reachable(&self, station: usize, at: DateTime<Utc>, deadline: DateTime<Utc>) -> bool {
