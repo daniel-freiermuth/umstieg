@@ -55,6 +55,10 @@ previews and clicking selects one (the other listed connections then fade to
 labelled and its fallbacks drawn dashed. Hovering a group (first … last train)
 highlights it, clicking hides it.
 
+The mouse wheel zooms around the pointer (`Shift`: time only, `Alt`: height
+only), dragging pans, double-click or "Reset zoom" shows everything again.
+Station labels and time ticks follow the zoom.
+
 `--metric` sets the station height:
 
 | Metric | Height | Equidistant lines |
