@@ -210,12 +210,16 @@ fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * 6_371_000.0 * h.sqrt().asin()
 }
 
+/// `all_stops`: fetch DB boards for every stop of the rough routes' trains,
+/// not only where they start or end. More change points (e.g. RE7 to
+/// Schleswig to catch the RJ there), roughly three times the DB requests.
 pub async fn build(
     motis: &Motis,
     db: Option<&Db>,
     itineraries: &[Itinerary],
     origin: &Stop,
     destination: &Stop,
+    all_stops: bool,
 ) -> Build {
     let mut warnings = Vec::new();
 
@@ -251,7 +255,7 @@ pub async fn build(
 
     // Trains and walks from MOTIS.
     let mut raw: HashMap<String, Trip> = HashMap::new();
-    // Where rail legs start or end, with the time span MOTIS has there.
+    // Stations of rail legs, with the time span MOTIS has there; their DB boards are fetched.
     let mut corridor: HashMap<usize, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     let mut footpaths: HashMap<(usize, usize), TimeDelta> = HashMap::new();
     for itinerary in itineraries {
@@ -283,12 +287,15 @@ pub async fn build(
             previous_end = Some(calls[last].station);
             walk = TimeDelta::zero();
 
-            if leg.class().is_some() {
-                for call in [&calls[0], &calls[last]] {
-                    if let Some(t) = call.planned() {
-                        let range = corridor.entry(call.station).or_insert((t, t));
-                        *range = (range.0.min(t), range.1.max(t));
-                    }
+            let stops: Vec<&Call> = match leg.class() {
+                Some(class) if all_stops && class != 'S' => calls.iter().collect(),
+                Some(_) => vec![&calls[0], &calls[last]],
+                None => Vec::new(),
+            };
+            for call in stops {
+                if let Some(t) = call.planned() {
+                    let range = corridor.entry(call.station).or_insert((t, t));
+                    *range = (range.0.min(t), range.1.max(t));
                 }
             }
 

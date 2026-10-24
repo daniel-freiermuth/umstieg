@@ -29,7 +29,8 @@ change is missed. `umstieg --help` lists all options.
    origin → hub and hub → destination halves for the stations where those
    answers change trains. They pick the corridor.
 2. **Timetable** (DB Timetables API): hourly boards for every station where a
-   rough route boards or leaves a train, plus stations where DB long-distance
+   rough route boards or leaves a train (`--all-stops`: every stop of those
+   trains, about three times the requests), plus stations where DB long-distance
    trains call before the next corridor station (this finds Frankfurt Süd).
    Trains are joined across boards by DB's run id, live changes applied.
    MOTIS trains are merged in by number or identical times; DB wins where it
@@ -44,6 +45,8 @@ change is missed. `umstieg --help` lists all options.
    - no detours: a train is not boarded if the chain already stopped at an
      earlier station where it could have been caught comfortably — including
      leaving the origin later on the same train (`--keep-detours` disables).
+     Example: arriving at Hamburg Hbf 11:51, taking the RE7 to Schleswig to
+     board the RJ that left Hamburg Hbf at 12:38 is such a detour.
 
    One variant per train sequence is kept, the one with the largest minimum
    buffer. If the effort cap (`--max-nodes`) is hit, the output says up to
@@ -70,7 +73,10 @@ DB.
 
 ## Limits
 
-- Connections through stations outside the corridor are not found.
+- Connections through stations outside the corridor are not found. The
+  corridor follows MOTIS's rough routes, which vary with live data; a change
+  point like Schleswig is only covered if a rough route uses it or with
+  `--all-stops`.
 - Minimum transfer times per station are not available from these APIs; one
   global `--min-transfer` is used for flagging.
 - DB boards cover German stations (and a few abroad); elsewhere times come from

@@ -59,6 +59,10 @@ struct Cli {
     /// Don't use DB's station boards even if credentials are configured.
     #[arg(long)]
     no_db: bool,
+    /// Fetch DB boards for every stop of the rough routes' trains, not only where
+    /// they start or end: more change points, ~3× the DB requests on a cold cache.
+    #[arg(long)]
+    all_stops: bool,
     /// MOTIS API base URL.
     #[arg(long, default_value = "https://api.transitous.org")]
     api: String,
@@ -88,7 +92,15 @@ async fn main() -> Result<()> {
 
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: cli.hubs };
     let rough = rough::collect(&motis, &query).await?;
-    let built = timetable::build(&motis, db.as_ref(), &rough.itineraries, &query.origin, &query.destination).await;
+    let built = timetable::build(
+        &motis,
+        db.as_ref(),
+        &rough.itineraries,
+        &query.origin,
+        &query.destination,
+        cli.all_stops,
+    )
+    .await;
     let tt = &built.timetable;
 
     let min_transfer = TimeDelta::minutes(cli.min_transfer);
