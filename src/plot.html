@@ -188,24 +188,35 @@ function stayAt(spans, from, to, time, y, s) {
 // fwd), every connection there arriving by t, up to the station (back), and
 // every one leaving from t on, from the station (fwd). Later departures count
 // too: waiting longer is always possible.
+// Per connection only the earliest cut forward and the latest backward
+// matter. Positions are (piece position, point): a wait at piece j belongs to
+// both halves; a train standing there is cut at the stop (points k-1, k).
 // Returns deduplicated piece slices [piece, first point, last point].
 function reachSegments(items) {
-  const segs = new Map();
-  const add = (pi, k0, k1) => { const key = `${pi}:${k0}:${k1}`; if (!segs.has(key)) segs.set(key, [pi, k0, k1]); };
+  const from = new Map(), upTo = new Map();
+  const before = (a, b) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
   for (const { spans, t, back, fwd } of items) for (const w of spans) {
-    const ps = D.chains[w.chain].pieces;
-    const full = q => add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
-    const [before, after] = [back && w.from <= t, fwd && w.to >= t];
-    if (w.k === undefined) {
-      // Waiting: the wait belongs to both halves.
-      if (before) for (let q = 0; q <= w.j; q++) full(q);
-      if (after) for (let q = w.j; q < ps.length; q++) full(q);
-    } else {
-      // In a train standing there: its ride is cut at the stop.
-      const n = D.pieces[ps[w.j]].pts.length - 1;
-      if (before) { for (let q = 0; q < w.j; q++) full(q); add(ps[w.j], 0, w.k); }
-      if (after) { add(ps[w.j], w.k - 1, n); for (let q = w.j + 1; q < ps.length; q++) full(q); }
+    if (fwd && w.to >= t) {
+      const p = w.k === undefined ? [w.j, 0] : [w.j, w.k - 1], q = from.get(w.chain);
+      if (!q || before(p, q)) from.set(w.chain, p);
     }
+    if (back && w.from <= t) {
+      const n = D.pieces[D.chains[w.chain].pieces[w.j]].pts.length - 1;
+      const p = w.k === undefined ? [w.j, n] : [w.j, w.k], q = upTo.get(w.chain);
+      if (!q || before(q, p)) upTo.set(w.chain, p);
+    }
+  }
+  const segs = new Map();
+  const add = (pi, k0, k1) => { const key = pi * 65536 + k0 * 256 + k1; if (!segs.has(key)) segs.set(key, [pi, k0, k1]); };
+  for (const [chain, [j, k0]] of from) {
+    const ps = D.chains[chain].pieces;
+    add(ps[j], k0, D.pieces[ps[j]].pts.length - 1);
+    for (let q = j + 1; q < ps.length; q++) add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
+  }
+  for (const [chain, [j, k1]] of upTo) {
+    const ps = D.chains[chain].pieces;
+    for (let q = 0; q < j; q++) add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
+    add(ps[j], 0, k1);
   }
   return [...segs.values()];
 }
@@ -259,32 +270,69 @@ function buildModel() {
   for (const w of waits.values()) w.runs = runsOf(w.spans);
   // Hover targets, looked up by index from a single set of event listeners.
   const targets = [];
-  // A train's stops (station, time), for reachability from riding it.
-  const tripStops = new Map();
-  for (const e of edges.values()) {
-    if (!tripStops.has(e.trip)) tripStops.set(e.trip, new Map());
-    for (const [t, , s] of e.pts) tripStops.get(e.trip).set(`${s}:${t}`, [s, t]);
+  // Reachability is transitive over everything plotted: stop-to-stop rides
+  // (also standing at a stop) and walks, so changing between two trains that
+  // no listed connection changes between counts too (alight at Kassel, take
+  // the next train through there).
+  const conns = [...edges.values()].map(e => ({ trip: e.trip, from: e.pts[0][2], dep: e.pts[0][0], to: e.pts[1][2], arr: e.pts[1][0] }));
+  const byDep = [...conns].sort((a, b) => a.dep - b.dep), byArr = [...conns].sort((a, b) => b.arr - a.arr);
+  const foot = new Map(), footBack = new Map();
+  for (const pi of walks.keys()) {
+    const p = D.pieces[pi];
+    if (p.pts.length < 2) continue;
+    const [a, b] = [p.pts[0], p.pts[p.pts.length - 1]];
+    if (!foot.has(a[2])) foot.set(a[2], new Map());
+    if (!footBack.has(b[2])) footBack.set(b[2], new Map());
+    foot.get(a[2]).set(b[2], b[0] - a[0]);
+    footBack.get(b[2]).set(a[2], b[0] - a[0]);
   }
+  // src: { at: [[station, time]], back: [[station, time]], trip, from, until }:
+  // being at stations at times (back: only arrived there by then), or on
+  // `trip` (riding on from departure `from`, having ridden up to arrival
+  // `until`). Earliest arrival forward, latest departure backward.
+  const closure = src => {
+    const ea = new Map(), ld = new Map();
+    const early = (x, t) => {
+      if (ea.get(x) <= t) return;
+      ea.set(x, t);
+      for (const [y, d] of foot.get(x) ?? []) if (!(ea.get(y) <= t + d)) ea.set(y, t + d);
+    };
+    const late = (x, t) => {
+      if (ld.get(x) >= t) return;
+      ld.set(x, t);
+      for (const [y, d] of footBack.get(x) ?? []) if (!(ld.get(y) >= t - d)) ld.set(y, t - d);
+    };
+    for (const [s, t] of src.at) { early(s, t); late(s, t); }
+    for (const [s, t] of src.back ?? []) late(s, t);
+    const boarded = new Map(src.trip === undefined ? [] : [[src.trip, src.from]]);
+    for (const c of byDep) {
+      if ((boarded.has(c.trip) && c.dep >= boarded.get(c.trip)) || ea.get(c.from) <= c.dep) {
+        if (!boarded.has(c.trip)) boarded.set(c.trip, c.dep);
+        early(c.to, c.arr);
+      }
+    }
+    const alighted = new Map(src.trip === undefined ? [] : [[src.trip, src.until]]);
+    for (const c of byArr) {
+      if ((alighted.has(c.trip) && c.arr <= alighted.get(c.trip)) || ld.get(c.to) >= c.arr) {
+        if (!alighted.has(c.trip)) alighted.set(c.trip, c.arr);
+        late(c.from, c.dep);
+      }
+    }
+    const items = [];
+    for (const [x, t] of ea) if (stays.has(x)) items.push({ spans: stays.get(x).spans, t, back: false, fwd: true });
+    for (const [x, t] of ld) if (stays.has(x)) items.push({ spans: stays.get(x).spans, t, back: true, fwd: false });
+    return reachSegments(items);
+  };
   for (const e of edges.values()) {
     if (e.pts[0][2] === e.pts[1][2]) continue;
-    // On this train between two stops: reachable is what could lead onto it
-    // (arriving at an earlier stop by its departure there) and what it leads
-    // to (leaving a later stop from its arrival there on), plus the
-    // connections riding it.
+    // On this train between two stops: reachable is what could lead onto it,
+    // what it leads to, and the connections riding it.
     const [a, b] = e.pts;
     let t = null;
     targets.push({ pts: e.pts, at: () => {
-      if (!t) {
-        const items = [];
-        for (const [s, time] of tripStops.get(e.trip).values()) {
-          const spans = stays.get(s)?.spans;
-          if (!spans) continue;
-          if (time <= a[0]) items.push({ spans, t: time, back: true, fwd: false });
-          if (time >= b[0]) items.push({ spans, t: time, back: false, fwd: true });
-        }
-        t = { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts,
-              reach: { key: `ride:${e.trip}:${a[0]}:${b[0]}`, segments: reachSegments(items), with: e.chains } };
-      }
+      t ??= { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts,
+              reach: { key: `ride:${e.trip}:${a[0]}:${b[0]}`, with: e.chains,
+                       segments: closure({ at: [], back: [[a[2], a[0]]], trip: e.trip, from: a[0], until: a[0] }) } };
       return t;
     } });
   }
@@ -295,10 +343,10 @@ function buildModel() {
       const trains = [...new Set(here.filter(w => w.trip !== undefined).map(w => w.trip))];
       const waiting = new Set(here.filter(w => w.trip === undefined).map(w => w.chain)).size;
       const parts = [waiting ? `${waiting} waiting` : null, ...trains.map(tr => `standing: ${D.trips[tr]}`)].filter(Boolean);
-      // Arriving by t and leaving from t on only change at span ends, so the
+      // What is reachable only changes when t passes a span end here, so the
       // two counts identify the highlight; it is rebuilt only when they change.
       const key = `${s}:${spans.filter(w => w.from <= t).length}:${spans.filter(w => w.to >= t).length}`;
-      if (reach?.key !== key) reach = { key, segments: reachSegments([{ spans, t, back: true, fwd: true }]) };
+      if (reach?.key !== key) reach = { key, segments: closure({ at: [[s, t]] }) };
       return {
         info: `at ${D.names[s]} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
         trip: trains.length === 1 && !waiting ? trains[0] : undefined,
