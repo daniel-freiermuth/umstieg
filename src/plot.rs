@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use clap::ValueEnum;
 use serde::Serialize;
 
-use crate::enumerate::{Chain, Group, Network, Step};
+use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::Fallbacks;
 use crate::text;
 use crate::timetable::{Timetable, meters};
@@ -25,6 +25,10 @@ pub enum Metric {
     /// Fastest possible remaining ride time, ignoring waits (minutes). Stations
     /// keep one height, riding never runs flat unless moving away from the goal.
     RemainingTime,
+    /// Duration of the fastest real journey from there, waits included, at any
+    /// departure time in the timetable (minutes). Each height is a connection
+    /// one can look up; riding can run flat or rise where connections are poor.
+    FastestReal,
     /// (distance to goal − distance from start + D) / 2 (km): hyperbolas with
     /// start and goal as foci.
     Hyperbolic,
@@ -38,7 +42,7 @@ pub enum Metric {
 impl Metric {
     fn unit(self) -> &'static str {
         match self {
-            Metric::RemainingTime => "min",
+            Metric::RemainingTime | Metric::FastestReal => "min",
             Metric::Hyperbolic | Metric::Axis => "km",
             Metric::Ratio => "%",
         }
@@ -47,6 +51,7 @@ impl Metric {
     fn description(self) -> &'static str {
         match self {
             Metric::RemainingTime => "fastest possible remaining ride time",
+            Metric::FastestReal => "fastest real remaining journey, any departure",
             Metric::Hyperbolic => "(distance to goal − distance from start + D) / 2",
             Metric::Axis => "distance left along the start–goal axis",
             Metric::Ratio => "distance to goal / (distance from start + distance to goal)",
@@ -58,8 +63,11 @@ impl Metric {
 /// the goal is unreachable from there).
 fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
     let tt = net.tt;
-    if metric == Metric::RemainingTime {
-        return Ok(net.lower_bound.iter().map(|lb| lb.map(|d| d.num_seconds() as f64 / 60.0)).collect());
+    let minutes = |d: &Option<TimeDelta>| d.map(|d| d.num_seconds() as f64 / 60.0);
+    match metric {
+        Metric::RemainingTime => return Ok(net.lower_bound.iter().map(minutes).collect()),
+        Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt).iter().map(minutes).collect()),
+        _ => {}
     }
     let (Some(start), Some(goal)) = (tt.stations[tt.origin].position, tt.stations[tt.destination].position) else {
         bail!("--metric {metric:?} needs coordinates of origin and destination");
@@ -73,7 +81,7 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
             let p = s.position?;
             let (a, b) = (km(p, start), km(p, goal));
             Some(match metric {
-                Metric::RemainingTime => unreachable!("handled above"),
+                Metric::RemainingTime | Metric::FastestReal => unreachable!("handled above"),
                 Metric::Hyperbolic => (b - a + total) / 2.0,
                 Metric::Axis => total - (total * total + a * a - b * b) / (2.0 * total),
                 Metric::Ratio => 100.0 * b / (a + b).max(f64::EPSILON),

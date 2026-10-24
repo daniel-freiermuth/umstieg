@@ -63,7 +63,8 @@ Station labels and time ticks follow the zoom.
 
 | Metric | Height | Equidistant lines |
 |---|---|---|
-| `remaining-time` (default) | fastest possible remaining ride time, ignoring waits | network-based; riding is never flat, at most 45°, exactly 45° on the fastest train |
+| `remaining-time` (default) | fastest possible remaining ride time, ignoring waits: fastest planned ride per stretch, from any train at any time | network-based; riding is never flat, at most 45°, exactly 45° on the fastest train; no single connection explains a height |
+| `fastest-real` | duration of the fastest real journey from there, waits included, at any departure in the timetable | each height is a connection one can look up; riding can run flat or rise where connections are poor |
 | `hyperbolic` | (d_goal − d_start + D) / 2 | hyperbolas, start and goal as foci |
 | `axis` | distance left along the start–goal axis (from d_start² − d_goal²) | straight lines perpendicular to the axis |
 | `ratio` | d_goal / (d_start + d_goal) | Apollonius circles |

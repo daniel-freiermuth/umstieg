@@ -187,6 +187,87 @@ fn lower_bounds(tt: &Timetable) -> Vec<Option<TimeDelta>> {
     best
 }
 
+/// Duration of the fastest real journey from each station to the destination,
+/// waits and walks included, over all departures in the timetable (profile
+/// connection scan). Any change time is allowed, as in the enumeration.
+pub fn fastest_journeys(tt: &Timetable) -> Vec<Option<TimeDelta>> {
+    struct Ride {
+        from: usize,
+        to: usize,
+        departure: DateTime<Utc>,
+        arrival: DateTime<Utc>,
+        trip: usize,
+    }
+    let n = tt.stations.len();
+    let mut rides = Vec::new();
+    for (trip, t) in tt.trips.iter().enumerate() {
+        let mut previous: Option<(usize, DateTime<Utc>)> = None;
+        for call in t.calls.iter().filter(|c| !c.cancelled) {
+            if let (Some((from, departure)), Some(arrival)) = (previous, call.arrival_time()) {
+                rides.push(Ride { from, to: call.station, departure, arrival, trip });
+            }
+            previous = call.departure_time().map(|d| (call.station, d));
+        }
+    }
+    // Latest first; a trip's later ride before its earlier one at equal times.
+    rides.sort_by_key(|r| Reverse((r.departure, r.arrival)));
+    let mut walks: Vec<Vec<(usize, TimeDelta)>> = vec![Vec::new(); n];
+    for fp in &tt.footpaths {
+        walks[fp.from].push((fp.to, fp.duration));
+    }
+
+    // Per station, (departure, arrival at goal) with both falling: the earliest
+    // arrival departing at or after t is the last entry departing at or after t.
+    let mut profiles: Vec<Vec<(DateTime<Utc>, DateTime<Utc>)>> = vec![Vec::new(); n];
+    let reach = |profiles: &[Vec<(DateTime<Utc>, DateTime<Utc>)>], station: usize, t: DateTime<Utc>| {
+        let p = &profiles[station];
+        let k = p.partition_point(|&(d, _)| d >= t);
+        (k > 0).then(|| p[k - 1].1)
+    };
+    let mut on_trip: Vec<Option<DateTime<Utc>>> = vec![None; tt.trips.len()];
+    let mut best: Vec<Option<TimeDelta>> = vec![None; n];
+    best[tt.destination] = Some(TimeDelta::zero());
+    for r in &rides {
+        let mut goal = on_trip[r.trip];
+        let mut consider = |t: Option<DateTime<Utc>>| {
+            if let Some(t) = t {
+                goal = Some(goal.map_or(t, |g: DateTime<Utc>| g.min(t)));
+            }
+        };
+        if r.to == tt.destination {
+            consider(Some(r.arrival));
+        }
+        consider(reach(&profiles, r.to, r.arrival));
+        for &(next, walk) in &walks[r.to] {
+            if next == tt.destination {
+                consider(Some(r.arrival + walk));
+            }
+            consider(reach(&profiles, next, r.arrival + walk));
+        }
+        let Some(goal) = goal else { continue };
+        on_trip[r.trip] = Some(goal);
+        let p = &mut profiles[r.from];
+        match p.last_mut() {
+            Some(last) if last.1 <= goal => continue,
+            Some(last) if last.0 == r.departure => last.1 = goal,
+            _ => p.push((r.departure, goal)),
+        }
+        let duration = goal - r.departure;
+        if best[r.from].is_none_or(|b| duration < b) {
+            best[r.from] = Some(duration);
+        }
+    }
+    // Walking to a station and leaving from there.
+    for fp in &tt.footpaths {
+        if let Some(after) = best[fp.to].map(|b| b + fp.duration)
+            && best[fp.from].is_none_or(|b| after < b)
+        {
+            best[fp.from] = Some(after);
+        }
+    }
+    best
+}
+
 /// Per-timetable indexes shared by all searches on it (main and fallbacks).
 pub struct Network<'a> {
     pub tt: &'a Timetable,
