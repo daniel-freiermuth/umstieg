@@ -9,6 +9,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
+use crate::db::fold;
+
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
 /// Attempts per request when the server answers 429 Too Many Requests.
@@ -191,16 +193,37 @@ impl Motis {
         unreachable!("loop returns or bails")
     }
 
-    /// Resolve free text to the best-matching stop.
+    /// Resolve free text to a stop whose name contains every place word of the
+    /// text. The geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
+    /// "Hauptbahnhof"), so station words are also tried spelled differently,
+    /// and stations are preferred over bus stops.
     pub async fn stop(&self, text: &str) -> Result<Stop> {
-        let matches: Vec<GeocodeMatch> = self
-            .get("/api/v1/geocode", &[("text", text.to_owned()), ("type", "STOP".to_owned())])
-            .await?;
-        matches
-            .into_iter()
-            .find(|m| m.kind == "STOP")
-            .map(|m| Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name })
-            .with_context(|| format!("no stop found for {text:?}"))
+        const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
+        let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
+        let folded = fold(text);
+        let place: Vec<&str> = folded.split(' ').filter(|w| !STATION_WORDS.contains(w)).collect();
+        // Queries keep the original spelling: the geocoder doesn't know "duerkheim".
+        let bare = text.split_whitespace().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
+        let queries = [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
+        for query in &queries {
+            let matches: Vec<GeocodeMatch> = self
+                .get("/api/v1/geocode", &[("text", query.clone()), ("type", "STOP".to_owned())])
+                .await?;
+            let mut fitting: Vec<GeocodeMatch> = matches
+                .into_iter()
+                .filter(|m| m.kind == "STOP")
+                .filter(|m| {
+                    let name = fold(&m.name);
+                    place.iter().all(|w| name.split(' ').any(|n| n == *w))
+                })
+                .collect();
+            // Keep the geocoder's order, but stations first.
+            fitting.sort_by_key(|m| !fold(&m.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c"));
+            if let Some(m) = fitting.into_iter().next() {
+                return Ok(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name });
+            }
+        }
+        bail!("no stop named like {text:?} found (tried: {})", queries.join(", "))
     }
 
     /// Pareto-optimal itineraries departing within `[time, time + window]`.

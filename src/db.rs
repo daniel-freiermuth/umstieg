@@ -418,7 +418,7 @@ fn station_patterns(name: &str, stop_id: Option<&str>) -> Vec<String> {
     if let Some(eva) = stop_id.and_then(embedded_eva) {
         patterns.push(eva);
     }
-    let db_style = name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf");
+    let db_style = name.replace(", Hauptbahnhof", " Hbf").replace(" Hauptbahnhof", " Hbf").replace(", Bahnhof", "");
     let db_style = db_style.replace(" (", "(").replace(") ", ")");
     let db_style = db_style.replace("Südbahnhof", "Süd");
     let db_style = db_style.strip_suffix(" Bahnhof").unwrap_or(&db_style).to_owned();
