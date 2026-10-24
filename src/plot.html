@@ -184,17 +184,18 @@ function stayAt(spans, from, to, time, y, s) {
   const here = spans.filter(w => w.from <= t && t <= w.to);
   return { t, here, pts: [[from, y, s], [to, y, s]] };
 }
-// Reachability from being at a station at time t: every connection there
-// arriving by t, up to the station, and every one leaving from t on, from the
-// station. Later departures count too: waiting longer is always possible.
+// Reachability through station-times: for each (spans at a station, t, back,
+// fwd), every connection there arriving by t, up to the station (back), and
+// every one leaving from t on, from the station (fwd). Later departures count
+// too: waiting longer is always possible.
 // Returns deduplicated piece slices [piece, first point, last point].
-function reachSegments(spans, t) {
+function reachSegments(items) {
   const segs = new Map();
   const add = (pi, k0, k1) => { const key = `${pi}:${k0}:${k1}`; if (!segs.has(key)) segs.set(key, [pi, k0, k1]); };
-  for (const w of spans) {
+  for (const { spans, t, back, fwd } of items) for (const w of spans) {
     const ps = D.chains[w.chain].pieces;
     const full = q => add(ps[q], 0, D.pieces[ps[q]].pts.length - 1);
-    const [before, after] = [w.from <= t, w.to >= t];
+    const [before, after] = [back && w.from <= t, fwd && w.to >= t];
     if (w.k === undefined) {
       // Waiting: the wait belongs to both halves.
       if (before) for (let q = 0; q <= w.j; q++) full(q);
@@ -258,10 +259,34 @@ function buildModel() {
   for (const w of waits.values()) w.runs = runsOf(w.spans);
   // Hover targets, looked up by index from a single set of event listeners.
   const targets = [];
+  // A train's stops (station, time), for reachability from riding it.
+  const tripStops = new Map();
+  for (const e of edges.values()) {
+    if (!tripStops.has(e.trip)) tripStops.set(e.trip, new Map());
+    for (const [t, , s] of e.pts) tripStops.get(e.trip).set(`${s}:${t}`, [s, t]);
+  }
   for (const e of edges.values()) {
     if (e.pts[0][2] === e.pts[1][2]) continue;
-    const t = { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts };
-    targets.push({ pts: e.pts, at: () => t });
+    // On this train between two stops: reachable is what could lead onto it
+    // (arriving at an earlier stop by its departure there) and what it leads
+    // to (leaving a later stop from its arrival there on), plus the
+    // connections riding it.
+    const [a, b] = e.pts;
+    let t = null;
+    targets.push({ pts: e.pts, at: () => {
+      if (!t) {
+        const items = [];
+        for (const [s, time] of tripStops.get(e.trip).values()) {
+          const spans = stays.get(s)?.spans;
+          if (!spans) continue;
+          if (time <= a[0]) items.push({ spans, t: time, back: true, fwd: false });
+          if (time >= b[0]) items.push({ spans, t: time, back: false, fwd: true });
+        }
+        t = { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts,
+              reach: { key: `ride:${e.trip}:${a[0]}:${b[0]}`, segments: reachSegments(items), with: e.chains } };
+      }
+      return t;
+    } });
   }
   for (const [s, { y, spans }] of stays) {
     let reach = null;
@@ -273,7 +298,7 @@ function buildModel() {
       // Arriving by t and leaving from t on only change at span ends, so the
       // two counts identify the highlight; it is rebuilt only when they change.
       const key = `${s}:${spans.filter(w => w.from <= t).length}:${spans.filter(w => w.to >= t).length}`;
-      if (reach?.key !== key) reach = { key, segments: reachSegments(spans, t) };
+      if (reach?.key !== key) reach = { key, segments: reachSegments([{ spans, t, back: true, fwd: true }]) };
       return {
         info: `at ${D.names[s]} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
         trip: trains.length === 1 && !waiting ? trains[0] : undefined,
@@ -493,6 +518,7 @@ function refresh() {
   // other hovered lines highlight their connections.
   const reach = hoverTarget?.reach ?? null;
   if (hoverTarget && !reach) hoverTarget.chains.forEach(i => soft.add(i));
+  if (reach?.with) reach.with.forEach(i => soft.add(i));
   if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup && !hidden.has(c.group)) soft.add(i); });
   if (candidates) candidates.chains.forEach(i => (strong.length ? faded : soft).add(i));
   svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);

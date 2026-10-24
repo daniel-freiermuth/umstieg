@@ -43,13 +43,14 @@ connections), waiting as a thin horizontal line (merged per continuous stay;
 red below `--min-transfer`), walking dotted. Later departures of the same route
 run parallel, faster trains are steeper and overtake slower ones.
 
-Hovering only previews: it highlights every connection passing the point under
-the mouse and lists them by group. On a ride that is every connection on that
-train between those two stops, wherever it boards or leaves. On a flat line at
-a station (waiting, or in a train standing there; one target per continuous
-stay, nothing stacks) it shows what is reachable from being there at that time:
-every connection arriving by then, up to the station, and every one leaving
-from then on, from the station, later departures included. Clicking selects: if one
+Hovering only previews: it highlights what is reachable through the point under
+the mouse and lists the connections there by group. On a flat line at a station
+(waiting, or in a train standing there; one target per continuous stay, nothing
+stacks) that is every connection arriving by then, up to the station, and every
+one leaving from then on, from the station, later departures included. On a
+ride it is every connection on that train between those two stops, plus what
+could lead onto the train (arriving at an earlier stop by its departure there)
+and what it leads to (leaving a later stop from its arrival there on). Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
 previews and clicking selects one (the other listed connections then fade to
