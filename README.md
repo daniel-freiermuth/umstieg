@@ -54,14 +54,16 @@ and what it leads to (leaving a later stop from its arrival there on).
 Reachability is transitive over everything plotted, so changes no listed
 connection makes count too (ICE 774 to Kassel, then ICE 772). Station names on
 the axis work the same way: hovering shows every connection touching the
-station and what is reachable through it at any time, clicking lists them.
-Clicking selects: if one
-connection passes there it is selected, otherwise (e.g. 63 connections on ICE
-378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
-previews and clicking selects one. The clicked point's reachability stays
-highlighted; it and the other listed connections fade to 30 % once one is
-selected or previewed;
-`↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
+station and what is reachable through it at any time.
+
+Clicking a line or station name picks it: picks are shown at the top of the side
+panel, and clicking a pick (or its line again) removes it. The connections
+passing every pick are listed below (e.g. 63 on ICE 378 Mannheim → Frankfurt
+Süd; narrowed further by also picking Ludwigshafen Mitte); if one is left it is
+selected. Hovering a listed connection previews it, clicking selects it. The
+highlight is what is reachable through every pick; it and the other listed
+connections fade to 30 % once one is selected or previewed.
+`↑`/`↓` step through the list, `Esc` or clicking the background clears. The selection gets its changes
 labelled and its fallbacks drawn dashed in train colours, starting with a
 dotted wait from the missed departure; hovering a fallback stretch names it and
 every fallback using it. Hovering a group (first … last train) highlights it, clicking

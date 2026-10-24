@@ -33,6 +33,11 @@
   .count { margin-left: auto; color: var(--muted); }
   #details { white-space: pre-wrap; font-size: 12px; }
   #details .fb { color: var(--accent); }
+  .pick { display: flex; gap: 6px; align-items: baseline; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px;
+          background: var(--grid); font-size: 12px; cursor: pointer; }
+  .pick .x { margin-left: auto; color: var(--muted); }
+  .pick:hover .x { color: var(--warn); }
+  .pick-hint { color: var(--muted); font-size: 11px; margin: 2px 0 4px; }
   #tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--grid);
          border-radius: 6px; padding: 6px 8px; max-width: 560px; font-size: 12px; display: none;
          box-shadow: 0 2px 8px rgba(0,0,0,.15); }
@@ -77,6 +82,7 @@
   <button id="reset" title="Or double-click the plot">Reset zoom</button></div></header>
 <div id="plot"><div id="tip"></div></div>
 <aside>
+  <div id="picks"></div>
   <h2 id="panel-title">Selection</h2>
   <div id="details"></div>
   <h2>First … last train (hover to highlight, click to hide)</h2>
@@ -91,16 +97,18 @@ const plotEl = document.getElementById("plot");
 const tip = document.getElementById("tip");
 const details = document.getElementById("details");
 const panelTitle = document.getElementById("panel-title");
+const picksEl = document.getElementById("picks");
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: D.tz });
 // One colour per train, so a train can be followed across all connections.
 const trainColor = t => `hsl(${(t * 137.508) % 360}, 70%, 45%)`;
-const HINT = "Hover a line to see which connections use it. Click it to select: a line used by one connection " +
-  "selects that connection, a shared line lists all connections using it.";
+const HINT = "Hover a line or station name to see what is reachable through it. Click it to pick it: the connections " +
+  "passing it are listed (one alone is selected). Click more to narrow down, a pick again to remove it.";
 
 // Interaction state. Selection only changes on click; hovering only previews.
 const hidden = new Set();   // hidden groups
 let pinned = null;          // selected connection
-let candidates = null;      // connections using the clicked line: { piece, chains }
+let picks = [];             // clicked lines/stations narrowing the list: { id, info, chains, reach }
+let candidates = null;      // connections passing every pick: { info, chains, reach }
 let hoverTarget = null;     // line under the mouse: { info, chains, pts }
 let preview = null;         // connection hovered in the candidate list
 let softGroup = null;       // group hovered in the group list
@@ -339,7 +347,7 @@ function buildModel() {
     const [a, b] = e.pts;
     let t = null;
     targets.push({ pts: e.pts, at: () => {
-      t ??= { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts,
+      t ??= { id: `ride:${e.trip}:${a[0]}:${b[0]}`, info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts,
               reach: { key: `ride:${e.trip}:${a[0]}:${b[0]}`, with: e.chains,
                        segments: closure({ at: [], back: [[a[2], a[0]]], trip: e.trip, from: a[0], until: a[0] }) } };
       return t;
@@ -357,6 +365,7 @@ function buildModel() {
       const key = `${s}:${spans.filter(w => w.from <= t).length}:${spans.filter(w => w.to >= t).length}`;
       if (reach?.key !== key) reach = { key, segments: closure({ at: [[s, t]] }) };
       return {
+        id: `stay:${s}:${from}`,
         info: `at ${D.names[s]} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
         trip: trains.length === 1 && !waiting ? trains[0] : undefined,
         chains: [...new Set(here.map(w => w.chain))],
@@ -366,7 +375,7 @@ function buildModel() {
     } });
   }
   for (const [pi, chains] of walks) {
-    const t = { info: D.pieces[pi].info, chains: [...chains], pts: D.pieces[pi].pts };
+    const t = { id: `walk:${pi}`, info: D.pieces[pi].info, chains: [...chains], pts: D.pieces[pi].pts };
     targets.push({ pts: t.pts, at: () => t });
   }
   // A station on the axis: every connection touching it, and what is
@@ -385,7 +394,7 @@ function buildModel() {
       const chains = touching.get(s) ?? new Set();
       const h = D.metrics[metricIndex].heights[s];
       stationTargets.set(s, {
-        info: `${D.names[s]} · any time`, chains: [...chains], pts: [[full.t0, h, s], [full.t1, h, s]],
+        id: `station:${s}`, info: `${D.names[s]} · any time`, chains: [...chains], pts: [[full.t0, h, s], [full.t1, h, s]],
         reach: { key: `station:${s}`, with: chains,
                  segments: closure({ at: [], fwd: [[s, -Infinity]], back: [[s, Infinity]] }) },
       });
@@ -509,7 +518,7 @@ function render() {
   // Clicking a fallback keeps the selection it belongs to.
   fbLayer.addEventListener("click", e => e.stopPropagation());
   const labels = el("g", { class: "change-labels", "clip-path": "url(#area)" }, svg);
-  svg.addEventListener("click", () => { if (dragged) return; pinned = null; candidates = null; refresh(); });
+  svg.addEventListener("click", () => { if (dragged) return; clearPicks(); refresh(); });
 
   view = { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels, overlayKey: null };
   refresh();
@@ -583,16 +592,34 @@ plotEl.addEventListener("dblclick", () => { dom = { ...full }; scheduleRender();
 document.getElementById("reset").addEventListener("click", () => { dom = { ...full }; scheduleRender(); });
 
 
-// Clicking a line: one connection selects it, several are listed to choose from.
+// Clicking a line or station picks it; clicking it again unpicks it. Several
+// picks narrow down: the listed connections pass all of them, the highlight is
+// what is reachable through each. One connection left is selected directly.
 function choose(target) {
-  if (!target.chains.length) return;
-  // The clicked point's reachability stays highlighted with its list, also
-  // when only one connection passes there.
-  candidates = target.chains.length > 1 || target.reach
-    ? { info: target.info, chains: target.chains, reach: target.reach ?? null } : null;
-  pinned = target.chains.length === 1 ? target.chains[0] : target.chains.includes(pinned) ? pinned : null;
+  const k = picks.findIndex(p => p.id === target.id);
+  if (k >= 0) picks.splice(k, 1);
+  else picks.push({ id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
+  applyPicks();
   refresh();
 }
+function applyPicks() {
+  if (!picks.length) { candidates = null; pinned = null; return; }
+  let chains = picks[0].chains.filter(i => !hidden.has(D.chains[i].group));
+  for (const p of picks.slice(1)) { const s = new Set(p.chains); chains = chains.filter(i => s.has(i)); }
+  // Reachable through every pick: pieces all their highlights share, drawn
+  // as the latest pick cuts them.
+  const reaches = picks.map(p => p.reach).filter(Boolean);
+  let reach = null;
+  if (reaches.length) {
+    const last = reaches[reaches.length - 1];
+    const sets = reaches.slice(0, -1).map(r => new Set(r.segments.map(s => s[0])));
+    reach = { key: picks.map(p => p.reach?.key ?? p.id).join("|"),
+              segments: last.segments.filter(s => sets.every(set => set.has(s[0]))) };
+  }
+  candidates = { info: picks.map(p => p.info).join(" + "), chains, reach };
+  pinned = chains.length === 1 ? chains[0] : chains.includes(pinned) ? pinned : null;
+}
+function clearPicks() { picks = []; candidates = null; pinned = null; preview = null; }
 
 function refresh() {
   if (!view) return;
@@ -729,14 +756,30 @@ function moveTip(e) {
 
 let panelKey = null; // avoid rebuilding the panel (and losing its hover) on every mouse move
 function renderPanel() {
-  const key = JSON.stringify([pinned, candidates && candidates.info, candidates && candidates.chains.length]);
+  const key = JSON.stringify([pinned, picks.map(p => p.id), candidates && candidates.chains.length]);
   if (key === panelKey) return;
   panelKey = key;
+  // The picks, each unpicked by clicking it (or its line again).
+  picksEl.replaceChildren();
+  for (const p of picks) {
+    const row = document.createElement("div");
+    row.className = "pick";
+    row.title = "Click to remove";
+    row.innerHTML = `<span>${esc(p.info)}</span><span class="x">×</span>`;
+    row.addEventListener("click", () => { choose(p); });
+    picksEl.appendChild(row);
+  }
+  if (picks.length) {
+    const hint = document.createElement("div");
+    hint.className = "pick-hint";
+    hint.textContent = "Click more lines or stations to narrow down; Esc clears.";
+    picksEl.appendChild(hint);
+  }
   if (pinned !== null) {
     panelTitle.textContent = "Selected connection";
     const c = D.chains[pinned];
-    let html = candidates
-      ? `<span class="back" id="back">← ${candidates.chains.length} connections using ${esc(candidates.info)}</span>`
+    let html = candidates && candidates.chains.length > 1
+      ? `<span class="back" id="back">← all ${candidates.chains.length} connections</span>`
       : "";
     html += `<b>${esc(c.header)}</b>\n${esc(c.route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
     let at = null;
@@ -747,7 +790,9 @@ function renderPanel() {
     details.innerHTML = html;
     document.getElementById("back")?.addEventListener("click", () => { pinned = null; refresh(); });
   } else if (candidates) {
-    panelTitle.textContent = `${candidates.chains.length} connections use ${candidates.info}`;
+    panelTitle.textContent = picks.length > 1
+      ? `${candidates.chains.length} connections pass all ${picks.length}`
+      : `${candidates.chains.length} connections use it`;
     details.replaceChildren();
     for (const i of candidates.chains) {
       const c = D.chains[i];
@@ -766,7 +811,7 @@ function renderPanel() {
 }
 
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") { pinned = null; candidates = null; preview = null; refresh(); return; }
+  if (e.key === "Escape") { clearPicks(); refresh(); return; }
   if (!candidates || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
   e.preventDefault();
   const list = candidates.chains;
@@ -788,10 +833,7 @@ D.groups.forEach((g, i) => {
     row.classList.toggle("off", hidden.has(i));
     softGroup = null;
     if (pinned !== null && D.chains[pinned].group === i) pinned = null;
-    if (candidates) {
-      candidates.chains = candidates.chains.filter(c => !hidden.has(D.chains[c].group));
-      if (!candidates.chains.length) candidates = null;
-    }
+    applyPicks();
     panelKey = null;
     buildModel();
     render();
