@@ -21,6 +21,9 @@ const MAX_HOURS_PER_STATION: usize = 10;
 const MAX_DISCOVERED: usize = 20;
 /// Stops of different feeds closer than this are one station.
 const SAME_STATION_METERS: f64 = 300.0;
+/// Walking speed and minimum walk between nearby stations without MOTIS footpath.
+const WALK_METERS_PER_SECOND: f64 = 1.0;
+const MIN_WALK: TimeDelta = TimeDelta::minutes(5);
 /// DB boards cover German stations; elsewhere they are empty.
 const DB_TIME_ZONE: &str = "Europe/Berlin";
 
@@ -134,7 +137,9 @@ struct Stations {
 }
 
 impl Stations {
-    /// One index per physical station, unified by EVA number, folded name or proximity.
+    /// One index per physical station, unified by EVA number, folded name or
+    /// proximity. Nearby stations with different EVA numbers stay separate
+    /// (S-Bahn vs. long-distance station) and get a footpath instead.
     fn intern(&mut self, s: Sighting<'_>) -> usize {
         let name_key = format!("name:{}", db::fold(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
@@ -145,9 +150,10 @@ impl Stations {
             .copied()
             .or_else(|| {
                 let here = s.position?;
-                self.list
-                    .iter()
-                    .position(|st| st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS))
+                self.list.iter().position(|st| {
+                    let compatible = st.eva.is_none() || s.eva.is_none();
+                    compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
+                })
             });
         let idx = found.unwrap_or_else(|| {
             self.list.push(Station {
@@ -300,12 +306,6 @@ pub async fn build(
             }
         }
     }
-    let mut footpaths: Vec<Footpath> = footpaths
-        .into_iter()
-        .map(|((from, to), duration)| Footpath { from, to, duration })
-        .collect();
-    footpaths.sort_by_key(|f| (f.from, f.to));
-
     let mut discovered = Vec::new();
     let trips = match db {
         Some(db) => {
@@ -319,9 +319,27 @@ pub async fn build(
         .filter(|t| t.calls.len() >= 2)
         .map(|mut t| {
             t.calls.sort_by_key(Call::planned);
+            propagate_delays(&mut t.calls);
             t
         })
         .collect();
+
+    // Nearby stations kept apart (different EVA numbers) are a short walk apart.
+    for (a, sa) in stations.list.iter().enumerate() {
+        for (b, sb) in stations.list.iter().enumerate().filter(|&(b, _)| b != a) {
+            let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
+            let distance = meters(pa, pb);
+            if distance <= SAME_STATION_METERS {
+                let walk = TimeDelta::seconds((distance / WALK_METERS_PER_SECOND) as i64).max(MIN_WALK);
+                footpaths.entry((a, b)).or_insert(walk);
+            }
+        }
+    }
+    let mut footpaths: Vec<Footpath> = footpaths
+        .into_iter()
+        .map(|((from, to), duration)| Footpath { from, to, duration })
+        .collect();
+    footpaths.sort_by_key(|f| (f.from, f.to));
 
     Build {
         timetable: Timetable {
@@ -333,6 +351,28 @@ pub async fn build(
         },
         discovered,
         warnings,
+    }
+}
+
+/// MOTIS stops merged into a DB train often lack live data while DB's stops
+/// have it; carry the last known delay forward so a delayed train doesn't
+/// arrive at the next stop before it left the previous one.
+fn propagate_delays(calls: &mut [Call]) {
+    let mut delay = TimeDelta::zero();
+    let mut previous: Option<DateTime<Utc>> = None;
+    for call in calls {
+        let from_db = call.from_db;
+        for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
+            if from_db || time.actual != time.planned {
+                delay = time.delay();
+            } else {
+                time.actual = time.planned + delay.max(TimeDelta::zero());
+            }
+            if let Some(previous) = previous.filter(|&p| time.actual < p) {
+                time.actual = previous;
+            }
+            previous = Some(time.actual);
+        }
     }
 }
 

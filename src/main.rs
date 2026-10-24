@@ -53,8 +53,8 @@ struct Cli {
     /// Also list connections that change to a train they could have boarded at an earlier stop.
     #[arg(long)]
     keep_detours: bool,
-    /// Search effort cap (explored states).
-    #[arg(long, default_value_t = 5_000_000)]
+    /// Search effort cap (explored states; ~1 s per million).
+    #[arg(long, default_value_t = 20_000_000)]
     max_nodes: usize,
     /// Don't use DB's station boards even if credentials are configured.
     #[arg(long)]

@@ -381,6 +381,10 @@ fn parse_station_cache(text: &str) -> HashMap<String, Option<Station>> {
         .filter_map(|line| {
             let mut fields = line.split('\t');
             let (name, eva, db_name) = (fields.next()?, fields.next()?, fields.next()?);
+            // Entries from before the rail filter may name bus stops: look those up again.
+            if !eva.is_empty() && !is_rail_eva(eva) {
+                return None;
+            }
             let station = (!eva.is_empty()).then(|| Station { eva: eva.to_owned(), name: db_name.to_owned() });
             Some((name.to_owned(), station))
         })
@@ -469,6 +473,12 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
+/// Rail stations have 7-digit UIC/EVA numbers (80xxxxx in Germany, 8yxxxxx
+/// abroad); the station search also returns bus stops with other numbers.
+fn is_rail_eva(eva: &str) -> bool {
+    eva.len() == 7 && eva.starts_with('8') && eva.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn parse_stations(xml: &str) -> Result<Vec<Station>> {
     let doc = roxmltree::Document::parse(xml).context("parsing station XML")?;
     Ok(doc
@@ -480,6 +490,7 @@ fn parse_stations(xml: &str) -> Result<Vec<Station>> {
                 name: n.attribute("name")?.to_owned(),
             })
         })
+        .filter(|s| is_rail_eva(&s.eva))
         .collect())
 }
 

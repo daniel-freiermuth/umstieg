@@ -11,6 +11,8 @@ use crate::motis::{Itinerary, Leg, Motis, Stop};
 
 /// How far past the latest hub arrival we look for onward connections.
 const ONWARD_WINDOW: TimeDelta = TimeDelta::hours(3);
+/// How far before MOTIS's earliest hub arrival onward connections are collected.
+const EARLIER_ONWARD: TimeDelta = TimeDelta::hours(2);
 
 pub struct Query {
     pub origin: Stop,
@@ -90,8 +92,12 @@ async fn via_hub(motis: &Motis, q: &Query, hub: &Stop) -> Result<Vec<Itinerary>>
     let (Some(lo), Some(hi)) = (arrivals.clone().min(), arrivals.max()) else {
         return Ok(first);
     };
+    // MOTIS's own arrivals at the hub can be later than what the DB-corrected
+    // timetable reaches (a delay making its best change infeasible, a stop it
+    // doesn't know), so onward trains are collected from before them as well.
+    let from = (lo - EARLIER_ONWARD).max(q.time);
     let second = motis
-        .plan(&hub.id, &q.destination.id, lo, hi - lo + ONWARD_WINDOW)
+        .plan(&hub.id, &q.destination.id, from, hi - from + ONWARD_WINDOW)
         .await?;
     first.extend(second);
     Ok(first)
