@@ -8,6 +8,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use crate::timetable::{Call, Timetable};
 
 pub struct Limits {
+    /// Where connections start: the trip's origin, or a change station for fallbacks.
+    pub origin: usize,
     pub depart_from: DateTime<Utc>,
     pub depart_until: DateTime<Utc>,
     /// Changes allowed per connection.
@@ -215,11 +217,11 @@ pub fn enumerate(tt: &Timetable, limits: &Limits) -> Enumeration {
         walks[fp.from].push(i);
     }
 
-    let fastest = departures[tt.origin]
+    let fastest = departures[limits.origin]
         .iter()
         .filter_map(|&(t, c)| tt.trips[t].calls[c].departure_time())
         .filter(|d| (limits.depart_from..=limits.depart_until).contains(d))
-        .filter_map(|d| Some(earliest_arrival(tt, tt.origin, d)[tt.destination]? - d))
+        .filter_map(|d| Some(earliest_arrival(tt, limits.origin, d)[tt.destination]? - d))
         .min();
     let Some(fastest_duration) = fastest else {
         return Enumeration { chains: Vec::new(), fastest: None, complete_up_to: Some(limits.max_changes), nodes: 0 };
@@ -242,13 +244,13 @@ pub fn enumerate(tt: &Timetable, limits: &Limits) -> Enumeration {
         nodes: 0,
         truncated: false,
     };
-    search.visited[tt.origin] = true;
+    search.visited[limits.origin] = true;
     // Deepen by changes so that hitting the effort cap still leaves complete
     // lists for few changes instead of an arbitrary depth-first subset.
     let mut complete_up_to = None;
     for changes in 0..=limits.max_changes {
         search.max_rides = changes + 1;
-        search.explore(tt.origin, limits.depart_from, None, false);
+        search.explore(limits.origin, limits.depart_from, None, false);
         if search.truncated {
             break;
         }

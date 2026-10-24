@@ -4,6 +4,8 @@ mod motis;
 mod rough;
 mod timetable;
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -105,6 +107,7 @@ async fn main() -> Result<()> {
 
     let min_transfer = TimeDelta::minutes(cli.min_transfer);
     let limits = Limits {
+        origin: tt.origin,
         depart_from: time,
         depart_until: time + window,
         max_changes: cli.max_changes,
@@ -159,6 +162,7 @@ async fn main() -> Result<()> {
         result.nodes,
     );
 
+    let mut fallbacks = Fallbacks { min_transfer, cache: HashMap::new() };
     for group in &groups {
         println!(
             "■ {} … {}  ({})",
@@ -169,9 +173,9 @@ async fn main() -> Result<()> {
         let shown = if cli.per_group == 0 { group.chains.len() } else { cli.per_group };
         for chain in group.chains.iter().take(shown) {
             if cli.detail {
-                print_detail(tt, chain, min_transfer);
+                print_detail(tt, chain, &mut fallbacks);
             } else {
-                print_line(tt, chain, min_transfer);
+                println!("  {}   {}", header(tt, chain, min_transfer), route(tt, chain, min_transfer, &HashSet::new()));
             }
         }
         if group.chains.len() > shown {
@@ -253,8 +257,9 @@ fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) -> String {
     )
 }
 
-/// One connection on one line: trains, change stations and buffers.
-fn print_line(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
+/// Trains, change stations and buffers on one line. Stops at the first train
+/// in `rejoin`, marking it as back on the original plan.
+fn route(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, rejoin: &HashSet<usize>) -> String {
     let transfers = chain.transfers(tt);
     let mut parts = Vec::new();
     for (i, (trip, board, alight)) in chain.rides().enumerate() {
@@ -271,6 +276,10 @@ fn print_line(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
         } else {
             String::new()
         };
+        if rejoin.contains(&trip) {
+            parts.push(format!("{}{from} {} (back on plan)", timed(b.departure, bs.tz.as_deref()), t.label));
+            break;
+        }
         parts.push(format!(
             "{}{from} {} → {} {}",
             timed(b.departure, bs.tz.as_deref()),
@@ -279,13 +288,51 @@ fn print_line(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
             as_.name,
         ));
     }
-    println!("  {}   {}", header(tt, chain, min_transfer), parts.join(" "));
+    parts.join(" ")
 }
 
-/// One connection with platforms, and the earliest arrival if a change is missed.
-fn print_detail(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
+/// How long after a missed train fallbacks may leave, and how they're bounded.
+const FALLBACK_WINDOW: TimeDelta = TimeDelta::hours(2);
+const FALLBACK_EXTRA: TimeDelta = TimeDelta::hours(1);
+const FALLBACK_CHANGES: usize = 3;
+const FALLBACK_NODES: usize = 500_000;
+const FALLBACKS_SHOWN: usize = 3;
+
+/// Fallback connections per (station, missed departure), computed once.
+struct Fallbacks {
+    min_transfer: TimeDelta,
+    cache: HashMap<(usize, DateTime<Utc>), Vec<Chain>>,
+}
+
+impl Fallbacks {
+    /// Connections from `station` leaving after `missed`, best first.
+    fn from(&mut self, tt: &Timetable, station: usize, missed: DateTime<Utc>) -> &[Chain] {
+        let min_transfer = self.min_transfer;
+        self.cache.entry((station, missed)).or_insert_with(|| {
+            let after = missed + TimeDelta::minutes(1);
+            let limits = Limits {
+                origin: station,
+                depart_from: after,
+                depart_until: after + FALLBACK_WINDOW,
+                max_changes: FALLBACK_CHANGES,
+                extra_time: FALLBACK_EXTRA,
+                min_transfer,
+                keep_detours: false,
+                max_nodes: FALLBACK_NODES,
+            };
+            let mut chains = enumerate::enumerate(tt, &limits).chains;
+            chains.sort_by_key(|c| (c.arrival(tt), c.changes(), std::cmp::Reverse(c.min_slack(tt))));
+            chains
+        })
+    }
+}
+
+/// One connection with platforms, and the fallbacks if a change is missed.
+fn print_detail(tt: &Timetable, chain: &Chain, fallbacks: &mut Fallbacks) {
+    let min_transfer = fallbacks.min_transfer;
     println!("  {}", header(tt, chain, min_transfer));
     let transfers = chain.transfers(tt);
+    let trips = chain.trips();
     let arrival = chain.arrival(tt);
     let mut ride = 0;
     for step in &chain.steps {
@@ -312,13 +359,33 @@ fn print_detail(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) {
                     t.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default(),
                 );
                 if let Some(tr) = transfers.get(ride) {
-                    let fallback = enumerate::earliest_arrival(tt, tr.station, tr.departure + TimeDelta::minutes(1))
-                        [tt.destination]
-                        .map_or_else(
-                            || "no fallback in timetable".to_owned(),
-                            |t| format!("arrive {} (+{})", clock(t, None), duration((t - arrival).max(TimeDelta::zero()))),
-                        );
-                    println!("      ↳ {} buffer · if missed: {fallback}", buffer(tr.slack, min_transfer));
+                    println!("      ↳ {} buffer · if missed:", buffer(tr.slack, min_transfer));
+                    // Catching a later train of the plan (also the missed one, further on) ends the detour.
+                    let rejoin: HashSet<usize> = trips[ride + 1..].iter().copied().collect();
+                    let options = fallbacks.from(tt, tr.station, tr.departure);
+                    // Rank by what happens until the plan is rejoined: from there on the
+                    // trip continues as planned, so its arrival is the planned one.
+                    let mut ranked: Vec<_> = options
+                        .iter()
+                        .map(|fallback| {
+                            let rides = fallback.trips();
+                            let back = rides.iter().position(|t| rejoin.contains(t));
+                            let changes = back.unwrap_or(rides.len() - 1);
+                            let slack = fallback.transfers(tt)[..changes].iter().map(|t| t.slack).min();
+                            let lands = if back.is_some() { arrival } else { fallback.arrival(tt) };
+                            (lands, changes, std::cmp::Reverse(slack), route(tt, fallback, min_transfer, &rejoin))
+                        })
+                        .collect();
+                    ranked.sort();
+                    ranked.dedup_by(|a, b| a.3 == b.3);
+                    for (lands, _, _, line) in ranked.iter().take(FALLBACKS_SHOWN) {
+                        let late = (*lands - arrival).max(TimeDelta::zero());
+                        let tz = tt.stations[tt.destination].tz.as_deref();
+                        println!("          {line} · arrive {} (+{})", clock(*lands, tz), duration(late));
+                    }
+                    if ranked.is_empty() {
+                        println!("          nothing within {}", duration(FALLBACK_WINDOW));
+                    }
                 }
                 ride += 1;
             }

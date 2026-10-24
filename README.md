@@ -20,8 +20,18 @@ fastest 9h39 · limits: ≤ 12h39 travel time, ≤ 15 changes · 1090 connection
 ```
 
 `‖42m‖` is the buffer at a change, `⚠` marks buffers below `--min-transfer`,
-`(+5)` live delays. `--detail` adds platforms and the earliest arrival if a
-change is missed. `umstieg --help` lists all options.
+`(+5)` live delays. `umstieg --help` lists all options.
+
+`--detail` adds platforms and, for every change, up to three fallbacks if the
+next train is missed: connections leaving within 2 h with at most 3 changes,
+cut where they catch a train of the plan again ("back on plan"), e.g.
+
+```
+    08:04 (+12) Frankfurt (Main) Südbahnhof [5] → 11:52 (+1) Hamburg Hbf [12]   ICE 2558 + ICE 76
+      ↳ 48m buffer · if missed:
+          12:42 S1 (41618) → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan) · arrive 22:05 (+0m)
+          12:52 S1 (41620) → 13:04 Altona ‖4m⚠‖ 13:08 RJ 384 (back on plan) · arrive 22:05 (+0m)
+```
 
 ## How it works
 
