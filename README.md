@@ -45,8 +45,9 @@ run parallel, faster trains are steeper and overtake slower ones.
 
 Hovering only previews: it highlights every connection passing the point under
 the mouse and lists them by group. On a ride that is every connection on that
-train between those two stops, wherever it boards or leaves; on a wait, every
-connection waiting at that station at that time. Clicking selects: if one
+train between those two stops, wherever it boards or leaves; on a flat line at
+a station, every connection there at that time, waiting or in a train standing
+there (one target per continuous stay, nothing stacks). Clicking selects: if one
 connection passes there it is selected, otherwise (e.g. 63 connections on ICE
 378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
 previews and clicking selects one (the other listed connections then fade to
@@ -54,7 +55,7 @@ previews and clicking selects one (the other listed connections then fade to
 `↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
 labelled and its fallbacks drawn dashed in train colours, starting with a
 dotted wait from the missed departure; hovering a fallback stretch names it and
-the fallback. Hovering a group (first … last train) highlights it, clicking
+every fallback using it. Hovering a group (first … last train) highlights it, clicking
 hides it.
 
 The mouse wheel zooms around the pointer (`Shift`: time only, `Alt`: height

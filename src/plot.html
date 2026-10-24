@@ -167,10 +167,28 @@ metricSelect.value = D.metric;
 metricSelect.addEventListener("change", () => { applyMetric(+metricSelect.value); buildModel(); render(); });
 applyMetric(D.metric);
 
+// Spans ({ from, to }) merged into continuous runs [from, to].
+function runsOf(spans) {
+  const runs = [];
+  for (const w of [...spans].sort((a, b) => a.from - b.from)) {
+    const last = runs[runs.length - 1];
+    if (last && w.from <= last[1]) last[1] = Math.max(last[1], w.to); else runs.push([w.from, w.to]);
+  }
+  return runs;
+}
+// The spans of a run covering the hovered time, and their extent to highlight.
+function stayAt(spans, from, to, time, y, s) {
+  const t = Math.min(to, Math.max(from, time));
+  const here = spans.filter(w => w.from <= t && t <= w.to);
+  const a = Math.min(...here.map(w => w.from)), b = Math.max(...here.map(w => w.to));
+  return { t, here, pts: [[a, y, s], [b, y, s]] };
+}
+
 // The smallest shared units, each drawn once and used as hover target, so
 // every connection passing through counts, wherever it boards or leaves:
 //   rides: one per train and stop-to-stop stretch,
-//   waits: by station and time under the mouse,
+//   stays: per station and continuous stay, waiting or in a standing train,
+//     resolved by the time under the mouse,
 //   walks: per walk.
 // Depends only on which groups are hidden, not on zoom.
 function buildModel() {
@@ -193,9 +211,8 @@ function buildModel() {
         }
       } else if (p.kind === "wait" && p.pts.length) {
         const s = p.pts[0][2];
-        if (!waits.has(s)) waits.set(s, { y: p.pts[0][1], spans: [], pieces: new Set() });
+        if (!waits.has(s)) waits.set(s, { y: p.pts[0][1], spans: [] });
         waits.get(s).spans.push({ from: p.pts[0][0], to: p.pts[p.pts.length - 1][0], chain: i });
-        waits.get(s).pieces.add(pi);
         if (p.warn) warns.add(pi);
       } else if (p.kind === "walk") {
         if (!walks.has(pi)) walks.set(pi, new Set());
@@ -204,29 +221,39 @@ function buildModel() {
     }
   });
   // Overlapping waits at a station merge into one line per continuous stay.
-  for (const w of waits.values()) {
-    const sorted = [...w.spans].sort((a, b) => a.from - b.from);
-    w.runs = [];
-    let [from, to] = [sorted[0].from, sorted[0].to];
-    for (const s of sorted.slice(1)) {
-      if (s.from > to) { w.runs.push([from, to]); [from, to] = [s.from, s.to]; } else to = Math.max(to, s.to);
-    }
-    w.runs.push([from, to]);
-  }
+  for (const w of waits.values()) w.runs = runsOf(w.spans);
   // Hover targets, looked up by index from a single set of event listeners.
   const targets = [];
+  // Everything flat at a station (waits, trains standing there) is one target
+  // per continuous stay, so nothing stacks: hovering names who is there then.
+  const stays = new Map();
+  const stay = (s, y, span) => {
+    if (!stays.has(s)) stays.set(s, { y, spans: [] });
+    stays.get(s).spans.push(span);
+  };
+  for (const [s, w] of waits) for (const span of w.spans) stay(s, w.y, span);
   for (const e of edges.values()) {
+    const [a, b] = e.pts;
+    if (a[2] === b[2]) {
+      for (const chain of e.chains) stay(a[2], a[1], { from: a[0], to: b[0], chain, trip: e.trip });
+      continue;
+    }
     const t = { info: e.info, trip: e.trip, chains: [...e.chains], pts: e.pts };
     targets.push({ pts: e.pts, at: () => t });
   }
-  for (const [s, { spans, pieces }] of waits) {
-    for (const pi of pieces) {
-      const piece = D.pieces[pi];
-      targets.push({ pts: piece.pts, at: time => {
-        const chains = [...new Set(spans.filter(w => w.from <= time && time <= w.to).map(w => w.chain))];
-        return { info: `waiting at ${D.names[s]} · ${timeFmt.format(time)}`, chains, pts: piece.pts };
-      } });
-    }
+  for (const [s, { y, spans }] of stays) {
+    for (const [from, to] of runsOf(spans)) targets.push({ pts: [[from, y, s], [to, y, s]], at: time => {
+      const { t, here, pts } = stayAt(spans, from, to, time, y, s);
+      const trains = [...new Set(here.filter(w => w.trip !== undefined).map(w => w.trip))];
+      const waiting = new Set(here.filter(w => w.trip === undefined).map(w => w.chain)).size;
+      const parts = [waiting ? `${waiting} waiting` : null, ...trains.map(tr => `standing: ${D.trips[tr]}`)].filter(Boolean);
+      return {
+        info: `at ${D.names[s]} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
+        trip: trains.length === 1 && !waiting ? trains[0] : undefined,
+        chains: [...new Set(here.map(w => w.chain))],
+        pts,
+      };
+    } });
   }
   for (const [pi, chains] of walks) {
     const t = { info: D.pieces[pi].info, chains: [...chains], pts: D.pieces[pi].pts };
@@ -301,11 +328,10 @@ function render() {
 
   const hits = el("g", { "clip-path": "url(#area)" }, svg);
   model.targets.forEach((t, i) => el("polyline", { points: pts(t), class: "hit", "data-t": i }, hits));
+  const timeAt = e => dom.t0 + (e.clientX - svg.getBoundingClientRect().left - m.l) / (W - m.l - m.r) * (dom.t1 - dom.t0);
   const targetAt = e => {
     const i = e.target.dataset?.t;
-    if (i === undefined) return null;
-    const time = dom.t0 + (e.clientX - svg.getBoundingClientRect().left - m.l) / (W - m.l - m.r) * (dom.t1 - dom.t0);
-    return model.targets[i].at(time);
+    return i === undefined ? null : model.targets[i].at(timeAt(e));
   };
   hits.addEventListener("mousemove", e => { if (drag) return; hoverTarget = targetAt(e); refresh(); moveTip(e); });
   hits.addEventListener("mouseout", () => { hoverTarget = null; refresh(); });
@@ -318,7 +344,7 @@ function render() {
 
   const hoverLayer = el("g", { "clip-path": "url(#area)" }, svg);
   const fbLayer = el("g", { class: "fallback", "clip-path": "url(#area)" }, svg);
-  const fbTargetAt = e => view.fbTargets?.[e.target.dataset?.f] ?? null;
+  const fbTargetAt = e => view.fbTargets?.[e.target.dataset?.f]?.at(timeAt(e)) ?? null;
   fbLayer.addEventListener("mousemove", e => { if (drag) return; hoverTarget = fbTargetAt(e); refresh(); moveTip(e); });
   fbLayer.addEventListener("mouseout", () => { hoverTarget = null; refresh(); });
   // Clicking a fallback keeps the selection it belongs to.
@@ -450,15 +476,39 @@ function refresh() {
     view.fbKey = fbKey(focus);
     fbLayer.replaceChildren();
     view.fbTargets = [];
-    if (view.fbKey !== null) for (const f of D.chains[pinned].fallbacks) {
-      const g = el("g", {}, fbLayer);
-      for (const p of f.pieces) {
-        const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""}` }, g);
-        if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
+    if (view.fbKey !== null) {
+      // Fallbacks share stretches (the same S1, the wait after the missed
+      // train): one target per stretch and per continuous stay, naming all.
+      const byPiece = new Map(), waits = new Map();
+      for (const f of D.chains[pinned].fallbacks) {
+        const g = el("g", {}, fbLayer);
+        for (const p of f.pieces) {
+          const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""}` }, g);
+          if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
+          if (p.kind === "wait" && p.pts.length) {
+            const [[from, y, s], [to]] = [p.pts[0], p.pts[p.pts.length - 1]];
+            if (!waits.has(s)) waits.set(s, { y, spans: [] });
+            waits.get(s).spans.push({ from, to, f });
+          } else if (p.pts.length) {
+            if (!byPiece.has(p)) byPiece.set(p, new Set());
+            byPiece.get(p).add(f);
+          }
+        }
       }
-      for (const p of f.pieces) {
-        view.fbTargets.push({ info: p.info, trip: p.trip ?? undefined, chains: [], fallback: f, pts: p.pts });
-        el("polyline", { points: pts(p), class: "hit", "data-f": view.fbTargets.length - 1 }, g);
+      const hit = (points, at) => {
+        view.fbTargets.push({ at });
+        el("polyline", { points: pts({ pts: points }), class: "hit", "data-f": view.fbTargets.length - 1 }, fbLayer);
+      };
+      for (const [p, fs] of byPiece) {
+        const t = { info: p.info, trip: p.trip ?? undefined, chains: [], fallbacks: [...fs], pts: p.pts };
+        hit(p.pts, () => t);
+      }
+      for (const [s, { y, spans }] of waits) {
+        for (const [from, to] of runsOf(spans)) hit([[from, y, s], [to, y, s]], time => {
+          const { t, here, pts } = stayAt(spans, from, to, time, y, s);
+          return { info: `waiting at ${D.names[s]} · ${timeFmt.format(t)}`, chains: [],
+                   fallbacks: [...new Set(here.map(w => w.f))], pts };
+        });
       }
     }
   }
@@ -475,10 +525,10 @@ function refresh() {
     const { info, chains, trip } = hoverTarget;
     const swatch = trip === undefined ? "" : `<span style="color:${trainColor(trip)}">■</span> `;
     let who;
-    if (hoverTarget.fallback) {
-      const f = hoverTarget.fallback;
-      who = `<br><span style="color:var(--accent)">If the change at ${esc(f.at)} is missed:</span>`
-        + `<br><span style="color:var(--muted)">${esc(f.line)} · arrive ${esc(f.arrive)}</span>`;
+    if (hoverTarget.fallbacks) {
+      const at = [...new Set(hoverTarget.fallbacks.map(f => f.at))];
+      who = `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>`
+        + hoverTarget.fallbacks.map(f => `<br><span style="color:var(--muted)">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`).join("");
     } else if (chains.length === 1) {
       const c = D.chains[chains[0]];
       who = `<br><b>${esc(c.header)}</b><span style="color:var(--muted)">${esc(c.route)}</span>`;
