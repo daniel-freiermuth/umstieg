@@ -37,10 +37,11 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
 
 `--html out.html` writes a self-contained interactive time–distance diagram
 (a Marey chart generalised to a network): x is time, y a fixed height per
-station with the goal at the bottom. Riding is a thick coloured line, waiting a
-thin horizontal one (red below `--min-transfer`), walking dotted. Later
-departures of the same route run parallel, faster trains are steeper and
-overtake slower ones.
+station with the goal at the bottom. Every stretch is drawn once, however many
+connections use it: riding in one colour per train (follow a train across all
+connections), waiting as a thin horizontal line (merged per continuous stay;
+red below `--min-transfer`), walking dotted. Later departures of the same route
+run parallel, faster trains are steeper and overtake slower ones.
 
 Hovering only previews: it highlights every connection passing the point under
 the mouse and lists them by group. On a ride that is every connection on that

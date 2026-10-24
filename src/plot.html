@@ -25,7 +25,6 @@
   .group { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
   .group:hover { background: var(--grid); }
   .group.off { opacity: .35; }
-  .swatch { width: 14px; height: 4px; border-radius: 2px; flex: none; }
   .count { margin-left: auto; color: var(--muted); }
   #details { white-space: pre-wrap; font-size: 12px; }
   #details .fb { color: var(--accent); }
@@ -38,26 +37,24 @@
   .axis line { stroke: var(--grid); }
   .station line { stroke: var(--grid); stroke-dasharray: 2 3; }
   .station .leader { fill: none; stroke-width: 1; }
-  .chain .ride { fill: none; stroke-width: 1.6; stroke-opacity: .45; stroke-linejoin: round; }
-  .chain .wait { fill: none; stroke: var(--wait); stroke-width: 1; stroke-opacity: .6; }
-  .chain .wait.warn { stroke: var(--warn); }
-  .chain .walk { fill: none; stroke: var(--wait); stroke-width: 1; stroke-dasharray: 3 3; }
-  .chain.off { display: none; }
-  /* Hundreds of overlapping lines add up: dim to grey, not just transparent. */
-  svg.focus .chain:not(.hl):not(.soft) { opacity: .25; }
-  svg.focus .chain:not(.hl):not(.soft) .ride { stroke: var(--grid) !important; stroke-opacity: 1; }
-  svg.focus .chain:not(.hl):not(.soft) .wait, svg.focus .chain:not(.hl):not(.soft) .walk { stroke: var(--grid); }
-  .chain.hl .ride { stroke-width: 3.5; stroke-opacity: 1; }
-  .chain.hl .wait { stroke-width: 2.5; stroke-opacity: 1; }
+  /* Base: every stretch drawn once, rides coloured by train. */
+  .base .ride, .overlay .ride { fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+  .base .wait, .overlay .wait { fill: none; stroke: var(--wait); stroke-width: 1; }
+  .base .warn, .overlay .warn { stroke: var(--warn); }
+  .base .walk, .overlay .walk { fill: none; stroke: var(--wait); stroke-width: 1; stroke-dasharray: 3 3; }
+  svg.focus .base { opacity: .15; }
+  /* Overlay: the previewed connections, and the selected one thick. */
+  .overlay .ride { stroke-width: 2.4; }
+  .overlay .wait, .overlay .walk { stroke-width: 1.6; }
+  .overlay .strong.ride { stroke-width: 4.5; }
+  .overlay .strong.wait { stroke-width: 3; }
+  .overlay, .fallback, .change-labels { pointer-events: none; }
   .fallback .ride { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 4; }
   .fallback .wait, .fallback .walk { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 3; }
   .hit { fill: none; stroke: transparent; stroke-width: 9; pointer-events: stroke; }
-  .fallback, .change-labels { pointer-events: none; }
   .change-labels text { fill: var(--fg); font-size: 11px; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
-  svg.focus .chain.soft { opacity: 1; }
-  svg.focus .chain.soft .ride { stroke-opacity: .9; }
-  .hover-piece { fill: none; stroke: var(--fg); stroke-width: 5; stroke-opacity: .35; stroke-linecap: round; pointer-events: none; }
-  .candidate { padding: 4px 6px; border-radius: 4px; cursor: pointer; border-left: 3px solid transparent; }
+  .hover-piece { fill: none; stroke: var(--fg); stroke-width: 7; stroke-opacity: .3; stroke-linecap: round; pointer-events: none; }
+  .candidate { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
   .candidate:hover, .candidate.on { background: var(--grid); }
   .candidate .route { color: var(--muted); font-size: 11px; }
   .back { color: var(--accent); cursor: pointer; display: block; margin-bottom: 6px; }
@@ -83,7 +80,8 @@ const tip = document.getElementById("tip");
 const details = document.getElementById("details");
 const panelTitle = document.getElementById("panel-title");
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: D.tz });
-const color = g => `hsl(${(g * 137.508) % 360}, 70%, 48%)`;
+// One colour per train, so a train can be followed across all connections.
+const trainColor = t => `hsl(${(t * 137.508) % 360}, 70%, 45%)`;
 const HINT = "Hover a line to see which connections use it. Click it to select: a line used by one connection " +
   "selects that connection, a shared line lists all connections using it.";
 
@@ -99,7 +97,7 @@ document.getElementById("title").textContent = D.title;
 document.getElementById("subtitle").textContent = D.subtitle;
 document.getElementById("legend").innerHTML =
   `x: time (${D.tz}). y: ${D.metric} (${D.unit}), goal at the bottom.<br>` +
-  `Thick coloured: riding · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
+  `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
   `Parallel lines: same route later. Steeper: faster. Dashed orange: fallbacks of the selection.<br>` +
   `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.`;
 
@@ -176,24 +174,13 @@ function render() {
   }
 
   const pts = p => p.pts.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const lines = el("g", { "clip-path": "url(#area)" }, svg);
-  const chainEls = D.chains.map((c, i) => {
-    const g = el("g", { class: "chain" + (hidden.has(c.group) ? " off" : "") }, lines);
-    for (const pi of c.pieces) {
-      const p = D.pieces[pi];
-      const line = el("polyline", { points: pts(p), class: p.kind + (p.warn ? " warn" : "") }, g);
-      if (p.kind === "ride") line.setAttribute("stroke", color(c.group));
-    }
-    return g;
-  });
-
-  // Hover targets on the smallest shared units, so every connection passing
-  // through counts, wherever it boards or leaves:
+  // The smallest shared units, each drawn once and used as hover target, so
+  // every connection passing through counts, wherever it boards or leaves:
   //   rides: one per train and stop-to-stop stretch,
   //   waits: by station and time under the mouse,
   //   walks: per walk.
   const tAt = px => t0 + (px - m.l) / (W - m.l - m.r) * (t1 - t0);
-  const edges = new Map(), waits = new Map(), walks = new Map();
+  const edges = new Map(), waits = new Map(), walks = new Map(), warns = new Set();
   D.chains.forEach((c, i) => {
     if (hidden.has(c.group)) return;
     for (const pi of c.pieces) {
@@ -206,21 +193,39 @@ function render() {
             const info = a[2] === b[2]
               ? `${D.trips[p.trip]} · stop at ${D.names[a[2]]} ${timeFmt.format(a[0])}–${timeFmt.format(b[0])}`
               : `${D.trips[p.trip]} · ${timeFmt.format(a[0])} ${D.names[a[2]]} → ${timeFmt.format(b[0])} ${D.names[b[2]]}`;
-            edges.set(key, { pts: [a, b], info, chains: new Set() });
+            edges.set(key, { trip: p.trip, pts: [a, b], info, chains: new Set() });
           }
           edges.get(key).chains.add(i);
         }
       } else if (p.kind === "wait" && p.pts.length) {
         const s = p.pts[0][2];
-        if (!waits.has(s)) waits.set(s, { spans: [], pieces: new Set() });
+        if (!waits.has(s)) waits.set(s, { y: p.pts[0][1], spans: [], pieces: new Set() });
         waits.get(s).spans.push({ from: p.pts[0][0], to: p.pts[p.pts.length - 1][0], chain: i });
         waits.get(s).pieces.add(pi);
+        if (p.warn) warns.add(pi);
       } else if (p.kind === "walk") {
         if (!walks.has(pi)) walks.set(pi, new Set());
         walks.get(pi).add(i);
       }
     }
   });
+
+  const base = el("g", { class: "base", "clip-path": "url(#area)" }, svg);
+  for (const e of edges.values()) el("polyline", { points: pts(e), class: "ride", stroke: trainColor(e.trip) }, base);
+  for (const { y: v, spans } of waits.values()) {
+    // Overlapping waits at a station merge into one line per continuous stay.
+    const sorted = [...spans].sort((a, b) => a.from - b.from);
+    let [from, to] = [sorted[0].from, sorted[0].to];
+    const flush = () => el("polyline", { points: pts({ pts: [[from, v], [to, v]] }), class: "wait" }, base);
+    for (const s of sorted.slice(1)) {
+      if (s.from > to) { flush(); [from, to] = [s.from, s.to]; } else to = Math.max(to, s.to);
+    }
+    flush();
+  }
+  for (const pi of warns) el("polyline", { points: pts(D.pieces[pi]), class: "wait warn" }, base);
+  for (const pi of walks.keys()) el("polyline", { points: pts(D.pieces[pi]), class: "walk" }, base);
+  const overlay = el("g", { class: "overlay", "clip-path": "url(#area)" }, svg);
+
   const hits = el("g", {}, svg);
   const target = (points, hover) => {
     const h = el("polyline", { points, class: "hit" }, hits);
@@ -229,7 +234,7 @@ function render() {
     h.addEventListener("click", e => { e.stopPropagation(); choose(hover(e)); });
   };
   for (const edge of edges.values()) {
-    const t = { info: edge.info, chains: [...edge.chains], pts: edge.pts };
+    const t = { info: edge.info, trip: edge.trip, chains: [...edge.chains], pts: edge.pts };
     target(pts(t), () => t);
   }
   for (const [s, { spans, pieces }] of waits) {
@@ -250,7 +255,7 @@ function render() {
   const labels = el("g", { class: "change-labels" }, svg);
   svg.addEventListener("click", () => { pinned = null; candidates = null; refresh(); });
 
-  view = { svg, x, y, pts, lines, chainEls, hoverLayer, fbLayer, labels };
+  view = { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels, overlayKey: null };
   refresh();
 }
 
@@ -264,20 +269,30 @@ function choose(target) {
 
 function refresh() {
   if (!view) return;
-  const { svg, x, y, pts, lines, chainEls, hoverLayer, fbLayer, labels } = view;
-  const strong = new Set([pinned, preview].filter(i => i !== null));
+  const { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels } = view;
+  const strong = [pinned, preview].filter(i => i !== null);
   const soft = new Set();
   if (hoverTarget) hoverTarget.chains.forEach(i => soft.add(i));
   if (candidates) candidates.chains.forEach(i => soft.add(i));
-  if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup) soft.add(i); });
+  if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup && !hidden.has(c.group)) soft.add(i); });
+  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0);
 
-  svg.classList.toggle("focus", strong.size > 0 || soft.size > 0);
-  chainEls.forEach((g, i) => {
-    g.classList.toggle("hl", strong.has(i));
-    g.classList.toggle("soft", soft.has(i) && !strong.has(i));
-  });
-  for (const i of soft) lines.appendChild(chainEls[i]);
-  for (const i of strong) lines.appendChild(chainEls[i]);
+  // Overlay: previewed connections in train colours, the selection thick on top.
+  // Redrawn only when the set changes, not on every mouse move.
+  const key = JSON.stringify([strong, [...soft].sort((a, b) => a - b)]);
+  if (key !== view.overlayKey) {
+    view.overlayKey = key;
+    overlay.replaceChildren();
+    const draw = (pi, cls) => {
+      const p = D.pieces[pi];
+      const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
+      if (p.kind === "ride") line.setAttribute("stroke", trainColor(p.trip));
+    };
+    const mine = new Set(strong.flatMap(i => D.chains[i].pieces));
+    const others = new Set([...soft].flatMap(i => D.chains[i].pieces).filter(pi => !mine.has(pi)));
+    for (const pi of others) draw(pi, "soft");
+    for (const pi of mine) draw(pi, "strong");
+  }
 
   hoverLayer.replaceChildren();
   if (hoverTarget) el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
@@ -298,7 +313,8 @@ function refresh() {
   }
 
   if (hoverTarget) {
-    const { info, chains } = hoverTarget;
+    const { info, chains, trip } = hoverTarget;
+    const swatch = trip === undefined ? "" : `<span style="color:${trainColor(trip)}">■</span> `;
     let who;
     if (chains.length === 1) {
       const c = D.chains[chains[0]];
@@ -307,10 +323,10 @@ function refresh() {
       const groups = new Map();
       for (const i of chains) groups.set(D.chains[i].group, (groups.get(D.chains[i].group) || 0) + 1);
       const list = [...groups].sort((a, b) => b[1] - a[1])
-        .map(([g, n]) => `<span style="color:${color(g)}">■</span> ${esc(D.groups[g].label)} (${n})`).join("<br>");
+        .map(([g, n]) => `• ${esc(D.groups[g].label)} (${n})`).join("<br>");
       who = `<br><span style="color:var(--muted)">${chains.length} connections in ${groups.size} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}`;
     }
-    tip.innerHTML = `<b>${esc(info)}</b>${who}`;
+    tip.innerHTML = `<b>${swatch}${esc(info)}</b>${who}`;
     tip.style.display = "block";
   } else {
     tip.style.display = "none";
@@ -350,7 +366,6 @@ function renderPanel() {
       const c = D.chains[i];
       const row = document.createElement("div");
       row.className = "candidate";
-      row.style.borderLeftColor = color(c.group);
       row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(c.route)}</div>`;
       row.addEventListener("mouseenter", () => { preview = i; refresh(); });
       row.addEventListener("mouseleave", () => { preview = null; refresh(); });
@@ -378,7 +393,7 @@ const groupsEl = document.getElementById("groups");
 D.groups.forEach((g, i) => {
   const row = document.createElement("div");
   row.className = "group";
-  row.innerHTML = `<span class="swatch" style="background:${color(i)}"></span><span>${esc(g.label)}</span><span class="count">${g.count}</span>`;
+  row.innerHTML = `<span>${esc(g.label)}</span><span class="count">${g.count}</span>`;
   row.addEventListener("mouseenter", () => { softGroup = hidden.has(i) ? null : i; refresh(); });
   row.addEventListener("mouseleave", () => { softGroup = null; refresh(); });
   row.addEventListener("click", () => {
