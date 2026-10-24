@@ -1,7 +1,7 @@
 //! Every connection within the limits, not just the Pareto-optimal ones.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
@@ -28,7 +28,7 @@ pub struct Limits {
     pub max_nodes: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Step {
     Ride { trip: usize, board: usize, alight: usize },
     Walk { footpath: usize },
@@ -325,8 +325,8 @@ struct Search<'a> {
     max_rides: usize,
     /// Stations where the chain stopped, and from when another train could be caught there.
     presence: Vec<Presence>,
-    /// Best variant per train sequence.
-    found: HashMap<Vec<usize>, Chain>,
+    /// Every connection found once; deepening by changes revisits shorter ones.
+    found: HashSet<Vec<Step>>,
     nodes: usize,
     truncated: bool,
 }
@@ -356,7 +356,7 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Enumeration {
         rides: 0,
         max_rides: 0,
         presence: Vec::new(),
-        found: HashMap::new(),
+        found: HashSet::new(),
         nodes: 0,
         truncated: false,
     };
@@ -373,7 +373,7 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Enumeration {
         complete_up_to = Some(changes);
     }
 
-    let chains = search.found.into_values().collect();
+    let chains = search.found.into_iter().map(|steps| Chain { steps }).collect();
     Enumeration { chains, fastest, complete_up_to, nodes: search.nodes }
 }
 
@@ -525,18 +525,10 @@ impl Search<'_> {
         self.lower_bound[station].is_some_and(|lb| at + lb <= deadline)
     }
 
-    /// Keep one variant per train sequence: the one with the largest worst-case buffer.
+    /// Every variant counts, also ones riding the same trains but changing
+    /// elsewhere (Ludwigshafen Mitte instead of Ludwigshafen Hbf).
     fn record(&mut self) {
-        let chain = Chain { steps: self.steps.clone() };
-        let key = chain.trips();
-        let tt = self.tt;
-        let score = |c: &Chain| (c.min_slack(tt).unwrap_or(TimeDelta::MAX), Reverse(c.arrival(tt)));
-        match self.found.get(&key) {
-            Some(existing) if score(existing) >= score(&chain) => {}
-            _ => {
-                self.found.insert(key, chain);
-            }
-        }
+        self.found.insert(self.steps.clone());
     }
 }
 

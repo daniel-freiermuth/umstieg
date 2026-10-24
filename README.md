@@ -109,9 +109,10 @@ from the goal goes up (e.g. København → Malmö on the way to Göteborg).
      changes) instead of a 14 min change to the same RJ stays, as it raises
      the worst buffer.
 
-   One variant per train sequence is kept, the one with the largest minimum
-   buffer. If the effort cap (`--max-nodes`) is hit, the output says up to
-   how many changes the list is complete.
+   Variants riding the same trains but changing at different stations are all
+   kept (RNV 4 → S1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte).
+   If the effort cap (`--max-nodes`) is hit, the output says up to how many
+   changes the list is complete.
 
 Without DB credentials, the DB part of step 2 is skipped and the timetable consists
 of the MOTIS trains only.
