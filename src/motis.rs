@@ -52,6 +52,7 @@ pub struct Leg {
     pub trip_id: Option<String>,
     pub trip_short_name: Option<String>,
     pub headsign: Option<String>,
+    pub agency_name: Option<String>,
     #[serde(default)]
     pub intermediate_stops: Vec<Place>,
 }
@@ -66,11 +67,25 @@ impl Leg {
         self.end_time - self.start_time
     }
 
-    pub fn label(&self) -> &str {
-        self.display_name
+    /// "ICE 616", "RE7 (11174)", "RJ (384)", "Skånetrafiken 804 (1114)": feeds
+    /// put line numbers or bare categories into the display name, so add the
+    /// operator for bare numbers and the train number when it is missing.
+    pub fn label(&self) -> String {
+        let base = self
+            .display_name
             .as_deref()
             .or(self.route_short_name.as_deref())
+            .filter(|s| !s.trim().is_empty())
             .unwrap_or(&self.mode)
+            .trim();
+        let mut label = match &self.agency_name {
+            Some(agency) if base.chars().all(|c| c.is_ascii_digit()) => format!("{agency} {base}"),
+            _ => base.to_owned(),
+        };
+        if let Some(number) = self.train_number().map(|n| n.to_string()).filter(|n| !base.contains(n.as_str())) {
+            label = format!("{label} ({number})");
+        }
+        label
     }
 
     /// Train number, e.g. 378 for "ICE 378" or "011174".

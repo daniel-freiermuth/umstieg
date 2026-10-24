@@ -287,7 +287,7 @@ pub async fn build(
             }
 
             let entry = raw.entry(trip_id.clone()).or_insert_with(|| Trip {
-                label: leg.label().to_owned(),
+                label: leg.label(),
                 numbers: leg.train_number().into_iter().collect(),
                 class: leg.class(),
                 headsign: leg.headsign.clone(),
