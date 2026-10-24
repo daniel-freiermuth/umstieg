@@ -329,9 +329,28 @@ function render() {
   const hits = el("g", { "clip-path": "url(#area)" }, svg);
   model.targets.forEach((t, i) => el("polyline", { points: pts(t), class: "hit", "data-t": i }, hits));
   const timeAt = e => dom.t0 + (e.clientX - svg.getBoundingClientRect().left - m.l) / (W - m.l - m.r) * (dom.t1 - dom.t0);
+  // Hit lines are 9 px wide, so lines of nearby stations (Ludwigshafen Mitte
+  // 2 min above Mannheim Hbf) overlap: the line nearest to the mouse wins, not
+  // the one drawn last.
+  const nearest = (e, key) => {
+    const r = svg.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    let best = null, bestD = Infinity;
+    for (const h of document.elementsFromPoint(e.clientX, e.clientY)) {
+      if (h.dataset?.[key] === undefined) continue;
+      const p = [...h.points];
+      for (let k = 0; k < p.length; k++) {
+        const [a, b] = [p[k], p[Math.min(k + 1, p.length - 1)]];
+        const dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy;
+        const u = len ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len)) : 0;
+        const d = Math.hypot(px - a.x - u * dx, py - a.y - u * dy);
+        if (d < bestD) { bestD = d; best = h.dataset[key]; }
+      }
+    }
+    return best;
+  };
   const targetAt = e => {
-    const i = e.target.dataset?.t;
-    return i === undefined ? null : model.targets[i].at(timeAt(e));
+    const i = nearest(e, "t");
+    return i === null ? null : model.targets[i].at(timeAt(e));
   };
   hits.addEventListener("mousemove", e => { if (drag) return; hoverTarget = targetAt(e); refresh(); moveTip(e); });
   hits.addEventListener("mouseout", () => { hoverTarget = null; refresh(); });
@@ -344,7 +363,10 @@ function render() {
 
   const hoverLayer = el("g", { "clip-path": "url(#area)" }, svg);
   const fbLayer = el("g", { class: "fallback", "clip-path": "url(#area)" }, svg);
-  const fbTargetAt = e => view.fbTargets?.[e.target.dataset?.f]?.at(timeAt(e)) ?? null;
+  const fbTargetAt = e => {
+    const i = nearest(e, "f");
+    return i === null ? null : view.fbTargets?.[i]?.at(timeAt(e)) ?? null;
+  };
   fbLayer.addEventListener("mousemove", e => { if (drag) return; hoverTarget = fbTargetAt(e); refresh(); moveTip(e); });
   fbLayer.addEventListener("mouseout", () => { hoverTarget = null; refresh(); });
   // Clicking a fallback keeps the selection it belongs to.
