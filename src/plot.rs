@@ -95,9 +95,12 @@ struct Data {
     title: String,
     subtitle: String,
     tz: String,
-    unit: &'static str,
-    metric: &'static str,
-    stations: Vec<StationOut>,
+    /// Every metric computable here; the page switches between them.
+    metrics: Vec<MetricOut>,
+    /// Index into `metrics` shown first.
+    metric: usize,
+    /// Stations with a row: where connections board, alight or walk.
+    stations: Vec<usize>,
     /// Names of all stations, indexed by the station ids in piece points.
     names: Vec<String>,
     /// "ICE 378 → Berlin Hbf" per trip, indexed by `Piece::trip`.
@@ -110,9 +113,13 @@ struct Data {
 }
 
 #[derive(Serialize)]
-struct StationOut {
-    name: String,
-    y: f64,
+struct MetricOut {
+    /// The `--metric` value.
+    id: String,
+    unit: &'static str,
+    description: &'static str,
+    /// Height per station, `null` where it can't be computed.
+    heights: Vec<Option<f64>>,
 }
 
 #[derive(Serialize)]
@@ -141,7 +148,8 @@ struct FallbackOut {
     pieces: Vec<usize>,
 }
 
-/// A ride, a wait or a walk, as (unix minutes, height × 100, station) points.
+/// A ride, a wait or a walk, as (unix minutes, station) points; heights come
+/// from the metric chosen in the page.
 #[derive(Serialize, Clone, PartialEq, Eq, Hash)]
 struct Piece {
     kind: &'static str,
@@ -150,23 +158,22 @@ struct Piece {
     /// Index into `Data::trips` for rides: hovering works per train and stop-to-stop
     /// stretch, so overlapping rides of the same train count as one line.
     trip: Option<usize>,
-    pts: Vec<(i64, i64, usize)>,
+    pts: Vec<(i64, usize)>,
 }
 
 struct Builder<'a> {
     tt: &'a Timetable,
-    y: &'a [Option<f64>],
     min_transfer: TimeDelta,
     used: HashSet<usize>,
     pieces: Vec<Piece>,
     index: HashMap<Piece, usize>,
 }
 
-impl Builder<'_> {
-    fn point(&self, station: usize, t: DateTime<Utc>) -> Option<(i64, i64, usize)> {
-        Some((t.timestamp() / 60, (self.y[station]? * 100.0).round() as i64, station))
-    }
+fn point(station: usize, t: DateTime<Utc>) -> (i64, usize) {
+    (t.timestamp() / 60, station)
+}
 
+impl Builder<'_> {
     fn intern(&mut self, piece: Piece) -> usize {
         if let Some(&i) = self.index.get(&piece) {
             return i;
@@ -190,7 +197,7 @@ impl Builder<'_> {
                     let fp = &tt.footpaths[footpath];
                     let Some((from, t)) = here else { continue };
                     let to_time = t + fp.duration;
-                    let pts = [self.point(from, t), self.point(fp.to, to_time)].into_iter().flatten().collect();
+                    let pts = vec![point(from, t), point(fp.to, to_time)];
                     let info = format!("walk {} to {}", text::duration(fp.duration), tt.stations[fp.to].name);
                     out.push(self.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
                     self.used.insert(fp.to);
@@ -202,10 +209,7 @@ impl Builder<'_> {
                     let departure = b.departure_time().expect("boarded calls depart");
                     if let Some((_, since)) = here {
                         let wait = departure - since;
-                        let pts = [self.point(b.station, since), self.point(b.station, departure)]
-                            .into_iter()
-                            .flatten()
-                            .collect();
+                        let pts = vec![point(b.station, since), point(b.station, departure)];
                         let station = &tt.stations[b.station].name;
                         // Waiting after a missed train is no change that could be too short.
                         let (info, warn) = if ride == 0 && start.is_some() {
@@ -222,10 +226,10 @@ impl Builder<'_> {
                     let mut pts = Vec::new();
                     for (k, call) in t.calls.iter().enumerate().take(alight + 1).skip(board) {
                         if k > board {
-                            pts.extend(call.arrival_time().and_then(|at| self.point(call.station, at)));
+                            pts.extend(call.arrival_time().map(|at| point(call.station, at)));
                         }
                         if k < alight {
-                            pts.extend(call.departure_time().and_then(|at| self.point(call.station, at)));
+                            pts.extend(call.departure_time().map(|at| point(call.station, at)));
                         }
                     }
                     let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
@@ -260,10 +264,24 @@ pub struct Plot<'a> {
 /// Writes the plot of all connections in `plot.groups`, with fallbacks per change.
 pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<()> {
     let tt = net.tt;
-    let y = heights(net, plot.metric)?;
+    let mut metrics = Vec::new();
+    let mut shown = 0;
+    for &m in Metric::value_variants() {
+        let heights = match heights(net, m) {
+            Ok(h) => h,
+            // Only the requested metric must work; others are offered if they do.
+            Err(e) if m == plot.metric => return Err(e),
+            Err(_) => continue,
+        };
+        if m == plot.metric {
+            shown = metrics.len();
+        }
+        let id = m.to_possible_value().expect("metrics are named").get_name().to_owned();
+        let heights = heights.into_iter().map(|h| h.map(|h| (h * 100.0).round() / 100.0)).collect();
+        metrics.push(MetricOut { id, unit: m.unit(), description: m.description(), heights });
+    }
     let mut builder = Builder {
         tt,
-        y: &y,
         min_transfer: plot.min_transfer,
         used: HashSet::from([tt.origin, tt.destination]),
         pieces: Vec::new(),
@@ -312,19 +330,15 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
         }
     }
 
-    let mut stations: Vec<StationOut> = builder
-        .used
-        .iter()
-        .filter_map(|&s| Some(StationOut { name: tt.stations[s].name.clone(), y: y[s]? }))
-        .collect();
-    stations.sort_by(|a, b| b.y.total_cmp(&a.y).then_with(|| a.name.cmp(&b.name)));
+    let mut stations: Vec<usize> = builder.used.into_iter().collect();
+    stations.sort_unstable();
 
     let data = Data {
         title: plot.title.clone(),
         subtitle: plot.subtitle.clone(),
         tz: tt.stations[tt.origin].tz.clone().unwrap_or_else(|| "Europe/Berlin".to_owned()),
-        unit: plot.metric.unit(),
-        metric: plot.metric.description(),
+        metrics,
+        metric: shown,
         stations,
         names: tt.stations.iter().map(|s| s.name.clone()).collect(),
         trips: tt

@@ -61,7 +61,9 @@ The mouse wheel zooms around the pointer (`Shift`: time only, `Alt`: height
 only), dragging pans, double-click or "Reset zoom" shows everything again.
 Station labels and time ticks follow the zoom.
 
-`--metric` sets the station height:
+The station height is chosen in the page (`Height`); `--metric` sets the one
+shown first. Stations without a height in a metric (no coordinates for the
+distance ones, goal unreachable) are left out of it:
 
 | Metric | Height | Equidistant lines |
 |---|---|---|

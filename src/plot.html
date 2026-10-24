@@ -19,7 +19,9 @@
   header { grid-column: 1 / 3; padding: 10px 16px; border-bottom: 1px solid var(--grid); position: relative; }
   header h1 { font-size: 16px; margin: 0; }
   header p { margin: 2px 0 0; color: var(--muted); }
-  #reset { position: absolute; right: 16px; top: 12px; font: inherit; padding: 3px 10px; border-radius: 4px;
+  .controls { position: absolute; right: 16px; top: 12px; display: flex; gap: 8px; align-items: center; }
+  .controls label { color: var(--muted); }
+  .controls button, .controls select { font: inherit; padding: 3px 10px; border-radius: 4px;
            border: 1px solid var(--grid); background: var(--panel); color: var(--fg); cursor: pointer; }
   #plot { position: relative; overflow: hidden; cursor: grab; user-select: none; }
   #plot:active { cursor: grabbing; }
@@ -68,7 +70,9 @@
 </style>
 </head>
 <body>
-<header><h1 id="title"></h1><p id="subtitle"></p><button id="reset" title="Or double-click the plot">Reset zoom</button></header>
+<header><h1 id="title"></h1><p id="subtitle"></p>
+  <div class="controls"><label>Height <select id="metric"></select></label>
+  <button id="reset" title="Or double-click the plot">Reset zoom</button></div></header>
 <div id="plot"><div id="tip"></div></div>
 <aside>
   <h2 id="panel-title">Selection</h2>
@@ -101,12 +105,16 @@ let softGroup = null;       // group hovered in the group list
 
 document.getElementById("title").textContent = D.title;
 document.getElementById("subtitle").textContent = D.subtitle;
-document.getElementById("legend").innerHTML =
-  `x: time (${D.tz}). y: ${D.metric} (${D.unit}), goal at the bottom.<br>` +
-  `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
-  `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` +
-  `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` +
-  `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;
+const legend = document.getElementById("legend");
+function writeLegend() {
+  const metric = D.metrics[metricIndex];
+  legend.innerHTML =
+    `x: time (${D.tz}). y: ${metric.description} (${metric.unit}), goal at the bottom.<br>` +
+    `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer) · dotted: walking.<br>` +
+    `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` +
+    `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` +
+    `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;
+}
 
 function el(name, attrs, parent) {
   const e = document.createElementNS(NS, name);
@@ -118,22 +126,46 @@ function esc(s) {
   return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
 
-// Points come as (unix minutes, height × 100, station); pieces and fallbacks by index.
-for (const p of D.pieces) p.pts = p.pts.map(([m, h, s]) => [m * 60e3, h / 100, s]);
+// Points come as (unix minutes, station); pieces and fallbacks by index.
+for (const p of D.pieces) p.raw = p.pts.map(([m, s]) => [m * 60e3, s]);
 for (const f of D.fallbacks) f.pieces = f.pieces.map(i => D.pieces[i]);
 for (const c of D.chains) c.fallbacks = c.fallbacks.map(([i, arrive]) => ({ ...D.fallbacks[i], arrive }));
 
-// Full extent of the connections; fallbacks reaching beyond are clipped.
+let metricIndex = D.metric;
+let rows = [];             // stations with a row: { i, name, y }, top to bottom
 const full = { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 };
-for (const c of D.chains) for (const i of c.pieces)
-  for (const [t, v] of D.pieces[i].pts) {
-    full.t0 = Math.min(full.t0, t); full.t1 = Math.max(full.t1, t); full.y1 = Math.max(full.y1, v);
-  }
-full.t0 -= 10 * 60e3; full.t1 += 10 * 60e3;
-let dom = { ...full };     // visible part: zoomed and panned
+let dom = null;            // visible part: zoomed and panned
 let model = null;          // shared stretches of the visible connections
 let view = null;           // per-render drawing context
 let geom = null;           // plot area of the last render
+
+// Heights per the chosen metric: points become (ms, height, station); stations
+// without a height in it are left out. Zoom resets to the full extent.
+function applyMetric(k) {
+  metricIndex = k;
+  const H = D.metrics[k].heights;
+  for (const p of D.pieces) p.pts = p.raw.filter(([, s]) => H[s] !== null).map(([t, s]) => [t, H[s], s]);
+  rows = D.stations.filter(s => H[s] !== null).map(s => ({ i: s, name: D.names[s], y: H[s] }))
+    .sort((a, b) => b.y - a.y || a.name.localeCompare(b.name));
+  // Full extent of the connections; fallbacks reaching beyond are clipped.
+  Object.assign(full, { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 });
+  for (const c of D.chains) for (const i of c.pieces)
+    for (const [t, v] of D.pieces[i].pts) {
+      full.t0 = Math.min(full.t0, t); full.t1 = Math.max(full.t1, t); full.y1 = Math.max(full.y1, v);
+    }
+  full.t0 -= 10 * 60e3; full.t1 += 10 * 60e3;
+  dom = { ...full };
+  writeLegend();
+}
+const metricSelect = document.getElementById("metric");
+D.metrics.forEach((m, k) => {
+  const o = document.createElement("option");
+  o.value = k; o.textContent = m.id; o.title = `${m.description} (${m.unit})`;
+  metricSelect.appendChild(o);
+});
+metricSelect.value = D.metric;
+metricSelect.addEventListener("change", () => { applyMetric(+metricSelect.value); buildModel(); render(); });
+applyMetric(D.metric);
 
 // The smallest shared units, each drawn once and used as hover target, so
 // every connection passing through counts, wherever it boards or leaves:
@@ -218,7 +250,7 @@ function render() {
   // Station bands, alternating hue, so neighbouring stations are told apart.
   // Hue follows the station, not its position, so it stays put when zooming.
   const hue = i => (i * 47) % 360;
-  const st = D.stations.map((s, i) => ({ ...s, i, py: y(s.y) }))
+  const st = rows.map(s => ({ ...s, py: y(s.y) }))
     .filter(s => s.py >= m.t - 1 && s.py <= H - m.b + 1);
   const bands = el("g", { "clip-path": "url(#area)" }, svg);
   st.forEach((s, k) => {
