@@ -96,7 +96,8 @@ umstieg serve --addr 0.0.0.0:8080 --parallel 1
 ```
 
 A form with every option of the command line (generated from them, so new
-options appear by themselves; text-only ones like `--detail` are left out),
+options appear by themselves; text-only ones like `--detail` and `--metric`,
+which the plot page switches itself, are left out),
 station names completed from Transitous. Submitting shows the search's
 progress, then the plot, whose "← Change search" link returns to the form with
 the same settings. Searches beyond `--parallel` wait their turn: each loads

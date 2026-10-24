@@ -25,8 +25,8 @@ const FORM: &str = include_str!("form.html");
 const PROGRESS: &str = include_str!("progress.html");
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
-/// Options that only shape the command line's text output.
-const TEXT_ONLY: [&str; 3] = ["html", "detail", "per_group"];
+/// Options not in the form: text output only, or chosen on the plot page itself (metric).
+const NOT_IN_FORM: [&str; 6] = ["html", "detail", "per_group", "metric", "help", "version"];
 /// Options shown folded under "Advanced".
 const ADVANCED: [&str; 7] = ["hubs", "max_nodes", "no_db", "all_stops", "efa", "api", "contact"];
 
@@ -96,7 +96,7 @@ fn fields() -> Vec<Field> {
     let command = Form::command();
     command
         .get_arguments()
-        .filter(|a| !TEXT_ONLY.contains(&a.get_id().as_str()) && !["help", "version"].contains(&a.get_id().as_str()))
+        .filter(|a| !NOT_IN_FORM.contains(&a.get_id().as_str()))
         .map(|a| {
             let name = a.get_id().as_str().to_owned();
             let default = a.get_default_values().first().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
