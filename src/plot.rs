@@ -90,6 +90,10 @@ struct Data {
     unit: &'static str,
     metric: &'static str,
     stations: Vec<StationOut>,
+    /// Names of all stations, indexed by the station ids in piece points.
+    names: Vec<String>,
+    /// "ICE 378 → Berlin Hbf" per trip, indexed by `Piece::trip`.
+    trips: Vec<String>,
     groups: Vec<GroupOut>,
     /// Drawable stretches, shared by all connections using them.
     pieces: Vec<Piece>,
@@ -129,13 +133,16 @@ struct FallbackOut {
     pieces: Vec<usize>,
 }
 
-/// A ride, a wait or a walk, as (unix minutes, height × 100) points.
+/// A ride, a wait or a walk, as (unix minutes, height × 100, station) points.
 #[derive(Serialize, Clone, PartialEq, Eq, Hash)]
 struct Piece {
     kind: &'static str,
     info: String,
     warn: bool,
-    pts: Vec<(i64, i64)>,
+    /// Index into `Data::trips` for rides: hovering works per train and stop-to-stop
+    /// stretch, so overlapping rides of the same train count as one line.
+    trip: Option<usize>,
+    pts: Vec<(i64, i64, usize)>,
 }
 
 struct Builder<'a> {
@@ -148,8 +155,8 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    fn point(&self, station: usize, t: DateTime<Utc>) -> Option<(i64, i64)> {
-        Some((t.timestamp() / 60, (self.y[station]? * 100.0).round() as i64))
+    fn point(&self, station: usize, t: DateTime<Utc>) -> Option<(i64, i64, usize)> {
+        Some((t.timestamp() / 60, (self.y[station]? * 100.0).round() as i64, station))
     }
 
     fn intern(&mut self, piece: Piece) -> usize {
@@ -175,7 +182,7 @@ impl Builder<'_> {
                     let to_time = t + fp.duration;
                     let pts = [self.point(from, t), self.point(fp.to, to_time)].into_iter().flatten().collect();
                     let info = format!("walk {} to {}", text::duration(fp.duration), tt.stations[fp.to].name);
-                    out.push(self.intern(Piece { kind: "walk", info, warn: false, pts }));
+                    out.push(self.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
                     self.used.insert(fp.to);
                     here = Some((fp.to, to_time));
                 }
@@ -190,7 +197,8 @@ impl Builder<'_> {
                             .flatten()
                             .collect();
                         let info = format!("{} at {}", text::buffer(wait, self.min_transfer), tt.stations[b.station].name);
-                        out.push(self.intern(Piece { kind: "wait", info, warn: wait < self.min_transfer, pts }));
+                        let warn = wait < self.min_transfer;
+                        out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts }));
                     }
                     self.used.insert(b.station);
                     if until == Some(ride) {
@@ -215,7 +223,7 @@ impl Builder<'_> {
                         text::timed(a.arrival.or(a.departure), as_.tz.as_deref()),
                         as_.name,
                     );
-                    out.push(self.intern(Piece { kind: "ride", info, warn: false, pts }));
+                    out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts }));
                     self.used.insert(a.station);
                     here = Some((a.station, a.arrival_time().expect("alighted calls arrive")));
                     ride += 1;
@@ -299,6 +307,12 @@ pub fn write(path: &Path, net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot
         unit: plot.metric.unit(),
         metric: plot.metric.description(),
         stations,
+        names: tt.stations.iter().map(|s| s.name.clone()).collect(),
+        trips: tt
+            .trips
+            .iter()
+            .map(|t| format!("{}{}", t.label, t.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default()))
+            .collect(),
         groups: plot
             .groups
             .iter()

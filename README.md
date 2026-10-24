@@ -42,10 +42,13 @@ thin horizontal one (red below `--min-transfer`), walking dotted. Later
 departures of the same route run parallel, faster trains are steeper and
 overtake slower ones.
 
-Hovering only previews: it highlights every connection using the line under
-the mouse and says how many there are. Clicking selects: a line used by one
-connection selects it; a shared line (e.g. the ICE 378 used by 42 connections)
-lists them in the side panel, where hovering previews and clicking selects one;
+Hovering only previews: it highlights every connection passing the point under
+the mouse and lists them by group. On a ride that is every connection on that
+train between those two stops, wherever it boards or leaves; on a wait, every
+connection waiting at that station at that time. Clicking selects: if one
+connection passes there it is selected, otherwise (e.g. 63 connections on ICE
+378 Mannheim → Frankfurt Süd) they are listed in the side panel, where hovering
+previews and clicking selects one;
 `↑`/`↓` step through the list, `Esc` clears. The selection gets its changes
 labelled and its fallbacks drawn dashed. Hovering a group (first … last train)
 highlights it, clicking hides it.

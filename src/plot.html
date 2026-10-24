@@ -91,7 +91,7 @@ const HINT = "Hover a line to see which connections use it. Click it to select: 
 const hidden = new Set();   // hidden groups
 let pinned = null;          // selected connection
 let candidates = null;      // connections using the clicked line: { piece, chains }
-let hoverPiece = null;      // line under the mouse
+let hoverTarget = null;     // line under the mouse: { info, chains, pts }
 let preview = null;         // connection hovered in the candidate list
 let softGroup = null;       // group hovered in the group list
 
@@ -113,8 +113,8 @@ function esc(s) {
   return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
 
-// Points come as (unix minutes, height × 100); pieces and fallbacks by index.
-for (const p of D.pieces) p.pts = p.pts.map(([m, h]) => [m * 60e3, h / 100]);
+// Points come as (unix minutes, height × 100, station); pieces and fallbacks by index.
+for (const p of D.pieces) p.pts = p.pts.map(([m, h, s]) => [m * 60e3, h / 100, s]);
 for (const f of D.fallbacks) f.pieces = f.pieces.map(i => D.pieces[i]);
 for (const c of D.chains) c.fallbacks = c.fallbacks.map(([i, arrive]) => ({ ...D.fallbacks[i], arrive }));
 
@@ -187,19 +187,63 @@ function render() {
     return g;
   });
 
-  // One invisible wide hit line per distinct visible piece: a shared ride is
-  // one target, listing all connections using it, not an arbitrary one of them.
-  const users = new Map();
+  // Hover targets on the smallest shared units, so every connection passing
+  // through counts, wherever it boards or leaves:
+  //   rides: one per train and stop-to-stop stretch,
+  //   waits: by station and time under the mouse,
+  //   walks: per walk.
+  const tAt = px => t0 + (px - m.l) / (W - m.l - m.r) * (t1 - t0);
+  const edges = new Map(), waits = new Map(), walks = new Map();
   D.chains.forEach((c, i) => {
     if (hidden.has(c.group)) return;
-    for (const pi of c.pieces) (users.get(pi) ?? users.set(pi, []).get(pi)).push(i);
+    for (const pi of c.pieces) {
+      const p = D.pieces[pi];
+      if (p.kind === "ride") {
+        for (let k = 1; k < p.pts.length; k++) {
+          const [a, b] = [p.pts[k - 1], p.pts[k]];
+          const key = `${p.trip}:${a[0]}:${a[2]}:${b[0]}:${b[2]}`;
+          if (!edges.has(key)) {
+            const info = a[2] === b[2]
+              ? `${D.trips[p.trip]} · stop at ${D.names[a[2]]} ${timeFmt.format(a[0])}–${timeFmt.format(b[0])}`
+              : `${D.trips[p.trip]} · ${timeFmt.format(a[0])} ${D.names[a[2]]} → ${timeFmt.format(b[0])} ${D.names[b[2]]}`;
+            edges.set(key, { pts: [a, b], info, chains: new Set() });
+          }
+          edges.get(key).chains.add(i);
+        }
+      } else if (p.kind === "wait" && p.pts.length) {
+        const s = p.pts[0][2];
+        if (!waits.has(s)) waits.set(s, { spans: [], pieces: new Set() });
+        waits.get(s).spans.push({ from: p.pts[0][0], to: p.pts[p.pts.length - 1][0], chain: i });
+        waits.get(s).pieces.add(pi);
+      } else if (p.kind === "walk") {
+        if (!walks.has(pi)) walks.set(pi, new Set());
+        walks.get(pi).add(i);
+      }
+    }
   });
   const hits = el("g", {}, svg);
-  for (const [pi, chains] of users) {
-    const h = el("polyline", { points: pts(D.pieces[pi]), class: "hit", "data-piece": pi }, hits);
-    h.addEventListener("mousemove", e => { hoverPiece = { piece: pi, chains }; refresh(); moveTip(e); });
-    h.addEventListener("mouseleave", () => { hoverPiece = null; refresh(); });
-    h.addEventListener("click", e => { e.stopPropagation(); choose(pi, chains); });
+  const target = (points, hover) => {
+    const h = el("polyline", { points, class: "hit" }, hits);
+    h.addEventListener("mousemove", e => { hoverTarget = hover(e); refresh(); moveTip(e); });
+    h.addEventListener("mouseleave", () => { hoverTarget = null; refresh(); });
+    h.addEventListener("click", e => { e.stopPropagation(); choose(hover(e)); });
+  };
+  for (const edge of edges.values()) {
+    const t = { info: edge.info, chains: [...edge.chains], pts: edge.pts };
+    target(pts(t), () => t);
+  }
+  for (const [s, { spans, pieces }] of waits) {
+    for (const pi of pieces) {
+      target(pts(D.pieces[pi]), e => {
+        const at = tAt(e.clientX - svg.getBoundingClientRect().left);
+        const chains = [...new Set(spans.filter(w => w.from <= at && at <= w.to).map(w => w.chain))];
+        return { info: `waiting at ${D.names[s]} · ${timeFmt.format(at)}`, chains, pts: D.pieces[pi].pts };
+      });
+    }
+  }
+  for (const [pi, chains] of walks) {
+    const t = { info: D.pieces[pi].info, chains: [...chains], pts: D.pieces[pi].pts };
+    target(pts(t), () => t);
   }
   const hoverLayer = el("g", { "clip-path": "url(#area)" }, svg);
   const fbLayer = el("g", { class: "fallback", "clip-path": "url(#area)" }, svg);
@@ -211,9 +255,10 @@ function render() {
 }
 
 // Clicking a line: one connection selects it, several are listed to choose from.
-function choose(piece, chains) {
-  if (chains.length === 1) { candidates = null; pinned = chains[0]; }
-  else { candidates = { piece, chains }; pinned = chains.includes(pinned) ? pinned : null; }
+function choose(target) {
+  if (!target.chains.length) return;
+  if (target.chains.length === 1) { candidates = null; pinned = target.chains[0]; }
+  else { candidates = { info: target.info, chains: target.chains }; pinned = target.chains.includes(pinned) ? pinned : null; }
   refresh();
 }
 
@@ -222,7 +267,7 @@ function refresh() {
   const { svg, x, y, pts, lines, chainEls, hoverLayer, fbLayer, labels } = view;
   const strong = new Set([pinned, preview].filter(i => i !== null));
   const soft = new Set();
-  if (hoverPiece) hoverPiece.chains.forEach(i => soft.add(i));
+  if (hoverTarget) hoverTarget.chains.forEach(i => soft.add(i));
   if (candidates) candidates.chains.forEach(i => soft.add(i));
   if (softGroup !== null) D.chains.forEach((c, i) => { if (c.group === softGroup) soft.add(i); });
 
@@ -235,7 +280,7 @@ function refresh() {
   for (const i of strong) lines.appendChild(chainEls[i]);
 
   hoverLayer.replaceChildren();
-  if (hoverPiece) el("polyline", { points: pts(D.pieces[hoverPiece.piece]), class: "hover-piece" }, hoverLayer);
+  if (hoverTarget) el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
 
   fbLayer.replaceChildren();
   labels.replaceChildren();
@@ -252,13 +297,20 @@ function refresh() {
     }
   }
 
-  if (hoverPiece) {
-    const { piece, chains } = hoverPiece;
-    const p = D.pieces[piece];
-    const who = chains.length === 1
-      ? `<br><b>${esc(D.chains[chains[0]].header)}</b><span style="color:var(--muted)">${esc(D.chains[chains[0]].route)}</span>`
-      : `<br><span style="color:var(--muted)">used by ${chains.length} connections · click to list them</span>`;
-    tip.innerHTML = `<b>${esc(p.info)}</b>${who}`;
+  if (hoverTarget) {
+    const { info, chains } = hoverTarget;
+    let who;
+    if (chains.length === 1) {
+      const c = D.chains[chains[0]];
+      who = `<br><b>${esc(c.header)}</b><span style="color:var(--muted)">${esc(c.route)}</span>`;
+    } else {
+      const groups = new Map();
+      for (const i of chains) groups.set(D.chains[i].group, (groups.get(D.chains[i].group) || 0) + 1);
+      const list = [...groups].sort((a, b) => b[1] - a[1])
+        .map(([g, n]) => `<span style="color:${color(g)}">■</span> ${esc(D.groups[g].label)} (${n})`).join("<br>");
+      who = `<br><span style="color:var(--muted)">${chains.length} connections in ${groups.size} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}`;
+    }
+    tip.innerHTML = `<b>${esc(info)}</b>${who}`;
     tip.style.display = "block";
   } else {
     tip.style.display = "none";
@@ -274,14 +326,14 @@ function moveTip(e) {
 
 let panelKey = null; // avoid rebuilding the panel (and losing its hover) on every mouse move
 function renderPanel() {
-  const key = JSON.stringify([pinned, candidates && candidates.piece, candidates && candidates.chains.length]);
+  const key = JSON.stringify([pinned, candidates && candidates.info, candidates && candidates.chains.length]);
   if (key === panelKey) return;
   panelKey = key;
   if (pinned !== null) {
     panelTitle.textContent = "Selected connection";
     const c = D.chains[pinned];
     let html = candidates
-      ? `<span class="back" id="back">← ${candidates.chains.length} connections using ${esc(D.pieces[candidates.piece].info)}</span>`
+      ? `<span class="back" id="back">← ${candidates.chains.length} connections using ${esc(candidates.info)}</span>`
       : "";
     html += `<b>${esc(c.header)}</b>\n${esc(c.route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
     let at = null;
@@ -292,7 +344,7 @@ function renderPanel() {
     details.innerHTML = html;
     document.getElementById("back")?.addEventListener("click", () => { pinned = null; refresh(); });
   } else if (candidates) {
-    panelTitle.textContent = `${candidates.chains.length} connections use ${D.pieces[candidates.piece].info}`;
+    panelTitle.textContent = `${candidates.chains.length} connections use ${candidates.info}`;
     details.replaceChildren();
     for (const i of candidates.chains) {
       const c = D.chains[i];
