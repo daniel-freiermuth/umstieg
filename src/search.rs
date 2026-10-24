@@ -77,13 +77,12 @@ pub struct SearchArgs {
     /// diversions, extra trains) still applies.
     #[arg(long)]
     pub planned: bool,
-    #[command(flatten)]
-    pub endpoints: Endpoints,
 }
 
 /// Services asked and how we identify to them: set by whoever runs umstieg
 /// (the command line, or `umstieg serve` for all its searches), not per search
-/// in the web form.
+/// in the web form. Kept out of `SearchArgs`: flattened into it, clap emptied
+/// its argument group and `Option<SearchArgs>` came out `None` (clap 4.6).
 #[derive(clap::Args, Clone)]
 pub struct Endpoints {
     /// EFA journey planner asked for local legs between German stops (empty: none).
@@ -119,8 +118,12 @@ pub struct Outcome {
 
 /// Runs a search. `plot_back` asks for the plot page, with that link back to
 /// the search form (`Some(None)`: plot without link).
-pub async fn run(args: &SearchArgs, plot_back: Option<Option<String>>, events: &(dyn Fn(Event<'_>) + Sync)) -> Result<Outcome> {
-    let endpoints = &args.endpoints;
+pub async fn run(
+    args: &SearchArgs,
+    endpoints: &Endpoints,
+    plot_back: Option<Option<String>>,
+    events: &(dyn Fn(Event<'_>) + Sync),
+) -> Result<Outcome> {
     let user_agent = endpoints.user_agent();
     let motis = Motis::new(&endpoints.api, &user_agent)?;
     let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;

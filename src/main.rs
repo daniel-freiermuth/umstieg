@@ -25,6 +25,8 @@ struct Cli {
     command: Option<Command>,
     #[command(flatten)]
     search: Option<search::SearchArgs>,
+    #[command(flatten)]
+    endpoints: search::Endpoints,
 }
 
 #[derive(Subcommand)]
@@ -56,7 +58,7 @@ async fn main() -> Result<()> {
             eprintln!("warning: {warning}");
         }
     };
-    let outcome = search::run(&args, args.html.as_ref().map(|_| None), &events).await?;
+    let outcome = search::run(&args, &cli.endpoints, args.html.as_ref().map(|_| None), &events).await?;
     print!("{}", outcome.text);
     if let (Some(path), Some(html)) = (&args.html, &outcome.html) {
         std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))?;

@@ -25,9 +25,9 @@ const FORM: &str = include_str!("form.html");
 const PROGRESS: &str = include_str!("progress.html");
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
-/// Options not in the form: text output only, chosen on the plot page itself
-/// (metric), or the server's (endpoints, given to `umstieg serve`).
-const NOT_IN_FORM: [&str; 9] = ["html", "detail", "per_group", "metric", "help", "version", "efa", "api", "contact"];
+/// Options not in the form: text output only, or chosen on the plot page itself
+/// (metric). The services (`Endpoints`) aren't search options at all.
+const NOT_IN_FORM: [&str; 6] = ["html", "detail", "per_group", "metric", "help", "version"];
 /// Options shown folded under "Advanced".
 const ADVANCED: [&str; 4] = ["hubs", "max_nodes", "no_db", "all_stops"];
 
@@ -187,12 +187,10 @@ async fn start(
     RawQuery(raw): RawQuery,
     Query(params): Query<Vec<(String, String)>>,
 ) -> Response {
-    let mut args = match parse(&params) {
+    let args = match parse(&params) {
         Ok(args) => args,
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
-    // Not settable from the page, even by hand-crafted URLs.
-    args.endpoints = app.endpoints.clone();
     let id = app.next.fetch_add(1, Ordering::Relaxed);
     {
         let mut jobs = app.jobs.lock().expect("jobs poisoned");
@@ -224,7 +222,8 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
         Event::Stage(stage) => note(stage.to_owned()),
         Event::Warning(warning) => note(format!("warning: {warning}")),
     };
-    let result = search::run(&args, Some(back), &events).await;
+    // The server's services, whatever the URL says.
+    let result = search::run(&args, &app.endpoints, Some(back), &events).await;
     let result = match result {
         Ok(outcome) => outcome.html.ok_or(outcome.text),
         Err(e) => Err(format!("{e:#}")),
