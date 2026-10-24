@@ -42,6 +42,8 @@
   .axis line { stroke: var(--grid); }
   .station line { stroke: var(--grid); stroke-dasharray: 2 3; }
   .station .leader { fill: none; stroke-width: 1; }
+  .station .station-name { cursor: pointer; }
+  .station .station-name:hover { fill: var(--fg); }
   /* Base: every stretch drawn once, rides coloured by train. */
   .base .ride, .overlay .ride { fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
   .base .wait, .overlay .wait { fill: none; stroke: var(--wait); stroke-width: 1; }
@@ -310,6 +312,7 @@ function buildModel() {
     };
     for (const [s, t] of src.at) { early(s, t); late(s, t); }
     for (const [s, t] of src.back ?? []) late(s, t);
+    for (const [s, t] of src.fwd ?? []) early(s, t);
     const boarded = new Map(src.trip === undefined ? [] : [[src.trip, src.from]]);
     for (const c of byDep) {
       if ((boarded.has(c.trip) && c.dep >= boarded.get(c.trip)) || ea.get(c.from) <= c.dep) {
@@ -366,7 +369,30 @@ function buildModel() {
     const t = { info: D.pieces[pi].info, chains: [...chains], pts: D.pieces[pi].pts };
     targets.push({ pts: t.pts, at: () => t });
   }
-  model = { edges: [...edges.values()], waits: [...waits.values()], walks: [...walks.keys()], warns: [...warns], targets };
+  // A station on the axis: every connection touching it, and what is
+  // reachable through it at any time (arriving whenever, leaving whenever).
+  const touching = new Map();
+  D.chains.forEach((c, i) => {
+    if (hidden.has(c.group)) return;
+    for (const pi of c.pieces) for (const [, , s] of D.pieces[pi].pts) {
+      if (!touching.has(s)) touching.set(s, new Set());
+      touching.get(s).add(i);
+    }
+  });
+  const stationTargets = new Map();
+  const stationTarget = s => {
+    if (!stationTargets.has(s)) {
+      const chains = touching.get(s) ?? new Set();
+      const h = D.metrics[metricIndex].heights[s];
+      stationTargets.set(s, {
+        info: `${D.names[s]} · any time`, chains: [...chains], pts: [[full.t0, h, s], [full.t1, h, s]],
+        reach: { key: `station:${s}`, with: chains,
+                 segments: closure({ at: [], fwd: [[s, -Infinity]], back: [[s, Infinity]] }) },
+      });
+    }
+    return stationTargets.get(s);
+  };
+  model = { edges: [...edges.values()], waits: [...waits.values()], walks: [...walks.keys()], warns: [...warns], targets, stationTarget };
 }
 
 function render() {
@@ -409,9 +435,13 @@ function render() {
     el("polyline", { points: `${m.l - 26},${at[k]} ${m.l - 8},${s.py} ${m.l},${s.py}`, class: "leader",
                      stroke: `hsl(${hue(s.i)}, 60%, 50%)` }, stations);
     const t = el("text", { x: m.l - 30, y: at[k] + gap / 3, "text-anchor": "end",
-                           "font-size": Math.min(11, gap) }, stations);
+                           "font-size": Math.min(11, gap), class: "station-name" }, stations);
     t.textContent = s.name.length > 32 ? s.name.slice(0, 31) + "…" : s.name;
-    el("title", {}, t).textContent = s.name;
+    // Like a line in the plot: hovering previews what passes through the
+    // station at any time, clicking lists the connections touching it.
+    t.addEventListener("mousemove", e => { if (drag) return; hoverTarget = model.stationTarget(s.i); refresh(); moveTip(e); });
+    t.addEventListener("mouseleave", () => { hoverTarget = null; refresh(); });
+    t.addEventListener("click", e => { e.stopPropagation(); if (!dragged) choose(model.stationTarget(s.i)); });
   });
 
   // Time ticks: the coarsest step that still gives about ten labels.
