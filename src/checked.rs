@@ -13,7 +13,7 @@ pub fn later(t: DateTime<Utc>, d: TimeDelta, what: &str) -> Result<DateTime<Utc>
 
 /// `t + d`, at most the latest representable time: for bounds like deadlines.
 pub fn later_or_max(t: DateTime<Utc>, d: TimeDelta) -> DateTime<Utc> {
-    t.checked_add_signed(d).unwrap_or(DateTime::<Utc>::MAX_UTC)
+    t.checked_add_signed(d).unwrap_or(DateTime::<Utc>::MAX_UTC) // smoke
 }
 
 /// `t - d`, at least the earliest representable time.

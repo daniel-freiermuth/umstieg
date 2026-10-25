@@ -3,7 +3,7 @@
 /** Element i, which the data guarantees to exist. */
 export function item<T>(xs: readonly T[], i: number): T {
   const x = xs[i];
-  if (x === undefined) throw new Error(`index ${String(i)} out of range`);
+  if (x === undefined || i < 0) throw new Error(`index ${String(i)} out of range`);
   return x;
 }
 
