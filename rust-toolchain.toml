@@ -1,0 +1,5 @@
+# Pinned so CI lints with the same clippy as local development; bump deliberately.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy", "llvm-tools"]
+profile = "minimal"

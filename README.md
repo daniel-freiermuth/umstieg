@@ -225,3 +225,9 @@ tests compare the search, profile scan and reachability against brute force on
 random timetables. `src/e2e_tests.rs` runs whole searches and the web front end
 against local stand-ins for Transitous, EFA and the DB API — no test touches the
 network or the user's caches. `just coverage` reports line coverage.
+
+CI (`.github/workflows/ci.yml`) runs the same `just` recipes on every push to
+`main` and every pull request, one job each: rustfmt, clippy, tests, rustdoc,
+web (TypeScript, ESLint, Prettier, `bun test`, `web/dist` up to date) and
+coverage (summary on the run page, lcov as artifact). The Rust toolchain is
+pinned in `rust-toolchain.toml`, Bun in the workflow.

@@ -1,12 +1,20 @@
-# Everything CI-worthy: formatting, all lints as errors, tests, docs, and the
-# web pages (TypeScript strict + ESLint strict, bundled output up to date).
-check: web-check
+# Everything CI runs (.github/workflows/ci.yml runs these recipes one per job):
+# formatting, all lints as errors, tests, docs, and the web pages.
+check: fmt-check clippy test doc web-check
+
+fmt-check:
     cargo fmt --check
+
+clippy:
     cargo clippy --all-targets --locked -- -D warnings
-    cargo test --locked
+
+test:
+    cargo nextest run --locked
+
+doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --locked
 
-# Type-check, lint and format-check the TypeScript; the committed web/dist
+# Type-check, lint, format-check and test the TypeScript; the committed web/dist
 # (what the binary embeds) must match a fresh bundle.
 web-check:
     #!/usr/bin/env bash
@@ -24,10 +32,9 @@ web-check:
 web:
     cd web && npm run --silent build
 
-# Line/branch coverage of the Rust code (HTML in target/llvm-cov/html) and
-# of the web modules.
+# Line coverage of the Rust code (HTML in target/llvm-cov/html) and of the web modules.
 coverage:
-    cargo llvm-cov nextest --html
+    cargo llvm-cov nextest --locked --html
     cargo llvm-cov report --summary-only
     cd web && bun test --coverage
 
