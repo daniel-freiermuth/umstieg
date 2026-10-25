@@ -1,0 +1,36 @@
+# cargo-mutants: CI gates pull requests on the mutants in their diff
+# (`just mutants-diff`); `just mutants` runs everything. A missed mutant fails;
+# a timeout counts as caught (the mutant made a test hang).
+test_tool = "nextest"
+exclude_globs = ["src/*_tests.rs", "src/testkit.rs"]
+# Stop at the first failing test: otherwise a mutant a unit test already
+# caught waits for a property test it sent into a loop, and times out.
+additional_cargo_test_args = ["--max-fail=1:immediate"]
+# Equivalent mutants: same results, at most slower. Each with why.
+exclude_re = [
+  # Re-offering an equal arrival never settles the scan: hangs, wasting the timeout.
+  'replace earliest_arrival::improve -> bool with true',
+  'replace < with (==|<=) in earliest_arrival::improve',
+  # Re-relaxing an equal bound changes nothing (or loops on zero-time edges).
+  'replace < with <= in lower_bounds',
+  # At pop time d >= best, so this only stops skipping stale heap entries, which can't improve anything.
+  'replace > with < in lower_bounds',
+  # Stores the value already there, or loops re-scanning zero-time rides.
+  'replace < with <= in fastest_journeys',
+  # Pushes a second entry with the same departure instead of overwriting; lookups take the last one.
+  'replace match guard last\.0 == r\.departure with false in fastest_journeys',
+  # Recomputes fastest_with(missed_by <= 0): the same or a stricter search that already found nothing.
+  'replace match guard limits\.missed_by > TimeDelta::zero\(\) with true in enumerate$',
+  'replace > with >= in enumerate$',
+  # Riding a train past the deadline stops at its first stop: no node, no chain.
+  "replace match guard departure > d with false in Search<'_>::explore",
+  # presence is empty exactly when no ride was taken, so this arm can't match then.
+  "replace match guard !first with true in Search<'_>::explore",
+  # Only a nonzero b overflows, so b == 0 never decides the saturation side.
+  'replace < with <= in sum',
+  'replace > with >= in difference',
+  # A cache file exactly ttl old to the nanosecond can't be produced.
+  'replace < with <= in DiskCache::get_or_fetch',
+  # On equal times, clamping to the previous time assigns the same value.
+  'replace < with <= in propagate_delays',
+]

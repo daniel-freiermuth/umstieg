@@ -231,3 +231,15 @@ CI (`.github/workflows/ci.yml`) runs the same `just` recipes on every push to
 web (TypeScript, ESLint, Prettier, `bun test`, `web/dist` up to date) and
 coverage (summary on the run page, lcov as artifact). The Rust toolchain is
 pinned in `rust-toolchain.toml`, Bun in the workflow.
+
+Pull requests also pass a mutation gate (`.github/workflows/mutants.yml`),
+informed by the diff: a mutant — a small change like `<` → `<=` — in a line the
+PR changes that no test notices fails the PR; untouched code doesn't count.
+Rust: `just mutants-diff` (cargo-mutants; `just mutants` runs all, about an
+hour); a mutant that makes a test hang counts as caught, and equivalent mutants
+are excluded with their reason in `.cargo/mutants.toml`. Web: `just
+web-mutants-diff` (Stryker on the helper modules, not the DOM scripts; `just
+web-mutants` runs all of them); equivalent mutants carry a `// Stryker disable
+next-line` comment saying why. Stryker mutates in place (restoring
+afterwards), since `data.test.ts` reads `../testdata`. Currently no mutant
+survives anywhere, so full runs pass too.
