@@ -99,18 +99,30 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - run: cargo llvm-cov nextest --locked --lcov --output-path lcov.info
-      - name: summary
+      - name: Rust summary
         run: |
           {
+            echo '### Rust'
             echo '```'
             cargo llvm-cov report --summary-only
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - run: npm ci
         working-directory: web
-      - run: bun test --coverage
+      - name: web coverage and summary
         working-directory: web
+        run: |
+          set -o pipefail
+          bun test --coverage --coverage-reporter=text --coverage-reporter=lcov 2>&1 | tee test.log
+          {
+            echo '### Web'
+            echo '```'
+            sed -n '/^-*|/,$p' test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: lcov
-          path: lcov.info
+          path: |
+            lcov.info
+            web/coverage/lcov.info
