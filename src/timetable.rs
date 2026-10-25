@@ -22,9 +22,9 @@ const MAX_HOURS_PER_STATION: usize = 10;
 const MAX_DISCOVERED: usize = 20;
 /// Stops of different feeds closer than this are one station.
 const SAME_STATION_METERS: f64 = 300.0;
-/// Walking speed and minimum walk between nearby stations without MOTIS footpath.
-const WALK_METERS_PER_SECOND: f64 = 1.0;
-const MIN_WALK: TimeDelta = TimeDelta::minutes(5);
+/// Walk between nearby stations without a MOTIS footpath: `SAME_STATION_METERS`
+/// at walking pace (1 m/s) is at most this long.
+const NEARBY_WALK: TimeDelta = TimeDelta::minutes(5);
 /// DB boards cover German stations; elsewhere they are empty.
 const DB_TIME_ZONE: &str = "Europe/Berlin";
 
@@ -442,13 +442,8 @@ fn footpaths(stations: &[Station], mut walks: HashMap<(usize, usize), TimeDelta>
     for (a, sa) in stations.iter().enumerate() {
         for (b, sb) in stations.iter().enumerate().filter(|&(b, _)| b != a) {
             let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
-            let distance = meters(pa, pb);
-            if distance <= SAME_STATION_METERS {
-                // Within SAME_STATION_METERS this is minutes; the fallback only keeps it panic-free.
-                let walk = TimeDelta::try_seconds(whole_seconds(distance / WALK_METERS_PER_SECOND))
-                    .unwrap_or(MIN_WALK)
-                    .max(MIN_WALK);
-                walks.entry((a, b)).or_insert(walk);
+            if meters(pa, pb) <= SAME_STATION_METERS {
+                walks.entry((a, b)).or_insert(NEARBY_WALK);
             }
         }
     }
@@ -751,6 +746,8 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             // DB's route lists every stop; a stop unknown to DB between its
             // first and last call is the same station under another name
             // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
+            // So is one at the very time of the first or last call: a train
+            // can't be at two stations at once.
             let db_times = trip.calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
             let span = db_times.clone().min().zip(db_times.max());
             let mut added = Vec::new();
@@ -759,7 +756,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
                 let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
                 let unknown_inside = name.is_none()
                     && !route.is_empty()
-                    && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo < t && t < hi);
+                    && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
                 if trip.call_at(call.station).is_none() && !off_route && !unknown_inside && !covered(&call, motis.class)
                 {
                     added.push(call.clone());

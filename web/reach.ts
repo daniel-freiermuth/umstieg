@@ -111,7 +111,12 @@ type Cut = [j: number, k: number, t: number];
 export function reachSegments(pieces: readonly Line[], chains: readonly Route[], items: readonly Through[]): Segment[] {
   const from = new Map<number, Cut>(),
     upTo = new Map<number, Cut>();
-  const before = (a: Cut, b: Cut): boolean => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
+  // Cuts in order of position, then time (the same stay reached at two times).
+  const before = (a: Cut, b: Cut): boolean => {
+    // Stryker disable next-line EqualityOperator: <= only differs for equal cuts, and replacing one by an equal one changes nothing.
+    const sooner = a[2] < b[2];
+    return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && sooner)));
+  };
   const last = (pi: number): number => item(pieces, pi).pts.length - 1;
   for (const { spans, t, back, fwd } of items)
     for (const w of spans) {
@@ -127,16 +132,15 @@ export function reachSegments(pieces: readonly Line[], chains: readonly Route[],
       }
     }
   const raw = new Map<number, Interval[]>();
-  // Points k0..k1 of a piece; a flat end (wait, standing) is clipped to the cut time.
+  // Points k0..k1 of a piece; the end at a cut (always flat: a wait, or a
+  // train standing) is clipped to the cut time.
   const add = (pi: number, k0: number, k1: number, c0: number | null = null, c1: number | null = null): void => {
     const s = item(pieces, pi).pts;
     if (!s.length) return;
     let a = item(s, k0)[0],
       b = item(s, k1)[0];
-    if (c0 !== null && k0 < k1 && item(s, k0)[2] === item(s, k0 + 1)[2])
-      a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
-    if (c1 !== null && k1 > k0 && item(s, k1)[2] === item(s, k1 - 1)[2])
-      b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
+    if (c0 !== null && k0 < k1) a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
+    if (c1 !== null && k1 > k0) b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
     entry(raw, pi, () => []).push([a, b]);
   };
   for (const [chain, [j, k0, t]] of from) {
@@ -265,7 +269,8 @@ export function network(
     if (!visible(i)) return;
     c.pieces.forEach((pi, j) => {
       const p = item(pieces, pi);
-      if (p.kind === "ride" && p.trip !== null) {
+      if (p.kind === "ride") {
+        if (p.trip === null) return;
         const trip = p.trip;
         for (let k = 1; k < p.pts.length; k++) {
           const a = item(p.pts, k - 1),
@@ -283,9 +288,7 @@ export function network(
         entry(waits, s, () => ({ y: first[1], spans: [], runs: [] })).spans.push(span);
         stay(s, first[1], span);
         if (p.warn) warns.add(pi);
-      } else if (p.kind === "walk") {
-        entry(walks, pi, () => new Set()).add(i);
-      }
+      } else entry(walks, pi, () => new Set()).add(i);
     });
   });
   // Overlapping waits at a station merge into one line per continuous stay.
@@ -304,15 +307,16 @@ export function network(
   }));
   const byDep = [...conns].sort((a, b) => a.dep - b.dep),
     byArr = [...conns].sort((a, b) => b.arr - a.arr);
-  const foot = new Map<number, Map<number, number>>(),
-    footBack = new Map<number, Map<number, number>>();
+  // Walks from (to) a station: where to (from), how long.
+  const foot = new Map<number, [number, number][]>(),
+    footBack = new Map<number, [number, number][]>();
   for (const pi of walks.keys()) {
     const p = item(pieces, pi);
     const a = p.pts[0],
       b = p.pts[p.pts.length - 1];
-    if (p.pts.length < 2 || !a || !b) continue;
-    entry(foot, a[2], () => new Map()).set(b[2], b[0] - a[0]);
-    entry(footBack, b[2], () => new Map()).set(a[2], b[0] - a[0]);
+    if (!a || !b) continue;
+    entry(foot, a[2], () => []).push([b[2], b[0] - a[0]]);
+    entry(footBack, b[2], () => []).push([a[2], b[0] - a[0]]);
   }
   // Earliest arrival forward, latest departure backward.
   const reach = (src: Source): Segment[] => {
@@ -321,12 +325,12 @@ export function network(
     const early = (x: number, t: number): void => {
       if (atMost(ea.get(x), t)) return;
       ea.set(x, t);
-      for (const [y, d] of foot.get(x) ?? []) if (!atMost(ea.get(y), t + d)) ea.set(y, t + d);
+      for (const [y, d] of foot.get(x) ?? []) early(y, t + d);
     };
     const late = (x: number, t: number): void => {
       if (atLeast(ld.get(x), t)) return;
       ld.set(x, t);
-      for (const [y, d] of footBack.get(x) ?? []) if (!atLeast(ld.get(y), t - d)) ld.set(y, t - d);
+      for (const [y, d] of footBack.get(x) ?? []) late(y, t - d);
     };
     for (const [s, t] of src.at) {
       early(s, t);
@@ -334,11 +338,13 @@ export function network(
     }
     for (const [s, t] of src.back ?? []) late(s, t);
     for (const [s, t] of src.fwd ?? []) early(s, t);
+    // On a train (since, until) every later (earlier) stretch of it counts,
+    // even across stretches no visible connection rides.
     const boarded = new Map<number, number>(src.ride ? [[src.ride.trip, src.ride.from]] : []);
     for (const c of byDep) {
       const since = boarded.get(c.trip);
       if ((since !== undefined && c.dep >= since) || atMost(ea.get(c.from), c.dep)) {
-        if (since === undefined) boarded.set(c.trip, c.dep);
+        boarded.set(c.trip, c.dep);
         early(c.to, c.arr);
       }
     }
@@ -346,7 +352,7 @@ export function network(
     for (const c of byArr) {
       const until = alighted.get(c.trip);
       if ((until !== undefined && c.arr <= until) || atLeast(ld.get(c.to), c.arr)) {
-        if (until === undefined) alighted.set(c.trip, c.arr);
+        alighted.set(c.trip, c.arr);
         late(c.from, c.dep);
       }
     }

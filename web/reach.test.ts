@@ -230,6 +230,109 @@ describe("reach is transitive over everything plotted", () => {
   test("hidden connections don't connect", () => {
     expect(walking(5).reach(onIce774, (chain) => chain !== 1)).toEqual(["ICE774 20-40"]);
   });
+
+  test("walks chain, both ways, and the shortest walk between two stations counts", () => {
+    const F = 5;
+    const plot = new Plot(
+      {
+        waitA: wait(A, 0, 5),
+        T1: ride(1, [
+          [A, 5],
+          [B, 10],
+        ]),
+        fast: walk(B, 10, C, 12),
+        slow: walk(B, 30, C, 40),
+        hop: walk(C, 12, D, 14),
+        waitD: wait(D, 14, 20),
+        T2: ride(2, [
+          [D, 20],
+          [E, 30],
+        ]),
+        T0: ride(3, [
+          [F, 0],
+          [C, 5],
+        ]),
+        waitC: wait(C, 5, 15),
+        T3: ride(4, [
+          [C, 15],
+          [E, 25],
+        ]),
+      },
+      ["waitA", "T1", "fast"],
+      ["slow"],
+      ["hop", "waitD", "T2"],
+      ["T0", "waitC", "T3"],
+    );
+    // On T1: at B at 10, at C at 12 (not 20), at D at 14.
+    expect(plot.reach({ at: [], back: [[A, 5]], ride: { trip: 1, from: 5, until: 5 } })).toEqual([
+      "T2 20-30",
+      "T3 15-25",
+      "waitA 0-5",
+      "waitC 12-15",
+      "waitD 14-20",
+    ]);
+    // On T2: at D by 20, at C by 18, at B by 16 (not 8), so T1 behind.
+    expect(plot.reach({ at: [], back: [[D, 20]], ride: { trip: 2, from: 20, until: 20 } })).toEqual([
+      "T0 0-5",
+      "hop 12-14",
+      "waitA 0-5",
+      "waitC 5-15",
+      "waitD 14-20",
+    ]);
+  });
+
+  test("on a train, its later and earlier stretches count, plotted or not in between", () => {
+    // Train 7 from A to B and from C to D; no connection rides it from B to C.
+    const plot = new Plot(
+      {
+        waitA: wait(A, 0, 5),
+        T7a: ride(7, [
+          [A, 5],
+          [B, 10],
+        ]),
+        T7b: ride(7, [
+          [C, 20],
+          [D, 30],
+        ]),
+        waitD: wait(D, 30, 40),
+        T8: ride(8, [
+          [D, 40],
+          [E, 50],
+        ]),
+      },
+      ["waitA", "T7a"],
+      ["T7b", "waitD", "T8"],
+    );
+    expect(plot.reach({ at: [], fwd: [[A, 5]] })).toEqual(["T7a 5-10", "T8 40-50", "waitA 5-5", "waitD 30-40"]);
+    expect(plot.reach({ at: [], back: [[E, 50]] })).toEqual(["T7b 20-30", "waitA 0-5", "waitD 30-40"]);
+    // On it at B at 10: from there on, and up to there.
+    expect(plot.reach({ at: [], ride: { trip: 7, from: 10, until: 10 } })).toEqual([
+      "T8 40-50",
+      "waitA 0-5",
+      "waitD 30-40",
+    ]);
+  });
+
+  test("walks there and back in no time end", () => {
+    const plot = new Plot(
+      {
+        T1: ride(1, [
+          [A, 0],
+          [B, 10],
+        ]),
+        there: walk(B, 10, C, 10),
+        back: walk(C, 10, B, 10),
+        waitB: wait(B, 10, 20),
+        T2: ride(2, [
+          [B, 20],
+          [D, 30],
+        ]),
+      },
+      ["T1", "there"],
+      ["back", "waitB", "T2"],
+    );
+    expect(plot.reach({ at: [[B, 10]] })).toEqual(["T2 20-30", "back 10-10", "waitB 10-20"]);
+  });
 });
 
 describe("reachSegments", () => {
@@ -295,6 +398,98 @@ describe("reachSegments", () => {
   test("both halves at one time meet without a gap", () => {
     expect(at([span(2, 10, 20)], 15, true, true)).toEqual(["T1 5-10", "T2 20-30", "waitA 0-5", "waitB 10-20"]);
   });
+
+  test("of two stops of one train the earlier forward, the later backward; then the time", () => {
+    // Standing at B 10–12 (point 2) and at C 20–22 (point 4).
+    const train = new Plot(
+      {
+        T: ride(1, [
+          [A, 0],
+          [B, 10, 12],
+          [C, 20, 22],
+          [D, 30],
+        ]),
+      },
+      ["T"],
+    );
+    const reach = (items: [Span, number][], back: boolean): string[] =>
+      train.show(
+        reachSegments(
+          train.pieces,
+          train.chains,
+          items.map(([w, t]) => ({ spans: [w], t, back, fwd: !back })),
+        ),
+      );
+    // In both orders.
+    const both = (items: [Span, number][], back: boolean): string[][] => [
+      reach(items, back),
+      reach([...items].reverse(), back),
+    ];
+    const atB = span(0, 10, 12, 2),
+      atC = span(0, 20, 22, 4);
+    // At B later than at C: still B is ahead, C behind.
+    expect(
+      both(
+        [
+          [atB, 11],
+          [atC, 5],
+        ],
+        false,
+      ),
+    ).toEqual([["T 11-30"], ["T 11-30"]]);
+    expect(
+      both(
+        [
+          [atB, 25],
+          [atC, 21],
+        ],
+        true,
+      ),
+    ).toEqual([["T 0-21"], ["T 0-21"]]);
+    // The same stop twice: forward from the earlier time, backward up to the later.
+    expect(
+      both(
+        [
+          [atB, 10.5],
+          [atB, 11.5],
+        ],
+        false,
+      ),
+    ).toEqual([["T 10.5-30"], ["T 10.5-30"]]);
+    expect(
+      both(
+        [
+          [atB, 10.5],
+          [atB, 11.5],
+        ],
+        true,
+      ),
+    ).toEqual([["T 0-11.5"], ["T 0-11.5"]]);
+  });
+
+  test("pieces without points are skipped, single-point waits kept", () => {
+    const odd = new Plot(
+      {
+        waitA: wait(A, 0, 5),
+        none: { kind: "walk", warn: false, trip: null, pts: [] },
+        T1: ride(1, [
+          [A, 5],
+          [B, 10],
+        ]),
+        waitB: { kind: "wait", warn: false, trip: null, pts: [pt(B, 10)] },
+        T2: ride(2, [
+          [B, 10],
+          [C, 20],
+        ]),
+      },
+      ["waitA", "none", "T1", "waitB", "T2"],
+    );
+    const reach = (j: number, from: number, to: number, t: number, back: boolean): string[] =>
+      odd.show(reachSegments(odd.pieces, odd.chains, [{ spans: [span(j, from, to)], t, back, fwd: !back }]));
+    expect(reach(0, 0, 5, 2, false)).toEqual(["T1 5-10", "T2 10-20", "waitA 2-5", "waitB 10-10"]);
+    expect(reach(3, 10, 10, 10, false)).toEqual(["T2 10-20", "waitB 10-10"]);
+    expect(reach(3, 10, 10, 10, true)).toEqual(["T1 5-10", "waitA 0-5", "waitB 10-10"]);
+  });
 });
 
 describe("network", () => {
@@ -350,6 +545,7 @@ describe("network", () => {
     expect(net.stays.get(C)?.spans).toEqual([{ from: 20, to: 30, chain: 0, j: 1 }]);
     expect([...net.stays.keys()].sort()).toEqual([B, C]);
     expect(net.warns).toEqual([plot.index("waitC")]);
+    expect(network(changesAtB.pieces, changesAtB.chains, () => true).warns).toEqual([]);
   });
 
   test("overlapping and touching waits at a station make one run", () => {
@@ -499,11 +695,13 @@ describe("interval algebra", () => {
   test("intersectReach of nothing is nothing", () => {
     expect(intersectReach([])).toEqual([]);
     expect(intersectReach([[[0, 1, 5]], []])).toEqual([]);
+    expect(intersectReach([[[0, 1, 5]], [[0, 7, 9]]])).toEqual([]);
   });
 });
 
 describe("reach on random timetables", () => {
-  // Connections of one to three rides over five stations, waiting between.
+  // Connections of one to three rides over five stations, waiting between,
+  // sometimes after a walk.
   function randomPlot(rnd: (n: number) => number): { pieces: Line[]; chains: Route[] } {
     const pieces: Line[] = [],
       chains: Route[] = [];
@@ -513,6 +711,12 @@ describe("reach on random timetables", () => {
       let s = rnd(5),
         t = rnd(30);
       for (let r = 0, n = 1 + rnd(3); r < n; r++) {
+        if (r > 0 && rnd(3) === 0) {
+          const to = (s + 1 + rnd(4)) % 5,
+            arrive = t + rnd(5);
+          ids.push(pieces.push(walk(s, t, to, arrive)) - 1);
+          [s, t] = [to, arrive];
+        }
         if (r > 0) {
           const until = t + rnd(10);
           ids.push(pieces.push(wait(s, t, until)) - 1);
@@ -581,5 +785,89 @@ describe("reach on random timetables", () => {
         }
       });
     }
+  });
+
+  // The closure the slow way: relax every stretch and walk until nothing changes.
+  function slowReach(pieces: readonly Line[], chains: readonly Route[], src: Source): Segment[] {
+    const net = network(pieces, chains, () => true);
+    const ea = new Map<number, number>(),
+      ld = new Map<number, number>(),
+      boarded = new Map<number, number>(),
+      alighted = new Map<number, number>();
+    // Keep the earlier (later) time; whether it changed.
+    const earlier = (m: Map<number, number>, x: number, t: number): boolean => {
+      const v = m.get(x);
+      if (v !== undefined && v <= t) return false;
+      m.set(x, t);
+      return true;
+    };
+    const later = (m: Map<number, number>, x: number, t: number): boolean => {
+      const v = m.get(x);
+      if (v !== undefined && v >= t) return false;
+      m.set(x, t);
+      return true;
+    };
+    for (const [s, t] of [...src.at, ...(src.fwd ?? [])]) earlier(ea, s, t);
+    for (const [s, t] of [...src.at, ...(src.back ?? [])]) later(ld, s, t);
+    if (src.ride) {
+      boarded.set(src.ride.trip, src.ride.from);
+      alighted.set(src.ride.trip, src.ride.until);
+    }
+    const walks = [...net.walks.keys()].map((pi) => pieces[pi]?.pts ?? []);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const {
+        trip,
+        pts: [a, b],
+      } of net.rides) {
+        const there = ea.get(a[2]),
+          on = boarded.get(trip);
+        if (there !== undefined && there <= a[0]) changed = earlier(boarded, trip, a[0]) || changed;
+        if (on !== undefined && on <= a[0]) changed = earlier(ea, b[2], b[0]) || changed;
+        const by = ld.get(b[2]),
+          off = alighted.get(trip);
+        if (by !== undefined && by >= b[0]) changed = later(alighted, trip, b[0]) || changed;
+        if (off !== undefined && off >= b[0]) changed = later(ld, a[2], a[0]) || changed;
+      }
+      for (const pts of walks) {
+        const a = pts[0],
+          b = pts[pts.length - 1];
+        if (!a || !b) continue;
+        const there = ea.get(a[2]),
+          by = ld.get(b[2]);
+        if (there !== undefined) changed = earlier(ea, b[2], there + b[0] - a[0]) || changed;
+        if (by !== undefined) changed = later(ld, a[2], by - b[0] + a[0]) || changed;
+      }
+    }
+    const items = [
+      ...[...ea].map(([x, t]) => ({ spans: net.stays.get(x)?.spans ?? [], t, back: false, fwd: true })),
+      ...[...ld].map(([x, t]) => ({ spans: net.stays.get(x)?.spans ?? [], t, back: true, fwd: false })),
+    ];
+    return reachSegments(pieces, chains, items);
+  }
+
+  test("the same as relaxing every stretch and walk until nothing changes", () => {
+    const show = (segments: readonly Segment[]): string[] => segments.map((x) => x.join(" ")).sort();
+    let reaching = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const rnd = random(seed);
+      const { pieces, chains } = randomPlot(rnd);
+      const net = network(pieces, chains, () => true);
+      const s = rnd(5),
+        t = 10 + rnd(30);
+      // On a random stretch, as hovering it asks.
+      const r = net.rides[rnd(net.rides.length)];
+      const sources: Source[] = [{ at: [[s, t]] }, { at: [], back: [[s, t]] }, { at: [], fwd: [[s, t]] }];
+      if (r) {
+        const [[t0, , s0]] = r.pts;
+        sources.push({ at: [], back: [[s0, t0]], ride: { trip: r.trip, from: t0, until: t0 } });
+      }
+      for (const src of sources) {
+        const fast = net.reach(src);
+        if (fast.length) reaching++;
+        expect({ seed, src, reach: show(fast) }).toEqual({ seed, src, reach: show(slowReach(pieces, chains, src)) });
+      }
+    }
+    expect(reaching).toBeGreaterThan(400);
   });
 });

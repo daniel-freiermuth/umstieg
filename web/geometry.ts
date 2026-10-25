@@ -69,11 +69,13 @@ const MIN_T = 10 * 60e3;
 export function clampDomain(dom: Domain, full: Domain): Domain {
   let { t0, t1, y0, y1 } = dom;
   const minY = (full.y1 - full.y0) / 200;
+  // Stryker disable next-line EqualityOperator: exactly 10 minutes, re-centring gives the same domain.
   if (t1 - t0 < MIN_T) {
     const c = (t0 + t1) / 2;
     t0 = c - MIN_T / 2;
     t1 = c + MIN_T / 2;
   }
+  // Stryker disable next-line EqualityOperator: exactly the minimum height, re-centring gives the same domain.
   if (y1 - y0 < minY) {
     const c = (y0 + y1) / 2;
     y0 = c - minY / 2;
@@ -81,8 +83,11 @@ export function clampDomain(dom: Domain, full: Domain): Domain {
   }
   const span = (lo: number, hi: number, a: number, b: number): Interval => {
     // Never wider than everything, and never off it.
+    // Stryker disable next-line EqualityOperator: exactly as wide, [a, b] is what the shifts below return too.
     if (hi - lo > b - a) return [a, b];
+    // Stryker disable next-line EqualityOperator: at the edge, shifting by nothing gives the same interval.
     if (lo < a) return [a, a + hi - lo];
+    // Stryker disable next-line EqualityOperator: at the edge, shifting by nothing gives the same interval.
     if (hi > b) return [b - (hi - lo), b];
     return [lo, hi];
   };
@@ -141,6 +146,7 @@ export function spreadLabels(ys: readonly number[], gap: number, bottom: number)
   const at = [...ys];
   for (let k = 1; k < at.length; k++) at[k] = Math.max(item(at, k), item(at, k - 1) + gap);
   const lastAt = at[at.length - 1];
+  // Stryker disable next-line EqualityOperator: ending exactly at the bottom, pushing up from there changes nothing.
   if (lastAt !== undefined && lastAt > bottom) {
     at[at.length - 1] = bottom;
     for (let k = at.length - 2; k >= 0; k--) at[k] = Math.min(item(at, k), item(at, k + 1) - gap);

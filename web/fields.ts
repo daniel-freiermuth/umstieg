@@ -44,6 +44,7 @@ export const decodeSpec: Decoder<Spec> = (v, path) => {
 };
 
 /** Option name as a label: "max_changes" → "Max changes". */
+// Stryker disable next-line Regex: without the g flag /./ replaces only the first character too.
 export const label = (name: string): string => name.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 /** The value given in the URL, if any (own keys only: "constructor" is no value). */
@@ -96,6 +97,7 @@ export const omitted = (f: Field, value: string): boolean =>
  */
 export function stationQuery(value: string, several: boolean): { q: string; prefix: string } | null {
   const parts = value.split(";");
+  // Stryker disable next-line StringLiteral: split always returns at least one part, so the fallback is never used.
   const q = (several ? (parts.at(-1) ?? "") : value).trim();
   const prefix = several
     ? parts

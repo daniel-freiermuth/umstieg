@@ -15,21 +15,23 @@ function fail(path: string, expected: string): never {
   throw new DecodeError(`${path}: expected ${expected}`);
 }
 
-function toJson(value: unknown, path: string): Json {
+// What JSON.parse returned, as `Json`; it returns nothing else, so this never fails.
+function toJson(value: unknown): Json {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
-  if (Array.isArray(value)) return value.map((x: unknown, i) => toJson(x, `${path}[${String(i)}]`));
+  if (Array.isArray(value)) return value.map((x: unknown) => toJson(x));
   if (typeof value === "object") {
     // Defined, not assigned: a "__proto__" key stays data.
-    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x)]));
   }
-  return fail(path, "JSON");
+  // Stryker disable next-line StringLiteral: unreachable, JSON.parse returns only the values above.
+  return fail("$", "JSON");
 }
 
 export function parseJson(text: string): Json {
   const value: unknown = JSON.parse(text);
-  return toJson(value, "$");
+  return toJson(value);
 }
 
 export type Decoder<T> = (value: Json, path: string) => T;
@@ -56,6 +58,7 @@ export const pair =
   (v, path) => {
     if (!isArray(v) || v.length !== 2) return fail(path, "a pair");
     const [a, b] = v;
+    // Stryker disable next-line StringLiteral: unreachable, a JSON array holds no undefined (this only narrows the type).
     if (a === undefined || b === undefined) return fail(path, "a pair");
     return [first(a, `${path}[0]`), second(b, `${path}[1]`)];
   };

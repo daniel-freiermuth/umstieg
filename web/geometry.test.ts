@@ -74,6 +74,22 @@ describe("clipLine", () => {
       [5, 20, 2],
       [7, 20, 2],
     ]);
+    // Touching the interval at its end, or at the piece's start or end.
+    expect(clipLine(jump, 3, 5)).toEqual([
+      [3, 10, 1],
+      [5, 10, 1],
+      [5, 20, 2],
+    ]);
+    expect(clipLine(jump.slice(1), 5, 7)).toEqual([
+      [5, 10, 1],
+      [5, 20, 2],
+      [7, 20, 2],
+    ]);
+    expect(clipLine(jump.slice(0, 3), 3, 7)).toEqual([
+      [3, 10, 1],
+      [5, 10, 1],
+      [5, 20, 2],
+    ]);
   });
 });
 
@@ -96,6 +112,19 @@ describe("clampDomain", () => {
 
   test("never wider than everything", () => {
     expect(clampDomain({ t0: -MIN, t1: 700 * MIN, y0: -5, y1: 2000 }, full)).toEqual(full);
+  });
+
+  test("an extent away from zero: its own height and width count", () => {
+    const away: Domain = { t0: 600 * MIN, t1: 1200 * MIN, y0: 1000, y1: 2000 };
+    // 1/200 of the height is 5.
+    expect(clampDomain({ t0: 700 * MIN, t1: 800 * MIN, y0: 1500, y1: 1501 }, away)).toEqual({
+      t0: 700 * MIN,
+      t1: 800 * MIN,
+      y0: 1498,
+      y1: 1503,
+    });
+    // Wider than everything, if less than the sum of its ends.
+    expect(clampDomain({ t0: 500 * MIN, t1: 1300 * MIN, y0: 900, y1: 2100 }, away)).toEqual(away);
   });
 
   test("shifts back inside, keeping the width", () => {
@@ -197,6 +226,10 @@ describe("spreadLabels", () => {
     expect(spreadLabels([60, 90, 92, 94], 12, 100)).toEqual([60, 76, 88, 100]);
   });
 
+  test("pushed back up as far as needed, the first row too", () => {
+    expect(spreadLabels([90, 92, 94], 12, 100)).toEqual([76, 88, 100]);
+  });
+
   test("nothing to place", () => {
     expect(spreadLabels([], 12, 100)).toEqual([]);
   });
@@ -219,6 +252,11 @@ describe("distanceToLine", () => {
     test(`(${String(px)}, ${String(py)}) is ${String(d)} away`, () => {
       expect(distanceToLine(px, py, line)).toBeCloseTo(d, 9);
     });
+
+  test("wherever the line is", () => {
+    const moved = line.map(({ x, y }) => ({ x: x + 7, y: y - 11 }));
+    for (const [px, py, d] of cases) expect(distanceToLine(px + 7, py - 11, moved)).toBeCloseTo(d, 9);
+  });
 
   test("a single point and no points", () => {
     expect(distanceToLine(3, 4, [{ x: 0, y: 0 }])).toBe(5);

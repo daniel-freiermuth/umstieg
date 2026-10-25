@@ -119,11 +119,32 @@ pub async fn serve(router: axum::Router) -> String {
     format!("http://{addr}")
 }
 
+/// How [`serve_faulty`] fails the first connections.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// Closed without an answer.
+    Drop,
+    /// Answered with a body one byte shorter than announced, then closed.
+    Truncate,
+}
+
 /// A server that closes the first `drops` connections without answering
 /// (transport errors), then answers every request with `status` ("200 OK") and
 /// `body`. Returns its base URL and the number of connections accepted so far.
 pub async fn serve_dropping(
     drops: usize,
+    status: &'static str,
+    body: &'static str,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    serve_faulty(Fault::Drop, drops, status, body).await
+}
+
+/// A server that fails the first `faults` connections with `fault`, then
+/// answers every request with `status` ("200 OK") and `body`. Returns its base
+/// URL and the number of connections accepted so far.
+pub async fn serve_faulty(
+    fault: Fault,
+    faults: usize,
     status: &'static str,
     body: &'static str,
 ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
@@ -137,10 +158,12 @@ pub async fn serve_dropping(
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            if counter.fetch_add(1, Ordering::SeqCst) < drops {
+            let failing = counter.fetch_add(1, Ordering::SeqCst) < faults;
+            if failing && fault == Fault::Drop {
                 drop(socket);
                 continue;
             }
+            let missing = usize::from(failing);
             tokio::spawn(async move {
                 let mut request = Vec::new();
                 let mut buf = [0u8; 1024];
@@ -150,8 +173,9 @@ pub async fn serve_dropping(
                         Ok(n) => request.extend_from_slice(&buf[..n]),
                     }
                 }
+                let length = body.len() + missing;
                 let response =
-                    format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    format!("HTTP/1.1 {status}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}");
                 socket.write_all(response.as_bytes()).await.ok();
             });
         }
@@ -190,4 +214,34 @@ pub fn ride(tt: &Timetable, label: &str, from: &str, to: &str) -> crate::enumera
             .unwrap_or_else(|| panic!("{label} doesn't call at {name}"))
     };
     crate::enumerate::Step::Ride { trip, board: call(from), alight: call(to) }
+}
+
+/// Set in the child process of [`rerun_with_env`].
+const CHILD: &str = "UMSTIEG_TEST_CHILD";
+
+/// Whether this is the child process of [`rerun_with_env`]: the test then checks
+/// what depends on the environment.
+pub fn in_child() -> bool {
+    std::env::var_os(CHILD).is_some()
+}
+
+/// Runs the test `path` (e.g. `db::tests::name`) alone in a child process with
+/// a clean environment plus `env`, in an empty working directory, and fails
+/// unless it ran and passed. Tests can't set variables themselves: they share
+/// the process, and `unsafe_code` is forbidden.
+pub fn rerun_with_env(path: &str, env: &[(&str, &std::ffi::OsStr)]) {
+    let exe = std::env::current_exe().unwrap_or_else(|e| panic!("test binary: {e}"));
+    let cwd = tempfile::tempdir().unwrap_or_else(|e| panic!("temporary directory: {e}"));
+    let output = std::process::Command::new(exe)
+        .args([path, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(CHILD, "1")
+        .envs(env.iter().copied())
+        .current_dir(cwd.path())
+        .output()
+        .unwrap_or_else(|e| panic!("running {path}: {e}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{path} failed in the child:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "{path} didn't run in the child:\n{stdout}");
 }

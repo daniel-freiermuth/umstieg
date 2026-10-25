@@ -120,7 +120,11 @@ struct Field {
 }
 
 fn fields() -> Vec<Field> {
-    let command = Form::command();
+    fields_of(&Form::command())
+}
+
+/// The form fields for `command`'s options.
+fn fields_of(command: &clap::Command) -> Vec<Field> {
     command
         .get_arguments()
         .filter(|a| !NOT_IN_FORM.contains(&a.get_id().as_str()))

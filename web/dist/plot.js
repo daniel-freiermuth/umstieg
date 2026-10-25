@@ -4,20 +4,20 @@ class DecodeError extends Error {
 function fail(path, expected) {
   throw new DecodeError(`${path}: expected ${expected}`);
 }
-function toJson(value, path) {
+function toJson(value) {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   if (Array.isArray(value))
-    return value.map((x, i) => toJson(x, `${path}[${String(i)}]`));
+    return value.map((x) => toJson(x));
   if (typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x)]));
   }
-  return fail(path, "JSON");
+  return fail("$", "JSON");
 }
 function parseJson(text) {
   const value = JSON.parse(text);
-  return toJson(value, "$");
+  return toJson(value);
 }
 var isArray = (value) => Array.isArray(value);
 var isObject = (value) => typeof value === "object" && value !== null && !isArray(value);
@@ -298,7 +298,10 @@ function stayAt(spans, from, to, time, y, s) {
 }
 function reachSegments(pieces, chains, items) {
   const from = new Map, upTo = new Map;
-  const before = (a, b) => a[0] < b[0] || a[0] === b[0] && a[1] < b[1];
+  const before = (a, b) => {
+    const sooner = a[2] < b[2];
+    return a[0] < b[0] || a[0] === b[0] && (a[1] < b[1] || a[1] === b[1] && sooner);
+  };
   const last = (pi) => item(pieces, pi).pts.length - 1;
   for (const { spans, t, back, fwd } of items)
     for (const w of spans) {
@@ -319,9 +322,9 @@ function reachSegments(pieces, chains, items) {
     if (!s.length)
       return;
     let a = item(s, k0)[0], b = item(s, k1)[0];
-    if (c0 !== null && k0 < k1 && item(s, k0)[2] === item(s, k0 + 1)[2])
+    if (c0 !== null && k0 < k1)
       a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
-    if (c1 !== null && k1 > k0 && item(s, k1)[2] === item(s, k1 - 1)[2])
+    if (c1 !== null && k1 > k0)
       b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
     entry(raw, pi, () => []).push([a, b]);
   };
@@ -389,7 +392,9 @@ function network(pieces, chains, visible) {
       return;
     c.pieces.forEach((pi, j) => {
       const p = item(pieces, pi);
-      if (p.kind === "ride" && p.trip !== null) {
+      if (p.kind === "ride") {
+        if (p.trip === null)
+          return;
         const trip = p.trip;
         for (let k = 1;k < p.pts.length; k++) {
           const a = item(p.pts, k - 1), b = item(p.pts, k);
@@ -407,9 +412,8 @@ function network(pieces, chains, visible) {
         stay(s, first[1], span);
         if (p.warn)
           warns.add(pi);
-      } else if (p.kind === "walk") {
+      } else
         entry(walks, pi, () => new Set).add(i);
-      }
     });
   });
   for (const w of waits.values())
@@ -426,10 +430,10 @@ function network(pieces, chains, visible) {
   for (const pi of walks.keys()) {
     const p = item(pieces, pi);
     const a = p.pts[0], b = p.pts[p.pts.length - 1];
-    if (p.pts.length < 2 || !a || !b)
+    if (!a || !b)
       continue;
-    entry(foot, a[2], () => new Map).set(b[2], b[0] - a[0]);
-    entry(footBack, b[2], () => new Map).set(a[2], b[0] - a[0]);
+    entry(foot, a[2], () => []).push([b[2], b[0] - a[0]]);
+    entry(footBack, b[2], () => []).push([a[2], b[0] - a[0]]);
   }
   const reach = (src) => {
     const ea = new Map, ld = new Map;
@@ -438,16 +442,14 @@ function network(pieces, chains, visible) {
         return;
       ea.set(x, t);
       for (const [y, d] of foot.get(x) ?? [])
-        if (!atMost(ea.get(y), t + d))
-          ea.set(y, t + d);
+        early(y, t + d);
     };
     const late = (x, t) => {
       if (atLeast(ld.get(x), t))
         return;
       ld.set(x, t);
       for (const [y, d] of footBack.get(x) ?? [])
-        if (!atLeast(ld.get(y), t - d))
-          ld.set(y, t - d);
+        late(y, t - d);
     };
     for (const [s, t] of src.at) {
       early(s, t);
@@ -461,8 +463,7 @@ function network(pieces, chains, visible) {
     for (const c of byDep) {
       const since = boarded.get(c.trip);
       if (since !== undefined && c.dep >= since || atMost(ea.get(c.from), c.dep)) {
-        if (since === undefined)
-          boarded.set(c.trip, c.dep);
+        boarded.set(c.trip, c.dep);
         early(c.to, c.arr);
       }
     }
@@ -470,8 +471,7 @@ function network(pieces, chains, visible) {
     for (const c of byArr) {
       const until = alighted.get(c.trip);
       if (until !== undefined && c.arr <= until || atLeast(ld.get(c.to), c.arr)) {
-        if (until === undefined)
-          alighted.set(c.trip, c.arr);
+        alighted.set(c.trip, c.arr);
         late(c.from, c.dep);
       }
     }

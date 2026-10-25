@@ -1,7 +1,9 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
+use clap::Parser;
 
-use super::parse_time_in;
+use super::{Endpoints, Report, SearchArgs, extra_time, parse_time_in};
+use crate::testkit::{Builder, at};
 
 fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
@@ -56,4 +58,80 @@ fn invalid_input_is_an_error_naming_the_formats() {
         let err = parse_time_in(Some(at), &Berlin, now).unwrap_err().to_string();
         assert!(err.contains("cannot parse") && err.contains("YYYY-MM-DD HH:MM"), "{at}: {err}");
     }
+}
+
+#[test]
+fn the_user_agent_names_umstieg_its_version_and_the_contact() {
+    let endpoints = Endpoints {
+        efa: String::new(),
+        api: String::new(),
+        db_api: String::new(),
+        contact: "mailto:me@example.org".to_owned(),
+    };
+    assert_eq!(endpoints.user_agent(), format!("umstieg/{} (mailto:me@example.org)", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn extra_hours_become_whole_seconds_none_if_negative() {
+    assert_eq!(extra_time(1.5).unwrap(), TimeDelta::minutes(90));
+    assert_eq!(extra_time(-2.0).unwrap(), TimeDelta::zero());
+    // The largest accepted value is just under 10¹² seconds.
+    assert_eq!(extra_time(277_777_777.0).unwrap(), TimeDelta::seconds(999_999_997_200));
+}
+
+#[test]
+fn extra_hours_out_of_range_are_an_error() {
+    let at_the_limit: f64 = 1e12 / 3600.0;
+    assert_eq!((at_the_limit * 3600.0).to_bits(), 1e12_f64.to_bits(), "exactly 10¹² seconds");
+    for hours in [at_the_limit, 3e9, -3e9, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        let error = extra_time(hours).unwrap_err().to_string();
+        assert!(error.starts_with("--extra-hours: ") && error.ends_with(" is out of range"), "{hours}: {error}");
+    }
+}
+
+/// The search options of `argv` (after the program name).
+fn search_args(argv: &[&str]) -> SearchArgs {
+    #[derive(clap::Parser)]
+    struct Line {
+        #[command(flatten)]
+        args: SearchArgs,
+    }
+    Line::try_parse_from(std::iter::once("umstieg").chain(argv.iter().copied())).unwrap().args
+}
+
+/// The report for `tt`, departing 08:00–09:00, changes taking no time at all.
+fn report(tt: crate::timetable::Timetable) -> String {
+    let report = Report {
+        args: search_args(&["A", "C"]),
+        built: crate::timetable::Build { timetable: tt, discovered: Vec::new(), warnings: Vec::new() },
+        hubs: Vec::new(),
+        requests: "0 Transitous requests".to_owned(),
+        with_db: false,
+        time: at("08:00"),
+        depart_until: at("09:00"),
+        min_transfer: TimeDelta::zero(),
+        missed_by: TimeDelta::minutes(5),
+        extra_time: TimeDelta::hours(1),
+        plot: None,
+    };
+    let (stages, _) = tokio::sync::mpsc::unbounded_channel();
+    report.write(&stages).unwrap().text
+}
+
+#[test]
+fn a_change_without_slack_is_made_not_missed() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
+    b.trip("RE 2", &[("B", "", "09:00"), ("C", "10:00", "")]);
+    let text = report(b.build("A", "C"));
+    let summary = text.lines().find(|l| l.starts_with("fastest ")).unwrap();
+    assert!(summary.contains(" · 1 connections in 1 groups ("), "{text}");
+    assert!(!text.contains("missed"), "{text}");
+
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("B", "09:00+1", "")]);
+    b.trip("RE 2", &[("B", "", "09:00"), ("C", "10:00", "")]);
+    let text = report(b.build("A", "C"));
+    let summary = text.lines().find(|l| l.starts_with("fastest ")).unwrap();
+    assert!(summary.contains(" · 1 connections in 1 groups, 1 with a change missed by ≤ 5m ("), "{text}");
 }

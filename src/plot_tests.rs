@@ -321,6 +321,10 @@ fn rendered_data_is_consistent() {
 
     let ids: Vec<&str> = data["metrics"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["remaining-time", "fastest-real", "hyperbolic", "axis", "ratio"]);
+    let units: Vec<&str> = data["metrics"].as_array().unwrap().iter().map(|m| m["unit"].as_str().unwrap()).collect();
+    assert_eq!(units, ["min", "min", "km", "km", "%"]);
+    let axis = &data["metrics"][3]["description"];
+    assert_eq!(axis, "distance left along the start–goal axis", "the page's legend explains the metric");
     assert_eq!(data["metrics"][idx(&data["metric"])]["id"], "axis");
     for m in data["metrics"].as_array().unwrap() {
         assert_eq!(m["heights"].as_array().unwrap().len(), tt.stations.len());

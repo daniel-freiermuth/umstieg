@@ -472,6 +472,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
     b.walk("B", "E", 10);
     b.trip("ICE 2", &[("A", "", "08:10"), ("F", "08:40", "")]);
     b.trip("RE 4", &[("F", "", "08:45"), ("D", "09:20", "")]);
+    b.trip("RE 5", &[("F", "", "08:40"), ("D", "09:25", "")]); // no buffer, but caught
     b.trip("RE 8", &[("F", "", "08:39"), ("D", "09:10", "")]);
     b.trip("ICE 9", &[("A", "", "08:20"), ("D", "09:20", "")]);
     b.trip("IC 10", &[("A", "", "08:25"), ("D", "09:20", "")]);
@@ -484,6 +485,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
         vec![r("ICE 1", "A", "B"), r("RE 3", "B", "D")], // 10 min
         vec![r("ICE 1", "A", "B"), walk(&tt, "B", "E"), r("RE 3", "E", "D")], // 21 min
         vec![r("ICE 2", "A", "F"), r("RE 4", "F", "D")], // 09:20, one change
+        vec![r("ICE 2", "A", "F"), r("RE 5", "F", "D")], // 09:25, zero buffer
         vec![r("IC 10", "A", "D")],                      // 09:20 direct, leaves 08:25
         vec![r("ICE 9", "A", "D")],                      // 09:20 direct, leaves 08:20
     ];
@@ -493,6 +495,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
         &["ICE 9 A-D"][..],
         &["IC 10 A-D"],
         &["ICE 2 A-F / RE 4 F-D"],
+        &["ICE 2 A-F / RE 5 F-D"],
         &[
             "ICE 1 A-B / walk B-E / RE 3 E-D",
             "ICE 1 A-B / RE 3 B-D",
@@ -585,6 +588,20 @@ fn earliest_arrival_by_train_from_a_start_time() {
     assert_eq!(ea[station(&tt, "M")], Some(at("08:50")));
 }
 
+/// A pass can improve trains but no walks; only a pass improving nothing
+/// at all ends the scan. RB 3 is listed before RB 2, which reaches its start.
+#[test]
+fn earliest_arrival_scans_until_nothing_improves() {
+    let mut b = Builder::new();
+    b.trip("RB 3", &[("D", "", "09:00"), ("E", "09:30", "")]);
+    b.trip("RB 2", &[("C", "", "08:40"), ("D", "08:50", "")]);
+    b.trip("RB 1", &[("A", "", "08:00"), ("B", "08:30", "")]);
+    b.walk("B", "C", 5);
+    let tt = b.build("A", "E");
+    let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:00"), TimeDelta::zero()).unwrap();
+    assert_eq!(ea[station(&tt, "E")], Some(at("09:30")));
+}
+
 /// Missed connections are listed even when nothing else gets there.
 #[test]
 fn missed_connections_are_listed_when_they_are_all_there_is() {
@@ -630,6 +647,61 @@ fn lower_bounds_take_the_fastest_ride_per_stretch() {
         let s = station(&tt, name);
         assert_eq!((net.lower_bound[s], net.bound[s]), (planned.map(min), live.map(min)), "{name}");
     }
+}
+
+/// The last train may leave right at the deadline when its live times are
+/// squeezed (+10/+6): RE 2 leaves and arrives 08:30, the fastest arrival.
+#[test]
+fn a_train_leaving_at_the_deadline_still_counts() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:30", "")]);
+    b.trip("RE 2", &[("B", "", "08:20+10"), ("D", "08:24+6", "")]);
+    let tt = b.build("A", "D");
+    let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+    assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(30)), vec!["RE 1 A-B / RE 2 B-D".to_owned()]));
+}
+
+/// RE 2 runs to X, from where nothing leads to D: the search doesn't stop
+/// there, so the effort is the origin and the destination only.
+#[test]
+fn stations_that_cannot_reach_the_destination_are_not_explored() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
+    b.trip("RE 2", &[("A", "", "08:00"), ("X", "08:30", "")]);
+    b.trip("RE 3", &[("X", "", "08:40"), ("Y", "09:00", "")]);
+    let tt = b.build("A", "D");
+    let limits = Limits { max_changes: 0, ..limits(&tt, "08:00", "08:00") };
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+    assert_eq!((shown(&tt, &result), result.nodes), (vec!["RE 1 A-D".to_owned()], 2));
+}
+
+/// From Q, RB 4 at 09:00 arrives after ICE 3 at 09:10: waiting is faster,
+/// so arriving at Q 08:50 (RE 5 from V) the best is 09:40.
+#[test]
+fn fastest_journeys_wait_for_a_later_faster_train() {
+    let mut b = Builder::new();
+    b.trip("ICE 3", &[("Q", "", "09:10"), ("D", "09:40", "")]);
+    b.trip("RB 4", &[("Q", "", "09:00"), ("D", "10:00", "")]);
+    b.trip("RE 5", &[("V", "", "08:20"), ("Q", "08:50", "")]);
+    let tt = b.build("V", "D");
+    let fastest = fastest_journeys(&tt).unwrap();
+    assert_eq!((fastest[station(&tt, "V")], fastest[station(&tt, "Q")]), (Some(min(80)), Some(min(30))));
+}
+
+/// Rides taking no time at 09:00, scanned in an order where ICE 1 passing P
+/// → Q comes before RE 2 Q → D that it leads onto: a second pass finds that
+/// ICE 1 from V gets to D at 09:00, not by RB 3 at 09:40.
+#[test]
+fn fastest_journeys_settle_rides_taking_no_time() {
+    let mut b = Builder::new();
+    b.trip("ICE 1", &[("V", "", "08:30"), ("P", "09:00", ""), ("Q", "09:00", "")]);
+    b.trip("RE 2", &[("Q", "", "08:50+10"), ("D", "08:55+5", "")]);
+    b.trip("RB 3", &[("Q", "", "09:10"), ("D", "09:40", "")]);
+    let tt = b.build("V", "D");
+    let fastest = fastest_journeys(&tt).unwrap();
+    let at_station = |name| fastest[station(&tt, name)];
+    assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
 }
 
 // Random small timetables against brute force.

@@ -4,20 +4,20 @@ class DecodeError extends Error {
 function fail(path, expected) {
   throw new DecodeError(`${path}: expected ${expected}`);
 }
-function toJson(value, path) {
+function toJson(value) {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   if (Array.isArray(value))
-    return value.map((x, i) => toJson(x, `${path}[${String(i)}]`));
+    return value.map((x) => toJson(x));
   if (typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x)]));
   }
-  return fail(path, "JSON");
+  return fail("$", "JSON");
 }
 function parseJson(text) {
   const value = JSON.parse(text);
-  return toJson(value, "$");
+  return toJson(value);
 }
 var isArray = (value) => Array.isArray(value);
 var isObject = (value) => typeof value === "object" && value !== null && !isArray(value);

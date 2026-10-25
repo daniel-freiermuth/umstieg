@@ -5,19 +5,23 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
 use tokio::sync::Semaphore;
+// tokio's clock: tests pause and advance it instead of waiting out the quota.
+use tokio::time::Instant;
 
 use crate::sync::lock;
 
 /// The DB Timetables API (`--db-api` overrides it).
 pub const API: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
-/// Free plan quota.
+/// Free plan quota: requests per `QUOTA_WINDOW`.
 const REQUESTS_PER_MINUTE: usize = 60;
+/// A minute; tests don't wait that long when a mistake makes them hit the quota.
+const QUOTA_WINDOW: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(60) };
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 /// Attempts per request on connection resets, 429 and 5xx.
 const MAX_ATTEMPTS: u32 = 3;
@@ -208,12 +212,11 @@ impl Db {
     /// Wait until another request fits into the per-minute quota.
     async fn pace(&self) {
         let mut recent = self.recent.lock().await;
-        let minute = Duration::from_secs(60);
         while let Some(&oldest) = recent.front() {
-            if oldest.elapsed() >= minute {
+            if oldest.elapsed() >= QUOTA_WINDOW {
                 recent.pop_front();
             } else if recent.len() >= REQUESTS_PER_MINUTE {
-                tokio::time::sleep(minute.saturating_sub(oldest.elapsed())).await;
+                tokio::time::sleep(QUOTA_WINDOW.saturating_sub(oldest.elapsed())).await;
             } else {
                 break;
             }

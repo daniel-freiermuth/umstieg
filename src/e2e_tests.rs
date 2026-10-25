@@ -1000,15 +1000,22 @@ async fn plot_embeds_every_connection_of_the_report() {
 // ---------------------------------------------------------------------------
 // The web front end
 
+/// The finished job's status. Searches here take about a second; giving up
+/// after 10 s fails a job that never finishes well within the mutation tests'
+/// 20 s timeout.
 async fn wait_until_done(http: &reqwest::Client, status_url: &str) -> Value {
-    for _ in 0..1000 {
-        let status: Value = http.get(status_url).send().await.unwrap().json().await.unwrap();
-        if status["done"] == true {
-            return status;
+    let poll = async {
+        loop {
+            let status: Value = http.get(status_url).send().await.unwrap().json().await.unwrap();
+            if status["done"] == true {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("search behind {status_url} didn't finish");
+    };
+    tokio::time::timeout(Duration::from_secs(10), poll)
+        .await
+        .unwrap_or_else(|_| panic!("search behind {status_url} didn't finish"))
 }
 
 /// Starts a search from form values; returns its job URL and the raw query.

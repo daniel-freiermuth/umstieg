@@ -35,3 +35,7 @@ pub fn difference(a: TimeDelta, b: TimeDelta) -> TimeDelta {
 pub fn minutes(minutes: i64, what: &str) -> Result<TimeDelta> {
     TimeDelta::try_minutes(minutes).with_context(|| format!("{what}: {minutes} minutes is out of range"))
 }
+
+#[cfg(test)]
+#[path = "checked_tests.rs"]
+mod tests;

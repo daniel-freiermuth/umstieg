@@ -338,6 +338,8 @@ fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
 
 #[test]
 fn board_hours_near_the_ends_of_time_stay_in_range() {
+    // First the plain case: it fails fast where the open-ended ones below would loop for ages.
+    assert_eq!(hours(at("08:10"), at("08:50")), [at("07:00"), at("08:00"), at("09:00")]);
     let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
     let none: Vec<DateTime<Utc>> = Vec::new();
     assert_eq!(hours(min, min), none, "no hour before the earliest time");
@@ -345,7 +347,6 @@ fn board_hours_near_the_ends_of_time_stay_in_range() {
     assert_eq!(hours(max - TimeDelta::minutes(10), max), none);
     let far = hours(at("08:10"), max);
     assert_eq!((far.len(), far.first()), (10, Some(&at("07:00"))), "capped, the end saturates");
-    assert_eq!(hours(at("08:10"), at("08:50")), [at("07:00"), at("08:00"), at("09:00")]);
 }
 
 /// (from DB, arrival?, departure?, minutes since previous stop, dwell, arrival delay, departure delay)
@@ -675,6 +676,25 @@ fn stops_without_times_are_skipped() {
     assert!(ice.call_at(sued).is_none());
     assert!(!rough.corridor.contains_key(&sued));
 }
+#[test]
+fn rides_have_no_arrival_where_boarded_and_no_departure_where_left() {
+    // MOTIS gives every stop its times, also arriving where we board.
+    let legs =
+        vec![ride("t", vec![stop("A", "07:58", "08:00"), stop("B", "08:30", "08:32"), stop("C", "09:00", "09:02")])];
+    let (_, rough) = rough(&[Itinerary { legs }], false);
+    let times: Vec<_> = rough.trips["t"].calls.iter().map(|c| (c.arrival, c.departure)).collect();
+    assert_eq!(times, [(None, time("08:00")), (time("08:30"), time("08:32")), (time("09:00"), None)]);
+}
+
+#[test]
+fn boarding_after_a_stop_without_times_needs_no_walk() {
+    let places = vec![stop("X", "", ""), stop("A", "", "08:00"), stop("B", "08:30", "")];
+    let legs = vec![leg("REGIONAL_RAIL", Some("t"), places, "08:00", "08:30")];
+    let (stations, rough) = rough(&[Itinerary { legs }], false);
+    let names: Vec<&str> = rough.trips["t"].calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert_eq!(rough.footpaths, HashMap::new(), "no walk from X: the itinerary starts with the ride");
+}
 
 #[test]
 fn walks_become_footpaths_between_their_stations() {
@@ -974,12 +994,15 @@ fn motis_stops_merged_into_a_db_train_only_where_db_lacks_them() {
         let visits = path_after(visits, SUED, &["Hanau Hbf", "Fulda", "Kassel-Wilhelmshöhe", "Göttingen"]);
         path_after(visits, FULDA, &["Kassel-Wilhelmshöhe", "Göttingen"])
     };
-    let cases: [StopCase<'_>; 11] = [
+    let cases: [StopCase<'_>; 13] = [
         ("off DB's route (MOTIS via Frankfurt Hbf)", Some('F'), FRANKFURT_HBF, "07:20", &[], false),
         ("off DB's route, after its last stop", Some('F'), HAMBURG, "11:00", &[], false),
         ("unknown to DB inside its span (other name)", Some('F'), AIRPORT, "07:00", &[], false),
         ("unknown to DB after its span (abroad)", Some('F'), COPENHAGEN, "13:00", &[], true),
         ("unknown to DB before its span", Some('F'), BEFORE, "06:00", &[], true),
+        // At the time of DB's first or last call it can only be that station, named differently.
+        ("unknown to DB at its first call's time", Some('F'), BEFORE, "06:39", &[], false),
+        ("unknown to DB at its last call's time", Some('F'), COPENHAGEN, "08:21", &[], false),
         ("on DB's route, no board", Some('F'), HANAU, "07:40", &[], true),
         ("on DB's route after its last board", Some('F'), KASSEL, "09:00", &[], true),
         (
@@ -1046,4 +1069,56 @@ fn motis_trains_with_the_same_times_from_two_feeds_become_one() {
     let trips = merge(&stations, &Boards::new(), raw(vec![("a-efa", efa), ("b-transitous", transitous)]));
     assert_eq!(labels(&trips), ["RNV 4"]);
     assert_eq!(trips[0].calls.len(), 2);
+}
+
+// ---------------------------------------------------------------- DB boards
+
+#[tokio::test]
+async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::extract::{Request, State};
+
+    // ICE 1 leaves Westend at 08:00 UTC via Mittelfeld (not in the corridor)
+    // for Osthafen, arriving 12:00; ICE 2 arrives at Osthafen at 09:00.
+    async fn answer(State(log): State<Arc<Mutex<Vec<String>>>>, request: Request) -> String {
+        let path = request.uri().path().to_owned();
+        log.lock().unwrap().push(path.clone());
+        let body = if path.starts_with("/plan/8099701/") {
+            r#"<s id="1001-2610241000-1"><tl f="F" t="p" o="80" c="ICE" n="1"/><dp pt="2610241000" ppth="Mittelfeld|Osthafen"/></s>"#
+        } else if path.starts_with("/plan/8099703/") {
+            r#"<s id="2002-2610241030-4"><tl f="F" t="p" o="80" c="ICE" n="2"/><ar pt="2610241100" ppth="Westend"/></s>
+<s id="1001-2610241000-3"><tl f="F" t="p" o="80" c="ICE" n="1"/><ar pt="2610241400" ppth="Westend|Mittelfeld"/></s>"#
+        } else if path.starts_with("/station/") {
+            r#"<station p="" meta="" name="Mittelfeld" eva="8099702" ds100="X" db="true"/>"#
+        } else if path == "/api/v1/geocode" {
+            return "[]".to_owned();
+        } else {
+            ""
+        };
+        format!("<timetable>{body}</timetable>")
+    }
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let base = crate::testkit::serve(axum::Router::new().fallback(answer).with_state(log.clone())).await;
+    let motis = crate::motis::Motis::new(&base, "umstieg-test").unwrap();
+    let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
+    let db = crate::db::Db::new(&base, credentials, "umstieg-test").unwrap();
+
+    let mut stations = Stations::default();
+    let mut db_station =
+        |name, eva| stations.intern(Sighting { name, eva: Some(eva), db_name: Some(name), ..Sighting::default() });
+    let (westend, osthafen) = (db_station("Westend", "8099701"), db_station("Osthafen", "8099703"));
+    let corridor = HashMap::from([(westend, (at("08:00"), at("08:00"))), (osthafen, (at("12:00"), at("12:00")))]);
+    let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
+    let boards = super::fetch_boards(&motis, &db, &mut stations, &corridor, &mut discovered, &mut warnings).await;
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(discovered, ["Mittelfeld"]);
+    let mittelfeld = index_of(&stations, "Mittelfeld");
+    assert!(boards.contains_key(&mittelfeld));
+    // From 30 minutes before ICE 1 leaves Westend to 30 after it reaches Osthafen, in Berlin hours.
+    let mut asked: Vec<String> =
+        log.lock().unwrap().iter().filter_map(|p| p.strip_prefix("/plan/8099702/261024/").map(str::to_owned)).collect();
+    asked.sort();
+    assert_eq!(asked, ["09", "10", "11", "12", "13", "14"]);
 }

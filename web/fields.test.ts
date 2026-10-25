@@ -103,18 +103,26 @@ test("localDateTime pads every part", () => {
 test("sections: the trip in its own order, then limits and advanced in spec order", () => {
   const fields = [
     f("max_changes", "number"),
+    f("via", "stations"),
     f("to", "station"),
     f("parallel", "number", "2", true),
     f("from", "station"),
+    f("window", "number"),
     f("at", "time"),
     f("metric", "choice"),
     f("verbose", "flag", "", true),
   ];
   const s = sections(fields);
   const names = (xs: Field[]): string[] => xs.map((x) => x.name);
-  expect(names(s.trip)).toEqual(["from", "to", "at"]);
+  expect(names(s.trip)).toEqual(["from", "to", "at", "window", "via"]);
   expect(names(s.limits)).toEqual(["max_changes", "metric"]);
   expect(names(s.advanced)).toEqual(["parallel", "verbose"]);
+});
+
+test("sections: a trip field given twice is shown once, the first", () => {
+  const s = sections([f("from", "station", "A"), f("from", "station", "B")]);
+  expect(s.trip.map((x) => x.default)).toEqual(["A"]);
+  expect([...s.limits, ...s.advanced]).toEqual([]);
 });
 
 describe("advancedOpen", () => {

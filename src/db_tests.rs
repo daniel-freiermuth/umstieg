@@ -325,6 +325,9 @@ fn same_place_needs_the_first_word() {
         ("Hamburg Hbf", "Hamburg", true),
         ("Hamburg", "Hamburg-Altona", true),
         ("København H", "Koebenhavn H", true),
+        // Either way round is enough.
+        ("Bad Dürkheim", "Dürkheim", true),
+        ("Dürkheim", "Bad Dürkheim", true),
         ("Mannheim Hbf", "Heidelberg Hbf", false),
         ("Neustadt(Weinstr)Hbf", "Bad Dürkheim", false),
         ("", "Fulda", false),
@@ -429,6 +432,49 @@ fn credentials_from_file_and_environment() {
     assert!(Credentials::parse("", no_env).is_none());
     let only_env = Credentials::parse("", |key: &str| Some(format!("{key}!"))).unwrap();
     assert_eq!((only_env.client_id.as_str(), only_env.api_key.as_str()), ("DB_CLIENT_ID!", "DB_API_KEY!"));
+}
+
+/// `Credentials::load` as `"client/key"`, `"none"` or `"error"`.
+fn loaded() -> String {
+    match Credentials::load() {
+        Ok(Some(c)) => format!("{}/{}", c.client_id, c.api_key),
+        Ok(None) => "none".to_owned(),
+        Err(_) => "error".to_owned(),
+    }
+}
+
+#[test]
+fn credentials_load_from_the_config_directory_or_the_environment() {
+    const EXPECT: &str = "UMSTIEG_TEST_EXPECT";
+    if testkit::in_child() {
+        assert_eq!(loaded(), std::env::var(EXPECT).unwrap());
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    std::fs::create_dir_all(config.join("umstieg")).unwrap();
+    std::fs::write(config.join("umstieg/db.env"), "DB_CLIENT_ID=abc\nDB_API_KEY=key\n").unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".config/umstieg")).unwrap();
+    std::fs::write(home.join(".config/umstieg/db.env"), "DB_CLIENT_ID=home\nDB_API_KEY=key\n").unwrap();
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let unreadable = dir.path().join("unreadable");
+    std::fs::create_dir_all(unreadable.join("umstieg/db.env")).unwrap();
+
+    let test = "db::tests::credentials_load_from_the_config_directory_or_the_environment";
+    let run = |vars: &[(&str, &str)], expect: &str| {
+        let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![(EXPECT, expect.as_ref()), ("HOME", home.as_os_str())];
+        env.extend(vars.iter().map(|&(k, v)| (k, v.as_ref())));
+        testkit::rerun_with_env(test, &env);
+    };
+    let (config, empty, unreadable) = (config.to_str().unwrap(), empty.to_str().unwrap(), unreadable.to_str().unwrap());
+    run(&[("XDG_CONFIG_HOME", config)], "abc/key");
+    run(&[], "home/key");
+    run(&[("XDG_CONFIG_HOME", empty)], "none");
+    run(&[("XDG_CONFIG_HOME", empty), ("DB_CLIENT_ID", "id"), ("DB_API_KEY", "env")], "id/env");
+    run(&[("XDG_CONFIG_HOME", config), ("DB_API_KEY", "env")], "abc/env");
+    run(&[("XDG_CONFIG_HOME", unreadable)], "error");
 }
 
 // ---- client ----
@@ -600,6 +646,40 @@ async fn visits_apply_live_changes_to_the_planned_board() {
         assert!(!coverage.covers(at("05:59"), class), "{class} in the hour before");
     }
     assert!(!coverage.covers(at("06:30"), 'X'));
+}
+
+#[tokio::test]
+async fn changes_without_train_data_for_unknown_trains_are_dropped_even_within_the_hours() {
+    let fake = Arc::new(Fake::default());
+    let changes = r#"<timetable station="Mannheim Hbf" eva="8000244">
+<s id="1311239876543210-2610241102-4" eva="8000244"><tl f="F" t="p" o="80" c="ICE" n="9998"/><dp pt="2610241250" pp="2"/></s>
+<s id="4242424242-2610241130-5" eva="8000244"><ar pt="2610241240" ct="2610241245"/><dp pt="2610241242" ct="2610241247"/></s>
+</timetable>"#;
+    fake.on("/fchg/8000913", 200, changes);
+    let db = client(&fake).await;
+    let (visits, _) = db.visits("8000913", &[at("10:00")]).await.unwrap();
+    let labels: Vec<String> = visits.iter().map(Visit::label).collect();
+    assert_eq!(labels, ["ICE 9998"], "no number: not a train to ride");
+}
+
+#[tokio::test(start_paused = true)]
+async fn requests_keep_to_the_quota_per_minute() {
+    let db = Db::new("http://unused.test", Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() }, "t")
+        .unwrap();
+    let start = Instant::now();
+    for _ in 0..REQUESTS_PER_MINUTE {
+        db.pace().await;
+    }
+    assert_eq!(start.elapsed(), Duration::ZERO, "a window's quota goes at once");
+    db.pace().await;
+    let waited = start.elapsed();
+    assert!(waited >= QUOTA_WINDOW && waited < QUOTA_WINDOW.saturating_mul(2), "{waited:?}");
+    for _ in 1..REQUESTS_PER_MINUTE {
+        db.pace().await;
+    }
+    assert_eq!(start.elapsed(), waited, "the old requests aged out, a new window's quota is free");
+    db.pace().await;
+    assert!(start.elapsed() >= waited.saturating_add(QUOTA_WINDOW));
 }
 
 #[tokio::test]

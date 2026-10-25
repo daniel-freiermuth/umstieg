@@ -335,6 +335,22 @@ async fn transport_errors_are_retried() {
 
     let (base, _) = testkit::serve_dropping(usize::MAX, "200 OK", "").await;
     let motis = Motis::new(&base, "umstieg-test").unwrap();
-    assert!(motis.suggest("Fulda").await.is_err());
+    let error = motis.suggest("Fulda").await.unwrap_err();
+    assert_eq!(error.to_string(), format!("GET {base}/api/v1/geocode"), "the last attempt's error: {error:#}");
+    assert_eq!(motis.request_count(), MAX_ATTEMPTS as usize);
+}
+
+#[tokio::test]
+async fn bodies_cut_short_are_retried() {
+    let body = r#"[{"type":"STOP","name":"Fulda","id":"f"}]"#;
+    let (base, accepted) = testkit::serve_faulty(testkit::Fault::Truncate, 2, "200 OK", body).await;
+    let motis = Motis::new(&base, "umstieg-test").unwrap();
+    assert_eq!(motis.suggest("Fulda").await.unwrap(), ["Fulda"]);
+    assert_eq!(accepted.load(Ordering::SeqCst), 3);
+
+    let (base, _) = testkit::serve_faulty(testkit::Fault::Truncate, usize::MAX, "200 OK", body).await;
+    let motis = Motis::new(&base, "umstieg-test").unwrap();
+    let error = motis.suggest("Fulda").await.unwrap_err();
+    assert_eq!(error.to_string(), format!("reading {base}/api/v1/geocode"), "the last attempt's error: {error:#}");
     assert_eq!(motis.request_count(), MAX_ATTEMPTS as usize);
 }

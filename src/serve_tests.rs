@@ -72,6 +72,24 @@ fn form_fields_are_the_search_options_minus_text_only_ones() {
 }
 
 #[test]
+fn options_with_choices_or_free_text_get_their_own_kinds() {
+    use clap::Arg;
+    let command = clap::Command::new("t")
+        .arg(Arg::new("sort").long("sort").value_parser(["fastest", "fewest"]).default_value("fastest"))
+        .arg(Arg::new("name").long("name").default_value("Fulda"))
+        .arg(Arg::new("label").long("label"))
+        .arg(Arg::new("count").long("count").default_value("3"));
+    let fields = super::fields_of(&command);
+    let kinds: Vec<(&str, &str, &str)> = fields.iter().map(|f| (f.name.as_str(), f.kind, f.default.as_str())).collect();
+    assert_eq!(
+        kinds,
+        [("sort", "choice", "fastest"), ("name", "text", "Fulda"), ("label", "text", ""), ("count", "number", "3")]
+    );
+    assert_eq!(fields[0].choices, ["fastest", "fewest"]);
+    assert!(fields[1..].iter().all(|f| f.choices.is_empty()));
+}
+
+#[test]
 fn excluded_and_advanced_names_still_name_options() {
     // A renamed option would silently drop out of these lists (and into the form).
     use clap::CommandFactory;
@@ -258,6 +276,27 @@ async fn out_of_range_values_show_the_form_again_with_the_error() {
     assert_eq!(transitous.requests.load(Ordering::SeqCst), 0);
 }
 
+/// The status of job `id` once it's done. These jobs fail within a second;
+/// giving up after 10 s fails a job that never finishes well within the
+/// mutation tests' 20 s timeout.
+async fn finished(app: &Arc<App>, id: u64) -> Value {
+    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    loop {
+        let (code, _, body) = get_page(app, &format!("/job/{id}/status")).await;
+        assert_eq!(code, StatusCode::OK);
+        let status: Value = serde_json::from_str(&body).unwrap();
+        if status["done"] == true {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "search did not finish: {status}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn log(status: &Value) -> Vec<&str> {
+    status["log"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn search_runs_as_a_job_reporting_progress_and_failure() {
     // No stop matches: the search fails right after asking for the stations.
@@ -271,22 +310,13 @@ async fn search_runs_as_a_job_reporting_progress_and_failure() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("<script"));
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        let (code, _, body) = get_page(&app, "/job/1/status").await;
-        assert_eq!(code, StatusCode::OK);
-        let status: Value = serde_json::from_str(&body).unwrap();
-        if status["done"] == true {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "search did not finish: {status}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    let status = finished(&app, 1).await;
     // Both stations are looked up at once; whichever fails first is reported.
     let error = status["error"].as_str().unwrap();
     assert!(error.contains("no stop named like \"Nowhere\"") || error.contains("no stop named like \"B\""), "{status}");
     assert_eq!(status["back"], "/?from=Nowhere&to=B");
-    let log: Vec<&str> = status["log"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+    let log = log(&status);
+    assert!(!log.iter().any(|l| l.contains("Waiting")), "nothing else running: {log:?}");
     assert!(
         log.iter().any(|l| l
             .ends_with("warning: no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only")),
@@ -297,6 +327,32 @@ async fn search_runs_as_a_job_reporting_progress_and_failure() {
 
     let (code, _, _) = get_page(&app, "/job/1/plot").await;
     assert_eq!(code, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn searches_beyond_the_parallel_limit_wait_their_turn() {
+    let (api, _) = stand_in(json!([])).await;
+    let app = app(&api);
+    let running = app.permits.acquire().await.unwrap();
+    let (status, headers, _) = get_page(&app, "/search?from=Nowhere&to=B").await;
+    assert_eq!((status, headers["location"].as_str()), (StatusCode::SEE_OTHER, "/job/1"));
+    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let waiting = loop {
+        let (_, _, body) = get_page(&app, "/job/1/status").await;
+        let status: Value = serde_json::from_str(&body).unwrap();
+        if !log(&status).is_empty() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "no progress noted: {status}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(waiting["done"], false, "{waiting}");
+    assert_eq!(log(&waiting).len(), 1, "{waiting}");
+    assert!(log(&waiting)[0].ends_with("Waiting for another search to finish"), "{waiting}");
+
+    drop(running);
+    let status = finished(&app, 1).await;
+    assert!(log(&status).last().unwrap().ends_with("Failed"), "{status}");
 }
 
 #[tokio::test]
