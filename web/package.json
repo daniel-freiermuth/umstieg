@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p .",
-    "check": "tsc -p . --noEmit && eslint --max-warnings 0 ."
+    "build": "bun build plot.ts form.ts progress.ts --outdir dist --target browser --format esm",
+    "check": "tsc -p . && eslint --max-warnings 0 . && prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^9",

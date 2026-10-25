@@ -201,10 +201,12 @@ Deliberate exceptions use `#[expect(…, reason = "…")]`, so they fail once th
 no longer apply.
 
 The pages' scripts are TypeScript in `web/` (`plot.ts`, `form.ts`,
-`progress.ts`; templates next to them), compiled to `web/dist/` which is
-committed and embedded by the binary — building umstieg needs no Node. After
-changing them: `cd web && npm install` once, then `just web`. `just check` also
-type-checks them (`strict` plus `noUncheckedIndexedAccess`,
-`exactOptionalPropertyTypes` & co.), lints with typescript-eslint's
-`strictTypeChecked` and `stylisticTypeChecked`, checks Prettier formatting and
-that `web/dist` matches a fresh build.
+`progress.ts`, sharing `decode.ts` and `dom.ts`; templates next to them),
+bundled by Bun into `web/dist/`, which is committed and embedded by the binary —
+building umstieg needs neither Node nor Bun. After changing them: `cd web &&
+npm install` once, then `just web`. `just check` also type-checks them
+(`strict` plus `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` & co.),
+lints with typescript-eslint's `strictTypeChecked` and `stylisticTypeChecked`,
+checks Prettier formatting and that `web/dist` matches a fresh bundle. No
+`any`, no type assertions, and `unknown` only where `decode.ts` checks
+`JSON.parse`'s output: all server data is decoded field by field.

@@ -15,6 +15,15 @@ export default tseslint.config(
       "prefer-const": "error",
       "@typescript-eslint/explicit-function-return-type": ["error", { allowExpressions: true }],
       "@typescript-eslint/switch-exhaustiveness-check": "error",
+      // Values are typed by decoding or construction, never by assertion.
+      "@typescript-eslint/consistent-type-assertions": ["error", { assertionStyle: "never" }],
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-restricted-types": [
+        "error",
+        { types: { unknown: "Decode JSON with decode.ts; nothing else is untyped." } },
+      ],
     },
   },
+  // The one place unchecked input (JSON.parse) is looked at.
+  { files: ["decode.ts"], rules: { "@typescript-eslint/no-restricted-types": "off" } },
 );

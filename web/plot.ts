@@ -1,20 +1,121 @@
+import {
+  type Decoder,
+  array,
+  boolean,
+  field,
+  nullable,
+  number,
+  object,
+  oneOf,
+  pair,
+  parseJson,
+  string,
+} from "./decode";
+import { byId } from "./dom";
+
 // The data as serialized by src/plot.rs.
 interface Data {
   title: string;
   subtitle: string;
   back: string | null;
   tz: string;
-  metrics: { id: string; unit: string; description: string; heights: (number | null)[] }[];
+  metrics: Metric[];
   metric: number; // index into metrics shown first
   stations: number[]; // station ids with a row
   names: string[]; // station names by id
   trips: string[]; // "ICE 378 → Berlin Hbf" by trip id
   groups: { label: string; count: number }[];
-  pieces: { kind: Kind; info: string; warn: boolean; trip: number | null; pts: [number, number][] }[];
+  pieces: PieceData[];
   fallbacks: { at: string; line: string; pieces: number[] }[];
   chains: { group: number; header: string; route: string; pieces: number[]; fallbacks: [number, string][] }[];
 }
-type Kind = "ride" | "wait" | "walk";
+interface Metric {
+  id: string;
+  unit: string;
+  description: string;
+  heights: (number | null)[];
+}
+interface PieceData {
+  kind: Kind;
+  info: string;
+  warn: boolean;
+  trip: number | null;
+  pts: [number, number][];
+}
+const kinds = ["ride", "wait", "walk"] as const;
+type Kind = (typeof kinds)[number];
+
+const decodeMetric: Decoder<Metric> = (v, path) => {
+  const o = object(v, path);
+  return {
+    id: field(o, "id", string, path),
+    unit: field(o, "unit", string, path),
+    description: field(o, "description", string, path),
+    heights: field(o, "heights", array(nullable(number)), path),
+  };
+};
+const decodePiece: Decoder<PieceData> = (v, path) => {
+  const o = object(v, path);
+  return {
+    kind: field(o, "kind", oneOf(...kinds), path),
+    info: field(o, "info", string, path),
+    warn: field(o, "warn", boolean, path),
+    trip: field(o, "trip", nullable(number), path),
+    pts: field(o, "pts", array(pair(number, number)), path),
+  };
+};
+const decodeData: Decoder<Data> = (v, path) => {
+  const o = object(v, path);
+  return {
+    title: field(o, "title", string, path),
+    subtitle: field(o, "subtitle", string, path),
+    back: field(o, "back", nullable(string), path),
+    tz: field(o, "tz", string, path),
+    metrics: field(o, "metrics", array(decodeMetric), path),
+    metric: field(o, "metric", number, path),
+    stations: field(o, "stations", array(number), path),
+    names: field(o, "names", array(string), path),
+    trips: field(o, "trips", array(string), path),
+    groups: field(
+      o,
+      "groups",
+      array((g, p) => {
+        const og = object(g, p);
+        return { label: field(og, "label", string, p), count: field(og, "count", number, p) };
+      }),
+      path,
+    ),
+    pieces: field(o, "pieces", array(decodePiece), path),
+    fallbacks: field(
+      o,
+      "fallbacks",
+      array((f, p) => {
+        const of = object(f, p);
+        return {
+          at: field(of, "at", string, p),
+          line: field(of, "line", string, p),
+          pieces: field(of, "pieces", array(number), p),
+        };
+      }),
+      path,
+    ),
+    chains: field(
+      o,
+      "chains",
+      array((c, p) => {
+        const oc = object(c, p);
+        return {
+          group: field(oc, "group", number, p),
+          header: field(oc, "header", string, p),
+          route: field(oc, "route", string, p),
+          pieces: field(oc, "pieces", array(number), p),
+          fallbacks: field(oc, "fallbacks", array(pair(number, string)), p),
+        };
+      }),
+      path,
+    ),
+  };
+};
 // A point in the plot: (ms, height, station).
 type Pt = [t: number, y: number, s: number];
 // Anything drawable as a polyline: (ms, height, …).
@@ -162,11 +263,6 @@ function entry<K, V>(m: Map<K, V>, k: K, make: () => V): V {
   }
   return v;
 }
-function byId<T extends HTMLElement>(id: string, type: new () => T): T {
-  const e = document.getElementById(id);
-  if (!(e instanceof type)) throw new Error(`#${id} missing`);
-  return e;
-}
 
 // Points come as (unix minutes, station); pieces and fallbacks by index.
 function load(data: Data): Plot {
@@ -189,9 +285,7 @@ function load(data: Data): Plot {
   }));
   return { ...rest, pieces, chains };
 }
-const parsed: unknown = JSON.parse(document.getElementById("data")?.textContent ?? "null");
-if (parsed === null || typeof parsed !== "object") throw new Error("no plot data");
-const D = load(parsed as Data);
+const D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
 
 const NS = "http://www.w3.org/2000/svg";
 const plotEl = byId("plot", HTMLDivElement);

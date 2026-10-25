@@ -1,7 +1,11 @@
 // Search form of `umstieg serve`, built from the field descriptions the server
 // derives from the command-line options.
 
-type Kind = "text" | "number" | "flag" | "choice" | "time" | "station" | "stations";
+import { type Decoder, array, boolean, field, nullable, object, oneOf, parseJson, record, string } from "./decode";
+import { byId } from "./dom";
+
+const kinds = ["text", "number", "flag", "choice", "time", "station", "stations"] as const;
+type Kind = (typeof kinds)[number];
 
 interface Field {
   name: string;
@@ -19,13 +23,28 @@ interface Spec {
   error: string | null;
 }
 
-function byId<T extends HTMLElement>(id: string, type: new () => T): T {
-  const element = document.getElementById(id);
-  if (!(element instanceof type)) throw new Error(`missing #${id}`);
-  return element;
-}
+const decodeField: Decoder<Field> = (v, path) => {
+  const o = object(v, path);
+  return {
+    name: field(o, "name", string, path),
+    help: field(o, "help", string, path),
+    kind: field(o, "kind", oneOf(...kinds), path),
+    default: field(o, "default", string, path),
+    choices: field(o, "choices", array(string), path),
+    advanced: field(o, "advanced", boolean, path),
+  };
+};
 
-const SPEC = JSON.parse(byId("spec", HTMLScriptElement).textContent || "null") as Spec;
+const decodeSpec: Decoder<Spec> = (v, path) => {
+  const o = object(v, path);
+  return {
+    fields: field(o, "fields", array(decodeField), path),
+    values: field(o, "values", record(string), path),
+    error: field(o, "error", nullable(string), path),
+  };
+};
+
+const SPEC = decodeSpec(parseJson(byId("spec", HTMLScriptElement).text), "spec");
 const form = byId("form", HTMLFormElement);
 if (SPEC.error !== null) Object.assign(byId("error", HTMLDivElement), { textContent: SPEC.error, hidden: false });
 
@@ -39,7 +58,7 @@ const now = (): string => {
 };
 const given = (name: string): string | undefined => (Object.hasOwn(SPEC.values, name) ? SPEC.values[name] : undefined);
 
-function field(f: Field): HTMLDivElement {
+function fieldRow(f: Field): HTMLDivElement {
   const row = document.createElement("div");
   row.className = "field";
   const id = `f-${f.name}`;
@@ -92,7 +111,7 @@ function stationInput(input: HTMLInputElement, several: boolean): void {
       void (async () => {
         const response = await fetch(`/stops?q=${encodeURIComponent(q)}`);
         if (!response.ok) return;
-        const names = (await response.json()) as string[];
+        const names = array(string)(parseJson(await response.text()), "stops");
         list.replaceChildren(...names.map((n) => new Option(prefix + n)));
       })();
     }, 250);
@@ -107,11 +126,11 @@ const advanced = document.createElement("details");
 advanced.append(Object.assign(document.createElement("summary"), { textContent: "Advanced" }));
 for (const name of TRIP) {
   const f = SPEC.fields.find((f) => f.name === name);
-  if (f) trip.append(field(f));
+  if (f) trip.append(fieldRow(f));
 }
 for (const f of SPEC.fields) {
   if (TRIP.includes(f.name)) continue;
-  (f.advanced ? advanced : limits).append(field(f));
+  (f.advanced ? advanced : limits).append(fieldRow(f));
 }
 const submit = Object.assign(document.createElement("button"), { type: "submit", textContent: "Search" });
 const note = Object.assign(document.createElement("p"), {

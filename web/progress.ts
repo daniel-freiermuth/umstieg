@@ -1,6 +1,9 @@
 // Progress page of a running search (`umstieg serve`): polls the job's status
 // and opens the plot when it is done.
 
+import { type Decoder, array, boolean, field, nullable, object, parseJson, string } from "./decode";
+import { byId } from "./dom";
+
 interface Status {
   log: string[];
   done: boolean;
@@ -9,11 +12,15 @@ interface Status {
   back: string;
 }
 
-function byId<T extends HTMLElement>(id: string, type: new () => T): T {
-  const element = document.getElementById(id);
-  if (!(element instanceof type)) throw new Error(`missing #${id}`);
-  return element;
-}
+const decodeStatus: Decoder<Status> = (v, path) => {
+  const o = object(v, path);
+  return {
+    log: field(o, "log", array(string), path),
+    done: field(o, "done", boolean, path),
+    error: field(o, "error", nullable(string), path),
+    back: field(o, "back", string, path),
+  };
+};
 
 const log = byId("log", HTMLPreElement);
 const title = byId("title", HTMLHeadingElement);
@@ -27,7 +34,7 @@ async function poll(): Promise<void> {
     title.textContent = "Search not found";
     return;
   }
-  const status = (await response.json()) as Status;
+  const status = decodeStatus(parseJson(await response.text()), "status");
   back.href = status.back;
   log.textContent = status.log.join("\n");
   if (!status.done) {
