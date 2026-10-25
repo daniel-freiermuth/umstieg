@@ -11,10 +11,7 @@ function toJson(value, path) {
   if (Array.isArray(value))
     return value.map((x, i) => toJson(x, `${path}[${String(i)}]`));
   if (typeof value === "object") {
-    const out = {};
-    for (const [key, x] of Object.entries(value))
-      out[key] = toJson(x, `${path}.${key}`);
-    return out;
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
   }
   return fail(path, "JSON");
 }
@@ -40,26 +37,31 @@ var pair = (first, second) => (v, path) => {
 var oneOf = (...options) => (v, path) => options.find((o) => o === v) ?? fail(path, `one of ${options.join(", ")}`);
 var object = (v, path) => isObject(v) ? v : fail(path, "an object");
 function field(o, name, decode, path) {
-  const v = o[name];
+  const v = Object.hasOwn(o, name) ? o[name] : undefined;
   return v === undefined ? fail(`${path}.${name}`, "a value") : decode(v, `${path}.${name}`);
 }
 var record = (decode) => (v, path) => {
   const o = object(v, path);
-  const out = {};
-  for (const [key, x] of Object.entries(o))
-    out[key] = decode(x, `${path}.${key}`);
-  return out;
+  return Object.fromEntries(Object.entries(o).map(([key, x]) => [key, decode(x, `${path}.${key}`)]));
 };
 
-// dom.ts
-function byId(id, type) {
-  const element = document.getElementById(id);
-  if (!(element instanceof type))
-    throw new Error(`#${id} missing`);
-  return element;
+// util.ts
+function item(xs, i) {
+  const x = xs[i];
+  if (x === undefined)
+    throw new Error(`index ${String(i)} out of range`);
+  return x;
+}
+function entry(m, k, make) {
+  let v = m.get(k);
+  if (v === undefined) {
+    v = make();
+    m.set(k, v);
+  }
+  return v;
 }
 
-// plot.ts
+// data.ts
 var kinds = ["ride", "wait", "walk"];
 var decodeMetric = (v, path) => {
   const o = object(v, path);
@@ -117,20 +119,6 @@ var decodeData = (v, path) => {
     }), path)
   };
 };
-function item(xs, i) {
-  const x = xs[i];
-  if (x === undefined)
-    throw new Error(`index ${String(i)} out of range`);
-  return x;
-}
-function entry(m, k, make) {
-  let v = m.get(k);
-  if (v === undefined) {
-    v = make();
-    m.set(k, v);
-  }
-  return v;
-}
 function load(data) {
   const { pieces: rawPieces, fallbacks: rawFallbacks, chains: rawChains, ...rest } = data;
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts }) => ({
@@ -151,6 +139,398 @@ function load(data) {
   }));
   return { ...rest, pieces, chains };
 }
+function applyHeights(plot, metric) {
+  const heights = item(plot.metrics, metric).heights;
+  for (const p of plot.pieces)
+    p.pts = p.raw.flatMap(([t, s]) => {
+      const h = heights[s] ?? null;
+      return h === null ? [] : [[t, h, s]];
+    });
+  return plot.stations.flatMap((s) => {
+    const h = heights[s] ?? null;
+    return h === null ? [] : [{ i: s, name: item(plot.names, s), y: h }];
+  }).sort((a, b) => b.y - a.y || a.name.localeCompare(b.name));
+}
+function extent(plot) {
+  const full = { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 };
+  for (const c of plot.chains)
+    for (const i of c.pieces)
+      for (const [t, v] of item(plot.pieces, i).pts) {
+        full.t0 = Math.min(full.t0, t);
+        full.t1 = Math.max(full.t1, t);
+        full.y1 = Math.max(full.y1, v);
+      }
+  full.t0 -= 10 * 60000;
+  full.t1 += 10 * 60000;
+  return full;
+}
+
+// dom.ts
+function byId(id, type) {
+  const element = document.getElementById(id);
+  if (!(element instanceof type))
+    throw new Error(`#${id} missing`);
+  return element;
+}
+
+// geometry.ts
+function clipLine(pts, from, to) {
+  if (from === -Infinity && to === Infinity)
+    return pts;
+  const at = (a, b, t) => [t, a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]), a[2]];
+  const cut = [];
+  const push = (q) => {
+    const l = cut[cut.length - 1];
+    if (l?.[0] !== q[0] || l[1] !== q[1])
+      cut.push(q);
+  };
+  for (let k = 1;k < pts.length; k++) {
+    const a = item(pts, k - 1), b = item(pts, k);
+    if (b[0] < from || a[0] > to)
+      continue;
+    if (a[0] === b[0]) {
+      push(a);
+      push(b);
+      continue;
+    }
+    push(at(a, b, Math.max(a[0], from)));
+    push(at(a, b, Math.min(b[0], to)));
+  }
+  return cut;
+}
+var MIN_T = 10 * 60000;
+function clampDomain(dom, full) {
+  let { t0, t1, y0, y1 } = dom;
+  const minY = (full.y1 - full.y0) / 200;
+  if (t1 - t0 < MIN_T) {
+    const c = (t0 + t1) / 2;
+    t0 = c - MIN_T / 2;
+    t1 = c + MIN_T / 2;
+  }
+  if (y1 - y0 < minY) {
+    const c = (y0 + y1) / 2;
+    y0 = c - minY / 2;
+    y1 = c + minY / 2;
+  }
+  const span = (lo, hi, a, b) => {
+    if (hi - lo > b - a)
+      return [a, b];
+    if (lo < a)
+      return [a, a + hi - lo];
+    if (hi > b)
+      return [b - (hi - lo), b];
+    return [lo, hi];
+  };
+  [t0, t1] = span(t0, t1, full.t0, full.t1);
+  [y0, y1] = span(y0, y1, full.y0, full.y1);
+  return { t0, t1, y0, y1 };
+}
+function zoom(dom, full, { fx, fy }, k, { time, height }) {
+  let { t0, t1, y0, y1 } = dom;
+  if (time) {
+    const at = t0 + fx * (t1 - t0);
+    [t0, t1] = [at - (at - t0) * k, at + (t1 - at) * k];
+  }
+  if (height) {
+    const at = y1 - fy * (y1 - y0);
+    [y0, y1] = [at - (at - y0) * k, at + (y1 - at) * k];
+  }
+  return clampDomain({ t0, t1, y0, y1 }, full);
+}
+function pan(start, full, dx, dy, { W, H, m }) {
+  const dt = dx / (W - m.l - m.r) * (start.t1 - start.t0);
+  const dv = dy / (H - m.t - m.b) * (start.y1 - start.y0);
+  return clampDomain({ t0: start.t0 - dt, t1: start.t1 - dt, y0: start.y0 + dv, y1: start.y1 + dv }, full);
+}
+var TICK_STEPS = [5, 10, 15, 30, 60, 120, 180, 360].map((mins) => mins * 60000);
+function tickStep(span) {
+  return TICK_STEPS.find((s) => span / s <= 12) ?? item(TICK_STEPS, TICK_STEPS.length - 1);
+}
+function spreadLabels(ys, gap, bottom) {
+  const at = [...ys];
+  for (let k = 1;k < at.length; k++)
+    at[k] = Math.max(item(at, k), item(at, k - 1) + gap);
+  const lastAt = at[at.length - 1];
+  if (lastAt !== undefined && lastAt > bottom) {
+    at[at.length - 1] = bottom;
+    for (let k = at.length - 2;k >= 0; k--)
+      at[k] = Math.min(item(at, k), item(at, k + 1) - gap);
+  }
+  return at;
+}
+function distanceToLine(px, py, p) {
+  let best = Infinity;
+  for (let k = 0;k < p.length; k++) {
+    const a = item(p, k), b = item(p, Math.min(k + 1, p.length - 1));
+    const dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy;
+    const u = len ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len)) : 0;
+    best = Math.min(best, Math.hypot(px - a.x - u * dx, py - a.y - u * dy));
+  }
+  return best;
+}
+
+// reach.ts
+function runsOf(spans) {
+  return mergeIntervals(spans.map((w) => [w.from, w.to]));
+}
+function mergeIntervals(list) {
+  const runs = [];
+  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    const last = runs[runs.length - 1];
+    if (last && a <= last[1])
+      last[1] = Math.max(last[1], b);
+    else
+      runs.push([a, b]);
+  }
+  return runs;
+}
+function stayAt(spans, from, to, time, y, s) {
+  const t = Math.min(to, Math.max(from, time));
+  const here = spans.filter((w) => w.from <= t && t <= w.to);
+  return {
+    t,
+    here,
+    pts: [
+      [from, y, s],
+      [to, y, s]
+    ]
+  };
+}
+function reachSegments(pieces, chains, items) {
+  const from = new Map, upTo = new Map;
+  const before = (a, b) => a[0] < b[0] || a[0] === b[0] && a[1] < b[1];
+  const last = (pi) => item(pieces, pi).pts.length - 1;
+  for (const { spans, t, back, fwd } of items)
+    for (const w of spans) {
+      if (fwd && w.to >= t) {
+        const p = w.k === undefined ? [w.j, 0, t] : [w.j, w.k - 1, t], q = from.get(w.chain);
+        if (!q || before(p, q))
+          from.set(w.chain, p);
+      }
+      if (back && w.from <= t) {
+        const p = w.k === undefined ? [w.j, last(item(item(chains, w.chain).pieces, w.j)), t] : [w.j, w.k, t], q = upTo.get(w.chain);
+        if (!q || before(q, p))
+          upTo.set(w.chain, p);
+      }
+    }
+  const raw = new Map;
+  const add = (pi, k0, k1, c0 = null, c1 = null) => {
+    const s = item(pieces, pi).pts;
+    if (!s.length)
+      return;
+    let a = item(s, k0)[0], b = item(s, k1)[0];
+    if (c0 !== null && k0 < k1 && item(s, k0)[2] === item(s, k0 + 1)[2])
+      a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
+    if (c1 !== null && k1 > k0 && item(s, k1)[2] === item(s, k1 - 1)[2])
+      b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
+    entry(raw, pi, () => []).push([a, b]);
+  };
+  for (const [chain, [j, k0, t]] of from) {
+    const ps = item(chains, chain).pieces;
+    add(item(ps, j), k0, last(item(ps, j)), t, null);
+    for (let q = j + 1;q < ps.length; q++)
+      add(item(ps, q), 0, last(item(ps, q)));
+  }
+  for (const [chain, [j, k1, t]] of upTo) {
+    const ps = item(chains, chain).pieces;
+    for (let q = 0;q < j; q++)
+      add(item(ps, q), 0, last(item(ps, q)));
+    add(item(ps, j), 0, k1, null, t);
+  }
+  const out = [];
+  for (const [pi, list] of raw)
+    for (const [a, b] of mergeIntervals(list))
+      out.push([pi, a, b]);
+  return out;
+}
+function intersectReach(segmentLists) {
+  const maps = segmentLists.map((list) => {
+    const m = new Map;
+    for (const [pi, a, b] of list)
+      entry(m, pi, () => []).push([a, b]);
+    return m;
+  });
+  const [head, ...rest] = maps;
+  if (!head)
+    return [];
+  const out = [];
+  for (const [pi, first] of head) {
+    let cur = first;
+    for (const m of rest) {
+      const other = m.get(pi);
+      if (!other) {
+        cur = [];
+        break;
+      }
+      const next = [];
+      for (const [a, b] of cur)
+        for (const [c, d] of other) {
+          const lo = Math.max(a, c), hi = Math.min(b, d);
+          if (lo <= hi)
+            next.push([lo, hi]);
+        }
+      cur = next;
+    }
+    for (const [a, b] of cur)
+      out.push([pi, a, b]);
+  }
+  return out;
+}
+var atMost = (v, t) => v !== undefined && v <= t;
+var atLeast = (v, t) => v !== undefined && v >= t;
+function network(pieces, chains, visible) {
+  const rides = new Map, waits = new Map, walks = new Map, warns = new Set;
+  const stays = new Map;
+  const stay = (s, y, span) => {
+    entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
+  };
+  chains.forEach((c, i) => {
+    if (!visible(i))
+      return;
+    c.pieces.forEach((pi, j) => {
+      const p = item(pieces, pi);
+      if (p.kind === "ride" && p.trip !== null) {
+        const trip = p.trip;
+        for (let k = 1;k < p.pts.length; k++) {
+          const a = item(p.pts, k - 1), b = item(p.pts, k);
+          const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
+          entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set })).chains.add(i);
+          if (a[2] === b[2])
+            stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip, j, k });
+        }
+      } else if (p.kind === "wait") {
+        const first = p.pts[0], last = p.pts[p.pts.length - 1];
+        if (!first || !last)
+          return;
+        const s = first[2], span = { from: first[0], to: last[0], chain: i, j };
+        entry(waits, s, () => ({ y: first[1], spans: [], runs: [] })).spans.push(span);
+        stay(s, first[1], span);
+        if (p.warn)
+          warns.add(pi);
+      } else if (p.kind === "walk") {
+        entry(walks, pi, () => new Set).add(i);
+      }
+    });
+  });
+  for (const w of waits.values())
+    w.runs = runsOf(w.spans);
+  const conns = [...rides.values()].map((e) => ({
+    trip: e.trip,
+    from: e.pts[0][2],
+    dep: e.pts[0][0],
+    to: e.pts[1][2],
+    arr: e.pts[1][0]
+  }));
+  const byDep = [...conns].sort((a, b) => a.dep - b.dep), byArr = [...conns].sort((a, b) => b.arr - a.arr);
+  const foot = new Map, footBack = new Map;
+  for (const pi of walks.keys()) {
+    const p = item(pieces, pi);
+    const a = p.pts[0], b = p.pts[p.pts.length - 1];
+    if (p.pts.length < 2 || !a || !b)
+      continue;
+    entry(foot, a[2], () => new Map).set(b[2], b[0] - a[0]);
+    entry(footBack, b[2], () => new Map).set(a[2], b[0] - a[0]);
+  }
+  const reach = (src) => {
+    const ea = new Map, ld = new Map;
+    const early = (x, t) => {
+      if (atMost(ea.get(x), t))
+        return;
+      ea.set(x, t);
+      for (const [y, d] of foot.get(x) ?? [])
+        if (!atMost(ea.get(y), t + d))
+          ea.set(y, t + d);
+    };
+    const late = (x, t) => {
+      if (atLeast(ld.get(x), t))
+        return;
+      ld.set(x, t);
+      for (const [y, d] of footBack.get(x) ?? [])
+        if (!atLeast(ld.get(y), t - d))
+          ld.set(y, t - d);
+    };
+    for (const [s, t] of src.at) {
+      early(s, t);
+      late(s, t);
+    }
+    for (const [s, t] of src.back ?? [])
+      late(s, t);
+    for (const [s, t] of src.fwd ?? [])
+      early(s, t);
+    const boarded = new Map(src.ride ? [[src.ride.trip, src.ride.from]] : []);
+    for (const c of byDep) {
+      const since = boarded.get(c.trip);
+      if (since !== undefined && c.dep >= since || atMost(ea.get(c.from), c.dep)) {
+        if (since === undefined)
+          boarded.set(c.trip, c.dep);
+        early(c.to, c.arr);
+      }
+    }
+    const alighted = new Map(src.ride ? [[src.ride.trip, src.ride.until]] : []);
+    for (const c of byArr) {
+      const until = alighted.get(c.trip);
+      if (until !== undefined && c.arr <= until || atLeast(ld.get(c.to), c.arr)) {
+        if (until === undefined)
+          alighted.set(c.trip, c.arr);
+        late(c.from, c.dep);
+      }
+    }
+    const items = [];
+    for (const [x, t] of ea) {
+      const st = stays.get(x);
+      if (st)
+        items.push({ spans: st.spans, t, back: false, fwd: true });
+    }
+    for (const [x, t] of ld) {
+      const st = stays.get(x);
+      if (st)
+        items.push({ spans: st.spans, t, back: true, fwd: false });
+    }
+    return reachSegments(pieces, chains, items);
+  };
+  const touching = new Map;
+  chains.forEach((c, i) => {
+    if (!visible(i))
+      return;
+    for (const pi of c.pieces)
+      for (const [, , s] of item(pieces, pi).pts)
+        entry(touching, s, () => new Set).add(i);
+  });
+  return { rides: [...rides.values()], stays, waits: [...waits.values()], walks, warns: [...warns], touching, reach };
+}
+
+// picks.ts
+function narrow(picks, visible) {
+  const [first, ...rest] = picks;
+  if (!first)
+    return null;
+  let chains = first.chains.filter(visible);
+  for (const p of rest) {
+    const s = new Set(p.chains);
+    chains = chains.filter((i) => s.has(i));
+  }
+  const reaches = picks.map((p) => p.reach).filter((r) => r !== null);
+  const reach = reaches.length ? {
+    key: picks.map((p) => p.reach?.key ?? p.id).join("|"),
+    segments: intersectReach(reaches.map((r) => r.segments))
+  } : null;
+  return { info: picks.map((p) => p.info).join(" + "), chains, reach };
+}
+function pinAfter(chains, pinned) {
+  if (chains.length === 1)
+    return item(chains, 0);
+  return pinned !== null && chains.includes(pinned) ? pinned : null;
+}
+function step(list, pinned, down) {
+  const now = pinned === null ? -1 : list.indexOf(pinned);
+  const next = now < 0 ? 0 : (now + (down ? 1 : list.length - 1)) % list.length;
+  return list[next] ?? null;
+}
+function toggle(picks, target) {
+  return picks.some((p) => p.id === target.id) ? picks.filter((p) => p.id !== target.id) : [...picks, target];
+}
+
+// plot.ts
 var D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
 var NS = "http://www.w3.org/2000/svg";
 var plotEl = byId("plot", HTMLDivElement);
@@ -206,25 +586,8 @@ function heightOf(s) {
 }
 function applyMetric(k) {
   metricIndex = k;
-  for (const p of D.pieces)
-    p.pts = p.raw.flatMap(([t, s]) => {
-      const h = heightOf(s);
-      return h === null ? [] : [[t, h, s]];
-    });
-  rows = D.stations.flatMap((s) => {
-    const h = heightOf(s);
-    return h === null ? [] : [{ i: s, name: item(D.names, s), y: h }];
-  }).sort((a, b) => b.y - a.y || a.name.localeCompare(b.name));
-  Object.assign(full, { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 });
-  for (const c of D.chains)
-    for (const i of c.pieces)
-      for (const [t, v] of item(D.pieces, i).pts) {
-        full.t0 = Math.min(full.t0, t);
-        full.t1 = Math.max(full.t1, t);
-        full.y1 = Math.max(full.y1, v);
-      }
-  full.t0 -= 10 * 60000;
-  full.t1 += 10 * 60000;
+  rows = applyHeights(D, k);
+  full = extent(D);
   dom = { ...full };
   writeLegend();
 }
@@ -243,238 +606,16 @@ metricSelect.addEventListener("change", () => {
   render();
 });
 applyMetric(D.metric);
-function runsOf(spans) {
-  const runs = [];
-  for (const w of [...spans].sort((a, b) => a.from - b.from)) {
-    const last = runs[runs.length - 1];
-    if (last && w.from <= last[1])
-      last[1] = Math.max(last[1], w.to);
-    else
-      runs.push([w.from, w.to]);
-  }
-  return runs;
-}
-function stayAt(spans, from, to, time, y, s) {
-  const t = Math.min(to, Math.max(from, time));
-  const here = spans.filter((w) => w.from <= t && t <= w.to);
-  return {
-    t,
-    here,
-    pts: [
-      [from, y, s],
-      [to, y, s]
-    ]
-  };
-}
-function reachSegments(items) {
-  const from = new Map, upTo = new Map;
-  const before = (a, b) => a[0] < b[0] || a[0] === b[0] && a[1] < b[1];
-  for (const { spans, t, back, fwd } of items)
-    for (const w of spans) {
-      if (fwd && w.to >= t) {
-        const p = w.k === undefined ? [w.j, 0, t] : [w.j, w.k - 1, t], q = from.get(w.chain);
-        if (!q || before(p, q))
-          from.set(w.chain, p);
-      }
-      if (back && w.from <= t) {
-        const n = item(D.pieces, item(item(D.chains, w.chain).pieces, w.j)).pts.length - 1;
-        const p = w.k === undefined ? [w.j, n, t] : [w.j, w.k, t], q = upTo.get(w.chain);
-        if (!q || before(q, p))
-          upTo.set(w.chain, p);
-      }
-    }
-  const raw = new Map;
-  const add = (pi, k0, k1, c0 = null, c1 = null) => {
-    const s = item(D.pieces, pi).pts;
-    if (!s.length)
-      return;
-    let a = item(s, k0)[0], b = item(s, k1)[0];
-    if (c0 !== null && k0 < k1 && item(s, k0)[2] === item(s, k0 + 1)[2])
-      a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
-    if (c1 !== null && k1 > k0 && item(s, k1)[2] === item(s, k1 - 1)[2])
-      b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
-    entry(raw, pi, () => []).push([a, b]);
-  };
-  const last = (pi) => item(D.pieces, pi).pts.length - 1;
-  for (const [chain, [j, k0, t]] of from) {
-    const ps = item(D.chains, chain).pieces;
-    add(item(ps, j), k0, last(item(ps, j)), t, null);
-    for (let q = j + 1;q < ps.length; q++)
-      add(item(ps, q), 0, last(item(ps, q)));
-  }
-  for (const [chain, [j, k1, t]] of upTo) {
-    const ps = item(D.chains, chain).pieces;
-    for (let q = 0;q < j; q++)
-      add(item(ps, q), 0, last(item(ps, q)));
-    add(item(ps, j), 0, k1, null, t);
-  }
-  const out = [];
-  for (const [pi, list] of raw)
-    for (const [a, b] of mergeIntervals(list))
-      out.push([pi, a, b]);
-  return out;
-}
-function mergeIntervals(list) {
-  const runs = [];
-  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
-    const last = runs[runs.length - 1];
-    if (last && a <= last[1])
-      last[1] = Math.max(last[1], b);
-    else
-      runs.push([a, b]);
-  }
-  return runs;
-}
-function intersectReach(segmentLists) {
-  const maps = segmentLists.map((list) => {
-    const m = new Map;
-    for (const [pi, a, b] of list)
-      entry(m, pi, () => []).push([a, b]);
-    return m;
-  });
-  const [head, ...rest] = maps;
-  if (!head)
-    return [];
-  const out = [];
-  for (const [pi, first] of head) {
-    let cur = first;
-    for (const m of rest) {
-      const other = m.get(pi);
-      if (!other) {
-        cur = [];
-        break;
-      }
-      const next = [];
-      for (const [a, b] of cur)
-        for (const [c, d] of other) {
-          const lo = Math.max(a, c), hi = Math.min(b, d);
-          if (lo <= hi)
-            next.push([lo, hi]);
-        }
-      cur = next;
-    }
-    for (const [a, b] of cur)
-      out.push([pi, a, b]);
-  }
-  return out;
-}
-var atMost = (v, t) => v !== undefined && v <= t;
-var atLeast = (v, t) => v !== undefined && v >= t;
 function buildModel() {
-  const edges = new Map, waits = new Map, walks = new Map, warns = new Set;
-  const stays = new Map;
-  const stay = (s, y, span) => {
-    entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
-  };
-  D.chains.forEach((c, i) => {
-    if (hidden.has(c.group))
-      return;
-    c.pieces.forEach((pi, j) => {
-      const p = item(D.pieces, pi);
-      if (p.kind === "ride" && p.trip !== null) {
-        const trip = p.trip;
-        for (let k = 1;k < p.pts.length; k++) {
-          const a = item(p.pts, k - 1), b = item(p.pts, k);
-          const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
-          entry(edges, key, () => {
-            const info = `${item(D.trips, trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
-            return { trip, pts: [a, b], info, chains: new Set };
-          }).chains.add(i);
-          if (a[2] === b[2])
-            stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip, j, k });
-        }
-      } else if (p.kind === "wait") {
-        const first = p.pts[0], last = p.pts[p.pts.length - 1];
-        if (!first || !last)
-          return;
-        const s = first[2], span = { from: first[0], to: last[0], chain: i, j };
-        entry(waits, s, () => ({ y: first[1], spans: [], runs: [] })).spans.push(span);
-        stay(s, first[1], span);
-        if (p.warn)
-          warns.add(pi);
-      } else if (p.kind === "walk") {
-        entry(walks, pi, () => new Set).add(i);
-      }
-    });
+  const net = network(D.pieces, D.chains, (i) => !hidden.has(item(D.chains, i).group));
+  const { stays, walks, touching, reach: closure } = net;
+  const edges = net.rides.map((r) => {
+    const [a, b] = r.pts;
+    const info = `${item(D.trips, r.trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
+    return { ...r, info };
   });
-  for (const w of waits.values())
-    w.runs = runsOf(w.spans);
   const targets = [];
-  const conns = [...edges.values()].map((e) => ({
-    trip: e.trip,
-    from: e.pts[0][2],
-    dep: e.pts[0][0],
-    to: e.pts[1][2],
-    arr: e.pts[1][0]
-  }));
-  const byDep = [...conns].sort((a, b) => a.dep - b.dep), byArr = [...conns].sort((a, b) => b.arr - a.arr);
-  const foot = new Map, footBack = new Map;
-  for (const pi of walks.keys()) {
-    const p = item(D.pieces, pi);
-    const a = p.pts[0], b = p.pts[p.pts.length - 1];
-    if (p.pts.length < 2 || !a || !b)
-      continue;
-    entry(foot, a[2], () => new Map).set(b[2], b[0] - a[0]);
-    entry(footBack, b[2], () => new Map).set(a[2], b[0] - a[0]);
-  }
-  const closure = (src) => {
-    const ea = new Map, ld = new Map;
-    const early = (x, t) => {
-      if (atMost(ea.get(x), t))
-        return;
-      ea.set(x, t);
-      for (const [y, d] of foot.get(x) ?? [])
-        if (!atMost(ea.get(y), t + d))
-          ea.set(y, t + d);
-    };
-    const late = (x, t) => {
-      if (atLeast(ld.get(x), t))
-        return;
-      ld.set(x, t);
-      for (const [y, d] of footBack.get(x) ?? [])
-        if (!atLeast(ld.get(y), t - d))
-          ld.set(y, t - d);
-    };
-    for (const [s, t] of src.at) {
-      early(s, t);
-      late(s, t);
-    }
-    for (const [s, t] of src.back ?? [])
-      late(s, t);
-    for (const [s, t] of src.fwd ?? [])
-      early(s, t);
-    const boarded = new Map(src.ride ? [[src.ride.trip, src.ride.from]] : []);
-    for (const c of byDep) {
-      const since = boarded.get(c.trip);
-      if (since !== undefined && c.dep >= since || atMost(ea.get(c.from), c.dep)) {
-        if (since === undefined)
-          boarded.set(c.trip, c.dep);
-        early(c.to, c.arr);
-      }
-    }
-    const alighted = new Map(src.ride ? [[src.ride.trip, src.ride.until]] : []);
-    for (const c of byArr) {
-      const until = alighted.get(c.trip);
-      if (until !== undefined && c.arr <= until || atLeast(ld.get(c.to), c.arr)) {
-        if (until === undefined)
-          alighted.set(c.trip, c.arr);
-        late(c.from, c.dep);
-      }
-    }
-    const items = [];
-    for (const [x, t] of ea) {
-      const st = stays.get(x);
-      if (st)
-        items.push({ spans: st.spans, t, back: false, fwd: true });
-    }
-    for (const [x, t] of ld) {
-      const st = stays.get(x);
-      if (st)
-        items.push({ spans: st.spans, t, back: true, fwd: false });
-    }
-    return reachSegments(items);
-  };
-  for (const e of edges.values()) {
+  for (const e of edges) {
     if (e.pts[0][2] === e.pts[1][2])
       continue;
     const [a, b] = e.pts;
@@ -535,14 +676,6 @@ function buildModel() {
     const t = { id: `walk:${String(pi)}`, info: p.info, chains: [...chains], pts: p.pts };
     targets.push({ pts: t.pts, at: () => t });
   }
-  const touching = new Map;
-  D.chains.forEach((c, i) => {
-    if (hidden.has(c.group))
-      return;
-    for (const pi of c.pieces)
-      for (const [, , s] of item(D.pieces, pi).pts)
-        entry(touching, s, () => new Set).add(i);
-  });
   const stationTargets = new Map;
   const stationTarget = (s) => entry(stationTargets, s, () => {
     const chains = touching.get(s) ?? new Set;
@@ -565,10 +698,10 @@ function buildModel() {
     };
   });
   model = {
-    edges: [...edges.values()],
-    waits: [...waits.values()],
+    edges,
+    waits: net.waits,
     walks: [...walks.keys()],
-    warns: [...warns],
+    warns: net.warns,
     targets,
     stationTarget
   };
@@ -606,15 +739,7 @@ function render() {
     }, bands);
   });
   const gap = Math.min(12, (H - m.t - m.b) / Math.max(1, st.length));
-  const at = st.map((s) => s.py);
-  for (let k = 1;k < at.length; k++)
-    at[k] = Math.max(item(at, k), item(at, k - 1) + gap);
-  const lastAt = at[at.length - 1];
-  if (lastAt !== undefined && lastAt > H - m.b) {
-    at[at.length - 1] = H - m.b;
-    for (let k = at.length - 2;k >= 0; k--)
-      at[k] = Math.min(item(at, k), item(at, k + 1) - gap);
-  }
+  const at = spreadLabels(st.map((s) => s.py), gap, H - m.b);
   const stations = el("g", { class: "station" }, svg);
   st.forEach((s, k) => {
     const ak = item(at, k);
@@ -644,9 +769,8 @@ function render() {
     });
   });
   const axis = el("g", { class: "axis" }, svg);
-  const steps = [5, 10, 15, 30, 60, 120, 180, 360].map((mins) => mins * 60000);
-  const step = steps.find((s) => (dom.t1 - dom.t0) / s <= 12) ?? item(steps, steps.length - 1);
-  for (let t = Math.ceil(dom.t0 / step) * step;t <= dom.t1; t += step) {
+  const step2 = tickStep(dom.t1 - dom.t0);
+  for (let t = Math.ceil(dom.t0 / step2) * step2;t <= dom.t1; t += step2) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
     el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = timeFmt.format(t);
   }
@@ -683,16 +807,10 @@ function render() {
       const i = h.dataset[key];
       if (i === undefined)
         continue;
-      const p = [...h.points];
-      for (let k = 0;k < p.length; k++) {
-        const a = item(p, k), b = item(p, Math.min(k + 1, p.length - 1));
-        const dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy;
-        const u = len ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len)) : 0;
-        const d = Math.hypot(px - a.x - u * dx, py - a.y - u * dy);
-        if (d < bestD) {
-          bestD = d;
-          best = Number(i);
-        }
+      const d = distanceToLine(px, py, [...h.points]);
+      if (d < bestD) {
+        bestD = d;
+        best = Number(i);
       }
     }
     return best;
@@ -757,30 +875,6 @@ function scheduleRender() {
     render();
   });
 }
-function clampDomain() {
-  const minT = 10 * 60000, minY = (full.y1 - full.y0) / 200;
-  if (dom.t1 - dom.t0 < minT) {
-    const c = (dom.t0 + dom.t1) / 2;
-    dom.t0 = c - minT / 2;
-    dom.t1 = c + minT / 2;
-  }
-  if (dom.y1 - dom.y0 < minY) {
-    const c = (dom.y0 + dom.y1) / 2;
-    dom.y0 = c - minY / 2;
-    dom.y1 = c + minY / 2;
-  }
-  const span = (lo, hi, a, b) => {
-    if (hi - lo > b - a)
-      return [a, b];
-    if (lo < a)
-      return [a, a + hi - lo];
-    if (hi > b)
-      return [b - (hi - lo), b];
-    return [lo, hi];
-  };
-  [dom.t0, dom.t1] = span(dom.t0, dom.t1, full.t0, full.t1);
-  [dom.y0, dom.y1] = span(dom.y0, dom.y1, full.y0, full.y1);
-}
 function mouseInPlot(e, { W, H, m }) {
   const r = plotEl.getBoundingClientRect();
   const px = e.clientX - r.left, py = e.clientY - r.top;
@@ -791,18 +885,7 @@ plotEl.addEventListener("wheel", (e) => {
   if (!geom)
     return;
   const { fx, fy } = mouseInPlot(e, geom);
-  const k = Math.exp(e.deltaY * 0.0015);
-  if (!e.altKey) {
-    const at = dom.t0 + fx * (dom.t1 - dom.t0);
-    dom.t0 = at - (at - dom.t0) * k;
-    dom.t1 = at + (dom.t1 - at) * k;
-  }
-  if (!e.shiftKey) {
-    const at = dom.y1 - fy * (dom.y1 - dom.y0);
-    dom.y0 = at - (at - dom.y0) * k;
-    dom.y1 = at + (dom.y1 - at) * k;
-  }
-  clampDomain();
+  dom = zoom(dom, full, { fx, fy }, Math.exp(e.deltaY * 0.0015), { time: !e.altKey, height: !e.shiftKey });
   scheduleRender();
 }, { passive: false });
 var drag = null;
@@ -821,11 +904,7 @@ window.addEventListener("mousemove", (e) => {
     return;
   dragged = true;
   tip.style.display = "none";
-  const { W, H, m } = geom;
-  const dt = dx / (W - m.l - m.r) * (drag.dom.t1 - drag.dom.t0);
-  const dv = dy / (H - m.t - m.b) * (drag.dom.y1 - drag.dom.y0);
-  dom = { t0: drag.dom.t0 - dt, t1: drag.dom.t1 - dt, y0: drag.dom.y0 + dv, y1: drag.dom.y1 + dv };
-  clampDomain();
+  dom = pan(drag.dom, full, dx, dy, geom);
   scheduleRender();
 });
 window.addEventListener("mouseup", () => {
@@ -844,33 +923,13 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
   scheduleRender();
 });
 function choose(target) {
-  const k = picks.findIndex((p) => p.id === target.id);
-  if (k >= 0)
-    picks.splice(k, 1);
-  else
-    picks.push({ id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
+  picks = toggle(picks, { id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
   applyPicks();
   refresh();
 }
 function applyPicks() {
-  const [first, ...rest] = picks;
-  if (!first) {
-    candidates = null;
-    pinned = null;
-    return;
-  }
-  let chains = first.chains.filter((i) => !hidden.has(item(D.chains, i).group));
-  for (const p of rest) {
-    const s = new Set(p.chains);
-    chains = chains.filter((i) => s.has(i));
-  }
-  const reaches = picks.map((p) => p.reach).filter((r) => r !== null);
-  const reach = reaches.length ? {
-    key: picks.map((p) => p.reach?.key ?? p.id).join("|"),
-    segments: intersectReach(reaches.map((r) => r.segments))
-  } : null;
-  candidates = { info: picks.map((p) => p.info).join(" + "), chains, reach };
-  pinned = chains.length === 1 ? item(chains, 0) : pinned !== null && chains.includes(pinned) ? pinned : null;
+  candidates = narrow(picks, (i) => !hidden.has(item(D.chains, i).group));
+  pinned = candidates === null ? null : pinAfter(candidates.chains, pinned);
 }
 function clearPicks() {
   picks = [];
@@ -910,29 +969,7 @@ function refresh() {
     overlay.replaceChildren();
     const draw = (pi, cls, from = -Infinity, to = Infinity) => {
       const p = item(D.pieces, pi);
-      let s = p.pts;
-      if (from > -Infinity || to < Infinity) {
-        const at = (a, b, t) => [t, a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]), a[2]];
-        const cut = [];
-        const push = (q) => {
-          const l = cut[cut.length - 1];
-          if (l?.[0] !== q[0] || l[1] !== q[1])
-            cut.push(q);
-        };
-        for (let k = 1;k < s.length; k++) {
-          const a = item(s, k - 1), b = item(s, k);
-          if (b[0] < from || a[0] > to)
-            continue;
-          if (a[0] === b[0]) {
-            push(a);
-            push(b);
-            continue;
-          }
-          push(at(a, b, Math.max(a[0], from)));
-          push(at(a, b, Math.min(b[0], to)));
-        }
-        s = cut;
-      }
+      const s = clipLine(p.pts, from, to);
       if (s.length < 2 && p.pts.length >= 2)
         return;
       const line = el("polyline", { points: pts({ pts: s }), class: `${p.kind}${p.warn ? " warn" : ""} ${cls}` }, overlay);
@@ -1148,10 +1185,7 @@ document.addEventListener("keydown", (e) => {
   if (!candidates || e.key !== "ArrowDown" && e.key !== "ArrowUp")
     return;
   e.preventDefault();
-  const list = candidates.chains;
-  const now = pinned === null ? -1 : list.indexOf(pinned);
-  const next = now < 0 ? 0 : (now + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
-  pinned = list[next] ?? null;
+  pinned = step(candidates.chains, pinned, e.key === "ArrowDown");
   refresh();
 });
 var groupsEl = byId("groups", HTMLDivElement);

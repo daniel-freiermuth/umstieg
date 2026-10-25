@@ -11,10 +11,7 @@ function toJson(value, path) {
   if (Array.isArray(value))
     return value.map((x, i) => toJson(x, `${path}[${String(i)}]`));
   if (typeof value === "object") {
-    const out = {};
-    for (const [key, x] of Object.entries(value))
-      out[key] = toJson(x, `${path}.${key}`);
-    return out;
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
   }
   return fail(path, "JSON");
 }
@@ -40,15 +37,12 @@ var pair = (first, second) => (v, path) => {
 var oneOf = (...options) => (v, path) => options.find((o) => o === v) ?? fail(path, `one of ${options.join(", ")}`);
 var object = (v, path) => isObject(v) ? v : fail(path, "an object");
 function field(o, name, decode, path) {
-  const v = o[name];
+  const v = Object.hasOwn(o, name) ? o[name] : undefined;
   return v === undefined ? fail(`${path}.${name}`, "a value") : decode(v, `${path}.${name}`);
 }
 var record = (decode) => (v, path) => {
   const o = object(v, path);
-  const out = {};
-  for (const [key, x] of Object.entries(o))
-    out[key] = decode(x, `${path}.${key}`);
-  return out;
+  return Object.fromEntries(Object.entries(o).map(([key, x]) => [key, decode(x, `${path}.${key}`)]));
 };
 
 // dom.ts
@@ -59,7 +53,7 @@ function byId(id, type) {
   return element;
 }
 
-// progress.ts
+// status.ts
 var decodeStatus = (v, path) => {
   const o = object(v, path);
   return {
@@ -69,6 +63,13 @@ var decodeStatus = (v, path) => {
     back: field(o, "back", string, path)
   };
 };
+function next(status) {
+  if (!status.done)
+    return { poll: true };
+  return status.error === null ? { plot: true } : { error: status.error };
+}
+
+// progress.ts
 var log = byId("log", HTMLPreElement);
 var title = byId("title", HTMLHeadingElement);
 var back = byId("back", HTMLAnchorElement);
@@ -83,16 +84,17 @@ async function poll() {
   back.href = status.back;
   log.textContent = status.log.join(`
 `);
-  if (!status.done) {
+  const then = next(status);
+  if ("poll" in then) {
     setTimeout(() => void poll(), 1000);
     return;
   }
-  if (status.error === null) {
+  if ("plot" in then) {
     location.replace(`${job}/plot`);
     return;
   }
   title.textContent = "No plot";
-  const error = Object.assign(document.createElement("pre"), { className: "error", textContent: status.error });
+  const error = Object.assign(document.createElement("pre"), { className: "error", textContent: then.error });
   log.after(error);
 }
 poll();

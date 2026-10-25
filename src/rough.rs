@@ -102,7 +102,9 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
 
 async fn via_hub(motis: &Motis, efa: Option<&Efa>, q: &Query, hub: &Stop) -> Result<(Vec<Itinerary>, Vec<String>)> {
     let mut notes = Vec::new();
-    let mut first = departing(motis.plan(&q.origin.id, &hub.id, q.time, q.window).await?, q.time, q.window);
+    // Sliced like the other requests: one wide window would lose earlier
+    // departures that a later one matches on arrival.
+    let mut first = departing(sliced(motis, &q.origin.id, &hub.id, q.time, q.window).await?, q.time, q.window);
     let (origin, at_hub, destination) = (efa::dhid(&q.origin.id), efa::dhid(&hub.id), efa::dhid(&q.destination.id));
     if let (Some(efa), Some(o), Some(h)) = (efa, &origin, &at_hub) {
         first.extend(efa_window(efa, o, h, q.time, q.window, &mut notes).await);
@@ -174,3 +176,7 @@ fn departing(itineraries: Vec<Itinerary>, time: DateTime<Utc>, window: TimeDelta
         .filter(|i| i.legs.iter().find(|l| l.is_transit()).is_some_and(|l| span.contains(&l.start_time)))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "rough_tests.rs"]
+mod tests;

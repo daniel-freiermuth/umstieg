@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "build": "bun build plot.ts form.ts progress.ts --outdir dist --target browser --format esm",
-    "check": "tsc -p . && eslint --max-warnings 0 . && prettier --check ."
+    "check": "tsc -p . && tsc -p tsconfig.test.json && eslint --max-warnings 0 . && prettier --check .",
+    "test": "bun test"
   },
   "devDependencies": {
     "@eslint/js": "^9",
+    "@types/bun": "^1.4.4",
     "eslint": "^9",
     "prettier": "^3.9.10",
     "typescript": "^5",

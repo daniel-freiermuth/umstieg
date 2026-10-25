@@ -66,21 +66,34 @@ impl<'n> Fallbacks<'n> {
         let tt = self.net.tt;
         let min_transfer = self.min_transfer;
         let transfer = &chain.transfers(tt)[change];
-        let trips = chain.trips();
-        // Catching a later train of the plan (also the missed one, further on) ends the detour.
-        let rejoin: HashSet<usize> = trips[change + 1..].iter().copied().collect();
+        // Catching a later train of the plan (also the missed one, further on)
+        // before the plan leaves it ends the detour. Trip → where the plan leaves it.
+        let rejoin: HashMap<usize, usize> =
+            chain.rides().skip(change + 1).map(|(trip, _, alight)| (trip, alight)).collect();
         let arrival = chain.arrival(tt);
 
-        let mut ranked: Vec<_> = self
-            .candidates(transfer.station, transfer.departure)
+        // After a change with a walk, the missed train left from where the walk
+        // led; fallbacks start there too (the search doesn't begin with a walk).
+        let mut starts = vec![transfer.station];
+        if let Some((trip, board, _)) = chain.rides().nth(change + 1) {
+            let boards_at = tt.trips[trip].calls[board].station;
+            if boards_at != transfer.station {
+                starts.push(boards_at);
+            }
+        }
+        let candidates: Vec<Chain> =
+            starts.into_iter().flat_map(|s| self.candidates(s, transfer.departure).to_vec()).collect();
+        let mut ranked: Vec<_> = candidates
             .iter()
             .map(|fallback| {
-                let rides = fallback.trips();
-                let back = rides.iter().position(|t| rejoin.contains(t));
+                let rides: Vec<_> = fallback.rides().collect();
+                let back =
+                    rides.iter().position(|(trip, board, _)| rejoin.get(trip).is_some_and(|alight| board < alight));
                 let changes = back.unwrap_or(rides.len() - 1);
                 let slack = fallback.transfers(tt)[..changes].iter().map(|t| t.slack).min();
                 let lands = if back.is_some() { arrival } else { fallback.arrival(tt) };
-                let line = text::route(tt, fallback, min_transfer, &rejoin);
+                let marked: HashSet<usize> = back.map(|i| rides[i].0).into_iter().collect();
+                let line = text::route(tt, fallback, min_transfer, &marked);
                 (lands, changes, Reverse(slack), line, back, fallback)
             })
             .collect();
@@ -93,3 +106,7 @@ impl<'n> Fallbacks<'n> {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "fallback_tests.rs"]
+mod tests;

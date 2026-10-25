@@ -97,6 +97,9 @@ pub struct Endpoints {
     /// MOTIS API base URL.
     #[arg(long, default_value = "https://api.transitous.org")]
     pub api: String,
+    /// DB Timetables API base URL.
+    #[arg(long, default_value = db::API)]
+    pub db_api: String,
     /// Contact sent in the User-Agent, as the Transitous usage policy requires.
     #[arg(long, env = "UMSTIEG_CONTACT", default_value = "https://github.com/daniel-freiermuth")]
     pub contact: String,
@@ -127,19 +130,21 @@ pub struct PlotPage {
     pub back: Option<String>,
 }
 
-/// Runs a search; with `plot`, also renders the plot page.
+/// Runs a search; with `plot`, also renders the plot page. Without
+/// `credentials` (or with `--no-db`), only Transitous and EFA are asked.
 #[expect(clippy::too_many_lines, reason = "the search pipeline, stage after stage, with the report in between")]
 pub async fn run(
     args: &SearchArgs,
     endpoints: &Endpoints,
+    credentials: Option<db::Credentials>,
     plot: Option<PlotPage>,
     events: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Outcome> {
     let user_agent = endpoints.user_agent();
     let motis = Motis::new(&endpoints.api, &user_agent)?;
     let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;
-    let db = match (args.no_db, db::Credentials::load()?) {
-        (false, Some(credentials)) => Some(db::Db::new(credentials, &user_agent)?),
+    let db = match (args.no_db, credentials) {
+        (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, &user_agent)?),
         (false, None) => {
             events(Event::Warning(
                 "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
@@ -203,10 +208,14 @@ pub async fn run(
         writeln!(out, "{title}, {departing}")?;
         writeln!(
             out,
-            "timetable: {} stations, {} trains · rough routes via {} · {} Transitous requests{}{}",
+            "timetable: {} stations, {} trains · {} · {} Transitous requests{}{}",
             tt.stations.len(),
             tt.trips.len(),
-            rough.hubs.join(", "),
+            if rough.hubs.is_empty() {
+                "no change stations in the rough routes".to_owned()
+            } else {
+                format!("rough routes via {}", rough.hubs.join(", "))
+            },
             motis.request_count(),
             efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
             db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
@@ -287,9 +296,14 @@ pub async fn run(
 }
 
 fn parse_time(at: Option<&str>) -> Result<DateTime<Utc>> {
-    let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(Utc::now()) };
+    parse_time_in(at, &Local, Utc::now())
+}
+
+/// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`.
+fn parse_time_in<Z: TimeZone>(at: Option<&str>, zone: &Z, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(now) };
     let naive = if let Ok(t) = NaiveTime::parse_from_str(at, "%H:%M") {
-        NaiveDateTime::new(Local::now().date_naive(), t)
+        NaiveDateTime::new(now.with_timezone(zone).date_naive(), t)
     } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M") {
         dt
     } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M") {
@@ -299,8 +313,7 @@ fn parse_time(at: Option<&str>) -> Result<DateTime<Utc>> {
     } else {
         bail!("cannot parse --at {at:?}; use \"HH:MM\" or \"YYYY-MM-DD HH:MM\"");
     };
-    Local
-        .from_local_datetime(&naive)
+    zone.from_local_datetime(&naive)
         .earliest()
         .map(|t| t.with_timezone(&Utc))
         .with_context(|| format!("{at:?} does not exist in the local time zone"))
@@ -366,3 +379,7 @@ fn write_detail(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod tests;

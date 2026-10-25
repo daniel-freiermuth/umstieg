@@ -18,6 +18,7 @@ use clap::{ArgAction, CommandFactory, Parser};
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
+use crate::db;
 use crate::motis::Motis;
 use crate::page;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
@@ -54,29 +55,56 @@ struct App {
     motis: Motis,
     /// Used by every search, whatever the form says.
     endpoints: Endpoints,
+    /// DB credentials, read when a search starts.
+    credentials: fn() -> Result<Option<db::Credentials>>,
+}
+
+impl App {
+    fn new(
+        parallel: usize,
+        endpoints: Endpoints,
+        credentials: fn() -> Result<Option<db::Credentials>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            jobs: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            permits: Semaphore::new(parallel.max(1)),
+            motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
+            endpoints,
+            credentials,
+        })
+    }
 }
 
 #[expect(clippy::print_stderr, reason = "the server's one startup line on the terminal")]
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
-    let app = Arc::new(App {
-        jobs: Mutex::new(HashMap::new()),
-        next: AtomicU64::new(1),
-        permits: Semaphore::new(parallel.max(1)),
-        motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
-        endpoints,
-    });
-    let router = Router::new()
+    let app = Arc::new(App::new(parallel, endpoints, db::Credentials::load)?);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    eprintln!("umstieg: route planner on http://{addr}/");
+    axum::serve(listener, router(app)).await?;
+    Ok(())
+}
+
+/// The server's routes with `credentials` instead of the user's, for tests
+/// against stand-in services.
+#[cfg(test)]
+pub fn test_router(
+    parallel: usize,
+    endpoints: Endpoints,
+    credentials: fn() -> Result<Option<db::Credentials>>,
+) -> Result<Router> {
+    Ok(router(Arc::new(App::new(parallel, endpoints, credentials)?)))
+}
+
+fn router(app: Arc<App>) -> Router {
+    Router::new()
         .route("/", get(form))
         .route("/stops", get(stops))
         .route("/search", get(start))
         .route("/job/{id}", get(progress))
         .route("/job/{id}/status", get(status))
         .route("/job/{id}/plot", get(plot))
-        .with_state(app);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("umstieg: route planner on http://{addr}/");
-    axum::serve(listener, router).await?;
-    Ok(())
+        .with_state(app)
 }
 
 /// One form field, described from the command-line option.
@@ -126,26 +154,31 @@ fn fields() -> Vec<Field> {
 fn parse(params: &[(String, String)]) -> Result<SearchArgs, String> {
     let get = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim()).filter(|v| !v.is_empty());
     let mut argv = vec!["umstieg".to_owned()];
+    // After `--`, so that names starting with "-" aren't taken for options.
+    let mut stations = Vec::new();
     for f in fields() {
+        let option = format!("--{}", f.name.replace('_', "-"));
         match f.kind {
-            "station" => argv.push(get(&f.name).unwrap_or_default().to_owned()),
+            "station" => stations.push(get(&f.name).unwrap_or_default().to_owned()),
             "stations" => {
                 for v in get(&f.name).unwrap_or_default().split(';').map(str::trim).filter(|v| !v.is_empty()) {
-                    argv.extend([format!("--{}", f.name.replace('_', "-")), v.to_owned()]);
+                    argv.push(format!("{option}={v}"));
                 }
             }
             "flag" => {
                 if get(&f.name).is_some() {
-                    argv.push(format!("--{}", f.name.replace('_', "-")));
+                    argv.push(option);
                 }
             }
             _ => {
                 if let Some(v) = get(&f.name) {
-                    argv.push(format!("--{}={v}", f.name.replace('_', "-")));
+                    argv.push(format!("{option}={v}"));
                 }
             }
         }
     }
+    argv.push("--".to_owned());
+    argv.extend(stations);
     Form::try_parse_from(argv).map(|f| f.args).map_err(|e| {
         // The first paragraph; the rest points to `--help`.
         e.render().to_string().split("\n\n").next().unwrap_or_default().trim_start_matches("error: ").to_owned()
@@ -188,18 +221,20 @@ async fn start(
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
     let id = app.next.fetch_add(1, Ordering::Relaxed);
-    {
-        let mut jobs = lock(&app.jobs);
-        // Forget the oldest finished searches.
-        let mut done: Vec<u64> = jobs.iter().filter(|(_, j)| j.result.is_some()).map(|(&i, _)| i).collect();
-        done.sort_unstable();
-        for old in done.iter().take(done.len().saturating_sub(KEEP_JOBS)) {
-            jobs.remove(old);
-        }
-        jobs.insert(id, Job { query: raw.unwrap_or_default(), started: Instant::now(), log: Vec::new(), result: None });
-    }
+    let job = Job { query: raw.unwrap_or_default(), started: Instant::now(), log: Vec::new(), result: None };
+    admit(&mut lock(&app.jobs), id, job);
     tokio::spawn(run(app, id, args));
     Redirect::to(&format!("/job/{id}")).into_response()
+}
+
+/// Adds a job, forgetting the oldest finished ones beyond `KEEP_JOBS`.
+fn admit(jobs: &mut HashMap<u64, Job>, id: u64, job: Job) {
+    let mut done: Vec<u64> = jobs.iter().filter(|(_, j)| j.result.is_some()).map(|(&i, _)| i).collect();
+    done.sort_unstable();
+    for old in done.iter().take(done.len().saturating_sub(KEEP_JOBS)) {
+        jobs.remove(old);
+    }
+    jobs.insert(id, job);
 }
 
 async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
@@ -218,8 +253,11 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
         Event::Stage(stage) => note(stage.to_owned()),
         Event::Warning(warning) => note(format!("warning: {warning}")),
     };
-    // The server's services, whatever the URL says.
-    let result = search::run(&args, &app.endpoints, Some(PlotPage { back }), &events).await;
+    // The server's services and credentials, whatever the URL says.
+    let result = match (app.credentials)() {
+        Ok(credentials) => search::run(&args, &app.endpoints, credentials, Some(PlotPage { back }), &events).await,
+        Err(e) => Err(e),
+    };
     let result = match result {
         Ok(outcome) => outcome.html.ok_or(outcome.text),
         Err(e) => Err(format!("{e:#}")),
@@ -270,3 +308,7 @@ async fn plot(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         _ => (StatusCode::NOT_FOUND, "No plot for this search.").into_response(),
     }
 }
+
+#[cfg(test)]
+#[path = "serve_tests.rs"]
+mod tests;

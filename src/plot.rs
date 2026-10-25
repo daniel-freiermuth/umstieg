@@ -368,3 +368,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     };
     page::PLOT.render(Some(&data))
 }
+
+#[cfg(test)]
+#[path = "plot_tests.rs"]
+mod tests;

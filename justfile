@@ -13,6 +13,7 @@ web-check:
     set -euo pipefail
     cd web
     npm run --silent check
+    bun test
     fresh=$(mktemp -d)
     trap 'rm -rf "$fresh"' EXIT
     bun build plot.ts form.ts progress.ts --outdir "$fresh" --target browser --format esm > /dev/null
@@ -22,6 +23,13 @@ web-check:
 # Bundle web/*.ts into web/dist (committed: building umstieg needs no Node or Bun).
 web:
     cd web && npm run --silent build
+
+# Line/branch coverage of the Rust code (HTML in target/llvm-cov/html) and
+# of the web modules.
+coverage:
+    cargo llvm-cov nextest --html
+    cargo llvm-cov report --summary-only
+    cd web && bun test --coverage
 
 fmt:
     cargo fmt

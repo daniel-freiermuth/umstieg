@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use chrono_tz::Tz;
 
-use crate::enumerate::Chain;
+use crate::enumerate::{Chain, Step};
 use crate::timetable::{Time, Timetable};
 
 /// "HH:MM" in the station's time zone, or local time if unknown.
@@ -54,8 +54,9 @@ pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta) -> String 
     )
 }
 
-/// Trains, change stations and buffers on one line. Stops at the first train
-/// in `rejoin`, marking it as back on the original plan.
+/// Trains, change stations and buffers on one line, ending with a walk to the
+/// destination if any. Stops at the first train in `rejoin`, marking it as
+/// back on the original plan.
 pub fn route(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, rejoin: &HashSet<usize>) -> String {
     let transfers = chain.transfers(tt);
     let mut parts = Vec::new();
@@ -75,7 +76,7 @@ pub fn route(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, rejoin: &Ha
         };
         if rejoin.contains(&trip) {
             parts.push(format!("{}{from} {} (back on plan)", timed(b.departure, bs.tz.as_deref()), t.label));
-            break;
+            return parts.join(" ");
         }
         parts.push(format!(
             "{}{from} {} → {} {}",
@@ -85,5 +86,16 @@ pub fn route(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, rejoin: &Ha
             as_.name,
         ));
     }
+    let after_last_ride = chain.steps.iter().rposition(|s| matches!(s, Step::Ride { .. })).map_or(0, |i| i + 1);
+    for step in chain.steps.iter().skip(after_last_ride) {
+        if let Step::Walk { footpath } = *step {
+            let fp = &tt.footpaths[footpath];
+            parts.push(format!("walk {} to {}", duration(fp.duration), tt.stations[fp.to].name));
+        }
+    }
     parts.join(" ")
 }
+
+#[cfg(test)]
+#[path = "text_tests.rs"]
+mod tests;

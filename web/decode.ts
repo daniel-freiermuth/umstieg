@@ -21,9 +21,8 @@ function toJson(value: unknown, path: string): Json {
   }
   if (Array.isArray(value)) return value.map((x: unknown, i) => toJson(x, `${path}[${String(i)}]`));
   if (typeof value === "object") {
-    const out: Record<string, Json> = {};
-    for (const [key, x] of Object.entries(value)) out[key] = toJson(x, `${path}.${key}`);
-    return out;
+    // Defined, not assigned: a "__proto__" key stays data.
+    return Object.fromEntries(Object.entries(value).map(([key, x]) => [key, toJson(x, `${path}.${key}`)]));
   }
   return fail(path, "JSON");
 }
@@ -69,9 +68,9 @@ export const oneOf =
 /** A JSON object, to read fields from with `field`. */
 export const object = (v: Json, path: string): JsonObject => (isObject(v) ? v : fail(path, "an object"));
 
-/** Field `name` of an object, decoded; missing fields fail. */
+/** Field `name` of an object, decoded; missing fields fail (inherited members are none). */
 export function field<T>(o: JsonObject, name: string, decode: Decoder<T>, path: string): T {
-  const v = o[name];
+  const v = Object.hasOwn(o, name) ? o[name] : undefined;
   return v === undefined ? fail(`${path}.${name}`, "a value") : decode(v, `${path}.${name}`);
 }
 
@@ -80,7 +79,5 @@ export const record =
   <T>(decode: Decoder<T>): Decoder<Record<string, T>> =>
   (v, path) => {
     const o = object(v, path);
-    const out: Record<string, T> = {};
-    for (const [key, x] of Object.entries(o)) out[key] = decode(x, `${path}.${key}`);
-    return out;
+    return Object.fromEntries(Object.entries(o).map(([key, x]) => [key, decode(x, `${path}.${key}`)]));
   };

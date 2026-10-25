@@ -19,6 +19,9 @@ const MAX_CONCURRENT_REQUESTS: usize = 2;
 const MAX_ATTEMPTS: u32 = 4;
 /// How long plan answers are reused from disk.
 const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(10);
+/// First retry delay, doubled per attempt; tests don't wait seconds.
+const BACKOFF: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_millis(1) } else { std::time::Duration::from_secs(1) };
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,13 +80,12 @@ impl Leg {
     /// put line numbers or bare categories into the display name, so add the
     /// operator for bare numbers and the train number when it is missing.
     pub fn label(&self) -> String {
-        let base = self
-            .display_name
-            .as_deref()
-            .or(self.route_short_name.as_deref())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&self.mode)
-            .trim();
+        let base = [self.display_name.as_deref(), self.route_short_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .unwrap_or(&self.mode);
         let mut label = match &self.agency_name {
             Some(agency) if base.chars().all(|c| c.is_ascii_digit()) => format!("{agency} {base}"),
             _ => base.to_owned(),
@@ -181,7 +183,7 @@ impl Motis {
             let sent = self.http.get(&url).query(query).send().await;
             let resp = match sent {
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+                    tokio::time::sleep(BACKOFF * (1 << attempt)).await;
                     continue;
                 }
                 other => other.with_context(|| format!("GET {url}"))?,
@@ -192,8 +194,8 @@ impl Motis {
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok()?.parse().ok())
-                    .unwrap_or(1u64 << attempt);
-                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    .map_or(BACKOFF * (1 << attempt), std::time::Duration::from_secs);
+                tokio::time::sleep(wait).await;
                 continue;
             }
             if !status.is_success() {
@@ -274,3 +276,7 @@ impl Motis {
         Ok(resp.itineraries)
     }
 }
+
+#[cfg(test)]
+#[path = "motis_tests.rs"]
+mod tests;

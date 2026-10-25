@@ -14,12 +14,15 @@ use tokio::sync::Semaphore;
 
 use crate::sync::lock;
 
-const BASE: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
+/// The DB Timetables API (`--db-api` overrides it).
+pub const API: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
 /// Free plan quota.
 const REQUESTS_PER_MINUTE: usize = 60;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 /// Attempts per request on connection resets, 429 and 5xx.
 const MAX_ATTEMPTS: u32 = 3;
+/// First retry delay, doubled per attempt; tests don't wait seconds.
+const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
 /// Station lookups, `name\teva\tdb name` per line (empty eva: DB doesn't know it).
 const STATION_CACHE: &str = "stations.tsv";
 
@@ -32,26 +35,32 @@ impl Credentials {
     /// `DB_CLIENT_ID`/`DB_API_KEY` from the environment, else from
     /// `$XDG_CONFIG_HOME/umstieg/db.env` (`KEY=value` lines).
     pub fn load() -> Result<Option<Self>> {
-        let mut values: HashMap<String, String> = HashMap::new();
+        let mut text = String::new();
         if let Some(path) = xdg_dir("XDG_CONFIG_HOME", ".config").map(|d| d.join("db.env")) {
             match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    for line in text.lines() {
-                        let line = line.trim().trim_start_matches("export ");
-                        if let Some((k, v)) = line.split_once('=') {
-                            values.insert(k.trim().to_owned(), v.trim().trim_matches('"').to_owned());
-                        }
-                    }
-                }
+                Ok(read) => text = read,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
             }
         }
-        let get = |key: &str| std::env::var(key).ok().or_else(|| values.get(key).cloned());
-        Ok(match (get("DB_CLIENT_ID"), get("DB_API_KEY")) {
+        Ok(Self::parse(&text, |key| std::env::var(key).ok()))
+    }
+
+    /// Credentials from `KEY=value` lines (maybe `export`ed, values maybe in
+    /// double quotes), each overridden by `env(KEY)`; `None` unless both are set.
+    fn parse(text: &str, env: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let mut values: HashMap<String, String> = HashMap::new();
+        for line in text.lines() {
+            let line = line.trim().trim_start_matches("export ");
+            if let Some((k, v)) = line.split_once('=') {
+                values.insert(k.trim().to_owned(), v.trim().trim_matches('"').to_owned());
+            }
+        }
+        let get = |key: &str| env(key).or_else(|| values.get(key).cloned());
+        match (get("DB_CLIENT_ID"), get("DB_API_KEY")) {
             (Some(client_id), Some(api_key)) => Some(Self { client_id, api_key }),
             _ => None,
-        })
+        }
     }
 }
 
@@ -159,6 +168,7 @@ type Board = Arc<Vec<Visit>>;
 
 pub struct Db {
     http: reqwest::Client,
+    base: String,
     credentials: Credentials,
     permits: Semaphore,
     recent: tokio::sync::Mutex<VecDeque<Instant>>,
@@ -170,8 +180,8 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn new(credentials: Credentials, user_agent: &str) -> Result<Self> {
-        let cache_dir = xdg_dir("XDG_CACHE_HOME", ".cache");
+    pub fn new(base: &str, credentials: Credentials, user_agent: &str) -> Result<Self> {
+        let cache_dir = crate::cache::root();
         let stations = cache_dir
             .as_ref()
             .and_then(|d| std::fs::read_to_string(d.join(STATION_CACHE)).ok())
@@ -179,6 +189,7 @@ impl Db {
             .unwrap_or_default();
         Ok(Self {
             http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(30)).build()?,
+            base: base.trim_end_matches('/').to_owned(),
             credentials,
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             recent: tokio::sync::Mutex::new(VecDeque::new()),
@@ -213,7 +224,7 @@ impl Db {
     /// `Ok(None)` for 404: DB has no data for that path. Retries resets, 429 and 5xx.
     async fn get(&self, path: &str) -> Result<Option<String>> {
         let _permit = self.permits.acquire().await?;
-        let url = format!("{BASE}{path}");
+        let url = format!("{}{path}", self.base);
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -232,7 +243,7 @@ impl Db {
                 Err(e) => e.is_connect() || e.is_request() || e.is_timeout(),
             };
             if transient && attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                tokio::time::sleep(BACKOFF * (1 << attempt)).await;
                 continue;
             }
             let resp = sent.with_context(|| format!("GET {url}"))?;
@@ -280,7 +291,9 @@ impl Db {
                 .open(&path)
                 .with_context(|| format!("opening {}", path.display()))?;
             let (eva, db_name) = found.as_ref().map_or(("", ""), |s| (s.eva.as_str(), s.name.as_str()));
-            writeln!(file, "{name}\t{eva}\t{db_name}").with_context(|| format!("writing {}", path.display()))?;
+            // One write per line: appends of concurrent searches don't interleave.
+            file.write_all(format!("{name}\t{eva}\t{db_name}\n").as_bytes())
+                .with_context(|| format!("writing {}", path.display()))?;
         }
         Ok(found)
     }
@@ -300,10 +313,7 @@ impl Db {
         } else {
             let xml = self.get(&format!("/plan/{eva}/{slot}")).await?;
             if let (Some(xml), Some(file)) = (&xml, &file) {
-                if let Some(dir) = file.parent() {
-                    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-                }
-                std::fs::write(file, xml).with_context(|| format!("writing {}", file.display()))?;
+                crate::cache::write_atomic(file, xml)?;
             }
             xml
         };
@@ -390,6 +400,12 @@ impl Coverage {
     pub fn covers(&self, at: DateTime<Utc>, class: char) -> bool {
         let slot = slot(at);
         self.0.iter().any(|(s, c)| *s == slot && *c == class)
+    }
+
+    /// Coverage of the given (time, class) pairs, for tests.
+    #[cfg(test)]
+    pub fn of(entries: &[(DateTime<Utc>, char)]) -> Self {
+        Self(entries.iter().map(|&(t, c)| (slot(t), c)).collect())
     }
 }
 
@@ -539,3 +555,7 @@ fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
         })
         .collect())
 }
+
+#[cfg(test)]
+#[path = "db_tests.rs"]
+mod tests;

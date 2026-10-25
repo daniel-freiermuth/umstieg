@@ -1,158 +1,22 @@
-import {
-  type Decoder,
-  array,
-  boolean,
-  field,
-  nullable,
-  number,
-  object,
-  oneOf,
-  pair,
-  parseJson,
-  string,
-} from "./decode";
+import { type Fallback, type Piece, type Row, applyHeights, decodeData, extent, load } from "./data";
+import { parseJson } from "./decode";
 import { byId } from "./dom";
+import {
+  type Domain,
+  type Geom,
+  type Pt,
+  type XY,
+  clipLine,
+  distanceToLine,
+  pan,
+  spreadLabels,
+  tickStep,
+  zoom,
+} from "./geometry";
+import { type Candidates, type Picked, narrow, pinAfter, step, toggle } from "./picks";
+import { type Reach, type Ride, type Wait, network, runsOf, stayAt } from "./reach";
+import { entry, item } from "./util";
 
-// The data as serialized by src/plot.rs.
-interface Data {
-  title: string;
-  subtitle: string;
-  back: string | null;
-  tz: string;
-  metrics: Metric[];
-  metric: number; // index into metrics shown first
-  stations: number[]; // station ids with a row
-  names: string[]; // station names by id
-  trips: string[]; // "ICE 378 → Berlin Hbf" by trip id
-  groups: { label: string; count: number }[];
-  pieces: PieceData[];
-  fallbacks: { at: string; line: string; pieces: number[] }[];
-  chains: { group: number; header: string; route: string; pieces: number[]; fallbacks: [number, string][] }[];
-}
-interface Metric {
-  id: string;
-  unit: string;
-  description: string;
-  heights: (number | null)[];
-}
-interface PieceData {
-  kind: Kind;
-  info: string;
-  warn: boolean;
-  trip: number | null;
-  pts: [number, number][];
-}
-const kinds = ["ride", "wait", "walk"] as const;
-type Kind = (typeof kinds)[number];
-
-const decodeMetric: Decoder<Metric> = (v, path) => {
-  const o = object(v, path);
-  return {
-    id: field(o, "id", string, path),
-    unit: field(o, "unit", string, path),
-    description: field(o, "description", string, path),
-    heights: field(o, "heights", array(nullable(number)), path),
-  };
-};
-const decodePiece: Decoder<PieceData> = (v, path) => {
-  const o = object(v, path);
-  return {
-    kind: field(o, "kind", oneOf(...kinds), path),
-    info: field(o, "info", string, path),
-    warn: field(o, "warn", boolean, path),
-    trip: field(o, "trip", nullable(number), path),
-    pts: field(o, "pts", array(pair(number, number)), path),
-  };
-};
-const decodeData: Decoder<Data> = (v, path) => {
-  const o = object(v, path);
-  return {
-    title: field(o, "title", string, path),
-    subtitle: field(o, "subtitle", string, path),
-    back: field(o, "back", nullable(string), path),
-    tz: field(o, "tz", string, path),
-    metrics: field(o, "metrics", array(decodeMetric), path),
-    metric: field(o, "metric", number, path),
-    stations: field(o, "stations", array(number), path),
-    names: field(o, "names", array(string), path),
-    trips: field(o, "trips", array(string), path),
-    groups: field(
-      o,
-      "groups",
-      array((g, p) => {
-        const og = object(g, p);
-        return { label: field(og, "label", string, p), count: field(og, "count", number, p) };
-      }),
-      path,
-    ),
-    pieces: field(o, "pieces", array(decodePiece), path),
-    fallbacks: field(
-      o,
-      "fallbacks",
-      array((f, p) => {
-        const of = object(f, p);
-        return {
-          at: field(of, "at", string, p),
-          line: field(of, "line", string, p),
-          pieces: field(of, "pieces", array(number), p),
-        };
-      }),
-      path,
-    ),
-    chains: field(
-      o,
-      "chains",
-      array((c, p) => {
-        const oc = object(c, p);
-        return {
-          group: field(oc, "group", number, p),
-          header: field(oc, "header", string, p),
-          route: field(oc, "route", string, p),
-          pieces: field(oc, "pieces", array(number), p),
-          fallbacks: field(oc, "fallbacks", array(pair(number, string)), p),
-        };
-      }),
-      path,
-    ),
-  };
-};
-// A point in the plot: (ms, height, station).
-type Pt = [t: number, y: number, s: number];
-// Anything drawable as a polyline: (ms, height, …).
-type XY = readonly [number, number, ...number[]];
-type Interval = [from: number, to: number];
-// A reachable stretch of a piece: [piece, from, to].
-type Segment = [piece: number, from: number, to: number];
-interface Piece {
-  kind: Kind;
-  info: string;
-  warn: boolean;
-  trip: number | null;
-  raw: [ms: number, s: number][];
-  pts: Pt[]; // per the chosen metric
-}
-interface Fallback {
-  at: string;
-  line: string;
-  pieces: Piece[];
-  arrive: string;
-}
-interface Chain {
-  group: number;
-  header: string;
-  route: string;
-  pieces: number[];
-  fallbacks: Fallback[];
-}
-interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains"> {
-  pieces: Piece[];
-  chains: Chain[];
-}
-interface Reach {
-  key: string;
-  with?: Set<number>;
-  segments: Segment[];
-}
 // What the mouse is over: a line, a station, a fallback.
 interface Hover {
   info: string;
@@ -165,59 +29,8 @@ interface Hover {
 interface Target extends Hover {
   id: string;
 }
-interface Picked {
-  id: string;
+interface Edge extends Ride {
   info: string;
-  chains: number[];
-  reach: Reach | null;
-}
-interface Candidates {
-  info: string;
-  chains: number[];
-  reach: Reach | null;
-}
-interface Row {
-  i: number;
-  name: string;
-  y: number;
-}
-interface Domain {
-  t0: number;
-  t1: number;
-  y0: number;
-  y1: number;
-}
-interface Margins {
-  l: number;
-  r: number;
-  t: number;
-  b: number;
-}
-interface Geom {
-  W: number;
-  H: number;
-  m: Margins;
-}
-// A stretch of time at a station within a connection: piece position j, for
-// standing trains point k.
-interface Span {
-  from: number;
-  to: number;
-  chain: number;
-  j: number;
-  trip?: number;
-  k?: number;
-}
-interface Edge {
-  trip: number;
-  pts: [Pt, Pt];
-  info: string;
-  chains: Set<number>;
-}
-interface Wait {
-  y: number;
-  spans: Span[];
-  runs: Interval[];
 }
 interface HitTarget {
   pts: XY[];
@@ -248,43 +61,6 @@ interface View {
   fbTargets: FbTarget[];
 }
 
-// Element i, which the data guarantees to exist.
-function item<T>(xs: readonly T[], i: number): T {
-  const x = xs[i];
-  if (x === undefined) throw new Error(`index ${String(i)} out of range`);
-  return x;
-}
-// The entry of k, created by make if missing.
-function entry<K, V>(m: Map<K, V>, k: K, make: () => V): V {
-  let v = m.get(k);
-  if (v === undefined) {
-    v = make();
-    m.set(k, v);
-  }
-  return v;
-}
-
-// Points come as (unix minutes, station); pieces and fallbacks by index.
-function load(data: Data): Plot {
-  const { pieces: rawPieces, fallbacks: rawFallbacks, chains: rawChains, ...rest } = data;
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts }): Piece => ({
-    kind,
-    info,
-    warn,
-    trip,
-    raw: pts.map(([m, s]) => [m * 60e3, s]),
-    pts: [],
-  }));
-  const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
-  const chains = rawChains.map(({ group, header, route, pieces: ps, fallbacks: fs }): Chain => ({
-    group,
-    header,
-    route,
-    pieces: ps,
-    fallbacks: fs.map(([i, arrive]) => ({ ...item(fallbacks, i), arrive })),
-  }));
-  return { ...rest, pieces, chains };
-}
 const D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
 
 const NS = "http://www.w3.org/2000/svg";
@@ -345,7 +121,7 @@ function esc(s: string): string {
 
 let metricIndex = D.metric;
 let rows: Row[] = []; // stations with a row, top to bottom
-const full: Domain = { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 };
+let full: Domain = { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 };
 let dom: Domain = { ...full }; // visible part: zoomed and panned
 let model: Model | null = null; // shared stretches of the visible connections
 let view: View | null = null; // per-render drawing context
@@ -355,32 +131,11 @@ let geom: Geom | null = null; // plot area of the last render
 function heightOf(s: number): number | null {
   return item(D.metrics, metricIndex).heights[s] ?? null;
 }
-// Heights per the chosen metric: points become (ms, height, station); stations
-// without a height in it are left out. Zoom resets to the full extent.
+// Heights per the chosen metric; zoom resets to the full extent.
 function applyMetric(k: number): void {
   metricIndex = k;
-  for (const p of D.pieces)
-    p.pts = p.raw.flatMap(([t, s]): Pt[] => {
-      const h = heightOf(s);
-      return h === null ? [] : [[t, h, s]];
-    });
-  rows = D.stations
-    .flatMap((s): Row[] => {
-      const h = heightOf(s);
-      return h === null ? [] : [{ i: s, name: item(D.names, s), y: h }];
-    })
-    .sort((a, b) => b.y - a.y || a.name.localeCompare(b.name));
-  // Full extent of the connections; fallbacks reaching beyond are clipped.
-  Object.assign(full, { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 });
-  for (const c of D.chains)
-    for (const i of c.pieces)
-      for (const [t, v] of item(D.pieces, i).pts) {
-        full.t0 = Math.min(full.t0, t);
-        full.t1 = Math.max(full.t1, t);
-        full.y1 = Math.max(full.y1, v);
-      }
-  full.t0 -= 10 * 60e3;
-  full.t1 += 10 * 60e3;
+  rows = applyHeights(D, k);
+  full = extent(D);
   dom = { ...full };
   writeLegend();
 }
@@ -400,279 +155,20 @@ metricSelect.addEventListener("change", () => {
 });
 applyMetric(D.metric);
 
-// Spans ({ from, to }) merged into continuous runs [from, to].
-function runsOf(spans: readonly { from: number; to: number }[]): Interval[] {
-  const runs: Interval[] = [];
-  for (const w of [...spans].sort((a, b) => a.from - b.from)) {
-    const last = runs[runs.length - 1];
-    if (last && w.from <= last[1]) last[1] = Math.max(last[1], w.to);
-    else runs.push([w.from, w.to]);
-  }
-  return runs;
-}
-// The spans of a run covering the hovered time. The highlight is the whole
-// run: highlighting only the covering spans made one line look like several
-// waits (Mannheim Hbf until 08:03 before 06:58, until 10:03 after).
-function stayAt<S extends { from: number; to: number }>(
-  spans: readonly S[],
-  from: number,
-  to: number,
-  time: number,
-  y: number,
-  s: number,
-): { t: number; here: S[]; pts: Pt[] } {
-  const t = Math.min(to, Math.max(from, time));
-  const here = spans.filter((w) => w.from <= t && t <= w.to);
-  return {
-    t,
-    here,
-    pts: [
-      [from, y, s],
-      [to, y, s],
-    ],
-  };
-}
-// Reachability through station-times: for each (spans at a station, t, back,
-// fwd), every connection there arriving by t, up to the station (back), and
-// every one leaving from t on, from the station (fwd). Later departures count
-// too: waiting longer is always possible.
-// Per connection only the earliest cut forward and the latest backward
-// matter. Positions are (piece position, point): a wait at piece j belongs to
-// both halves; a train standing there is cut at the stop (points k-1, k).
-// The stay at the cut is clipped to the reachable time: from t on forward, up
-// to t backward, so waits don't light up before anything reachable arrives.
-// Returns per piece the reachable stretches as time intervals [piece, from,
-// to] (pieces run forward in time), merged, so highlights of several picks
-// can be intersected exactly.
-type Cut = [j: number, k: number, t: number];
-function reachSegments(
-  items: readonly { spans: readonly Span[]; t: number; back: boolean; fwd: boolean }[],
-): Segment[] {
-  const from = new Map<number, Cut>(),
-    upTo = new Map<number, Cut>();
-  const before = (a: Cut, b: Cut): boolean => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
-  for (const { spans, t, back, fwd } of items)
-    for (const w of spans) {
-      if (fwd && w.to >= t) {
-        const p: Cut = w.k === undefined ? [w.j, 0, t] : [w.j, w.k - 1, t],
-          q = from.get(w.chain);
-        if (!q || before(p, q)) from.set(w.chain, p);
-      }
-      if (back && w.from <= t) {
-        const n = item(D.pieces, item(item(D.chains, w.chain).pieces, w.j)).pts.length - 1;
-        const p: Cut = w.k === undefined ? [w.j, n, t] : [w.j, w.k, t],
-          q = upTo.get(w.chain);
-        if (!q || before(q, p)) upTo.set(w.chain, p);
-      }
-    }
-  const raw = new Map<number, Interval[]>();
-  // Points k0..k1 of a piece; a flat end (wait, standing) is clipped to the cut time.
-  const add = (pi: number, k0: number, k1: number, c0: number | null = null, c1: number | null = null): void => {
-    const s = item(D.pieces, pi).pts;
-    if (!s.length) return;
-    let a = item(s, k0)[0],
-      b = item(s, k1)[0];
-    if (c0 !== null && k0 < k1 && item(s, k0)[2] === item(s, k0 + 1)[2])
-      a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
-    if (c1 !== null && k1 > k0 && item(s, k1)[2] === item(s, k1 - 1)[2])
-      b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
-    entry(raw, pi, () => []).push([a, b]);
-  };
-  const last = (pi: number): number => item(D.pieces, pi).pts.length - 1;
-  for (const [chain, [j, k0, t]] of from) {
-    const ps = item(D.chains, chain).pieces;
-    add(item(ps, j), k0, last(item(ps, j)), t, null);
-    for (let q = j + 1; q < ps.length; q++) add(item(ps, q), 0, last(item(ps, q)));
-  }
-  for (const [chain, [j, k1, t]] of upTo) {
-    const ps = item(D.chains, chain).pieces;
-    for (let q = 0; q < j; q++) add(item(ps, q), 0, last(item(ps, q)));
-    add(item(ps, j), 0, k1, null, t);
-  }
-  const out: Segment[] = [];
-  for (const [pi, list] of raw) for (const [a, b] of mergeIntervals(list)) out.push([pi, a, b]);
-  return out;
-}
-function mergeIntervals(list: readonly Interval[]): Interval[] {
-  const runs: Interval[] = [];
-  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
-    const last = runs[runs.length - 1];
-    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
-    else runs.push([a, b]);
-  }
-  return runs;
-}
-// Stretches reachable through all of several highlights: per piece, the
-// intersection of their time intervals.
-function intersectReach(segmentLists: readonly (readonly Segment[])[]): Segment[] {
-  const maps = segmentLists.map((list) => {
-    const m = new Map<number, Interval[]>();
-    for (const [pi, a, b] of list) entry(m, pi, () => []).push([a, b]);
-    return m;
-  });
-  const [head, ...rest] = maps;
-  if (!head) return [];
-  const out: Segment[] = [];
-  for (const [pi, first] of head) {
-    let cur = first;
-    for (const m of rest) {
-      const other = m.get(pi);
-      if (!other) {
-        cur = [];
-        break;
-      }
-      const next: Interval[] = [];
-      for (const [a, b] of cur)
-        for (const [c, d] of other) {
-          const lo = Math.max(a, c),
-            hi = Math.min(b, d);
-          if (lo <= hi) next.push([lo, hi]);
-        }
-      cur = next;
-    }
-    for (const [a, b] of cur) out.push([pi, a, b]);
-  }
-  return out;
-}
-
-// Whether a known time v is at most (at least) t; unknown is neither.
-const atMost = (v: number | undefined, t: number): boolean => v !== undefined && v <= t;
-const atLeast = (v: number | undefined, t: number): boolean => v !== undefined && v >= t;
-
-// The smallest shared units, each drawn once and used as hover target, so
-// every connection passing through counts, wherever it boards or leaves:
-//   rides: one per train and stop-to-stop stretch,
-//   stays: per station and continuous stay, waiting or in a standing train,
-//     resolved by the time under the mouse,
-//   walks: per walk.
+// The smallest shared units (reach.ts), each drawn once and used as hover
+// target; stays are resolved by the time under the mouse.
 // Depends only on which groups are hidden, not on zoom.
 function buildModel(): void {
-  const edges = new Map<string, Edge>(),
-    waits = new Map<number, Wait>(),
-    walks = new Map<number, Set<number>>(),
-    warns = new Set<number>();
-  // Everything flat at a station (waits, trains standing there) is one target
-  // per continuous stay, so nothing stacks. Spans remember where in their
-  // connection they are (piece position j, for standing trains point k) for
-  // the reachability highlight.
-  const stays = new Map<number, { y: number; spans: Span[] }>();
-  const stay = (s: number, y: number, span: Span): void => {
-    entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
-  };
-  D.chains.forEach((c, i) => {
-    if (hidden.has(c.group)) return;
-    c.pieces.forEach((pi, j) => {
-      const p = item(D.pieces, pi);
-      if (p.kind === "ride" && p.trip !== null) {
-        const trip = p.trip;
-        for (let k = 1; k < p.pts.length; k++) {
-          const a = item(p.pts, k - 1),
-            b = item(p.pts, k);
-          const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
-          entry(edges, key, () => {
-            const info = `${item(D.trips, trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
-            return { trip, pts: [a, b], info, chains: new Set() };
-          }).chains.add(i);
-          if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip, j, k });
-        }
-      } else if (p.kind === "wait") {
-        const first = p.pts[0],
-          last = p.pts[p.pts.length - 1];
-        if (!first || !last) return;
-        const s = first[2],
-          span = { from: first[0], to: last[0], chain: i, j };
-        entry(waits, s, () => ({ y: first[1], spans: [], runs: [] })).spans.push(span);
-        stay(s, first[1], span);
-        if (p.warn) warns.add(pi);
-      } else if (p.kind === "walk") {
-        entry(walks, pi, () => new Set()).add(i);
-      }
-    });
+  const net = network(D.pieces, D.chains, (i) => !hidden.has(item(D.chains, i).group));
+  const { stays, walks, touching, reach: closure } = net;
+  const edges = net.rides.map((r): Edge => {
+    const [a, b] = r.pts;
+    const info = `${item(D.trips, r.trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
+    return { ...r, info };
   });
-  // Overlapping waits at a station merge into one line per continuous stay.
-  for (const w of waits.values()) w.runs = runsOf(w.spans);
   // Hover targets, looked up by index from a single set of event listeners.
   const targets: HitTarget[] = [];
-  // Reachability is transitive over everything plotted: stop-to-stop rides
-  // (also standing at a stop) and walks, so changing between two trains that
-  // no listed connection changes between counts too (alight at Kassel, take
-  // the next train through there).
-  const conns = [...edges.values()].map((e) => ({
-    trip: e.trip,
-    from: e.pts[0][2],
-    dep: e.pts[0][0],
-    to: e.pts[1][2],
-    arr: e.pts[1][0],
-  }));
-  const byDep = [...conns].sort((a, b) => a.dep - b.dep),
-    byArr = [...conns].sort((a, b) => b.arr - a.arr);
-  const foot = new Map<number, Map<number, number>>(),
-    footBack = new Map<number, Map<number, number>>();
-  for (const pi of walks.keys()) {
-    const p = item(D.pieces, pi);
-    const a = p.pts[0],
-      b = p.pts[p.pts.length - 1];
-    if (p.pts.length < 2 || !a || !b) continue;
-    entry(foot, a[2], () => new Map()).set(b[2], b[0] - a[0]);
-    entry(footBack, b[2], () => new Map()).set(a[2], b[0] - a[0]);
-  }
-  // src: { at: [[station, time]], back: [[station, time]], ride: { trip, from,
-  // until } }: being at stations at times (back: only arrived there by then),
-  // or on `trip` (riding on from departure `from`, having ridden up to arrival
-  // `until`). Earliest arrival forward, latest departure backward.
-  interface Source {
-    at: [number, number][];
-    back?: [number, number][];
-    fwd?: [number, number][];
-    ride?: { trip: number; from: number; until: number };
-  }
-  const closure = (src: Source): Segment[] => {
-    const ea = new Map<number, number>(),
-      ld = new Map<number, number>();
-    const early = (x: number, t: number): void => {
-      if (atMost(ea.get(x), t)) return;
-      ea.set(x, t);
-      for (const [y, d] of foot.get(x) ?? []) if (!atMost(ea.get(y), t + d)) ea.set(y, t + d);
-    };
-    const late = (x: number, t: number): void => {
-      if (atLeast(ld.get(x), t)) return;
-      ld.set(x, t);
-      for (const [y, d] of footBack.get(x) ?? []) if (!atLeast(ld.get(y), t - d)) ld.set(y, t - d);
-    };
-    for (const [s, t] of src.at) {
-      early(s, t);
-      late(s, t);
-    }
-    for (const [s, t] of src.back ?? []) late(s, t);
-    for (const [s, t] of src.fwd ?? []) early(s, t);
-    const boarded = new Map<number, number>(src.ride ? [[src.ride.trip, src.ride.from]] : []);
-    for (const c of byDep) {
-      const since = boarded.get(c.trip);
-      if ((since !== undefined && c.dep >= since) || atMost(ea.get(c.from), c.dep)) {
-        if (since === undefined) boarded.set(c.trip, c.dep);
-        early(c.to, c.arr);
-      }
-    }
-    const alighted = new Map<number, number>(src.ride ? [[src.ride.trip, src.ride.until]] : []);
-    for (const c of byArr) {
-      const until = alighted.get(c.trip);
-      if ((until !== undefined && c.arr <= until) || atLeast(ld.get(c.to), c.arr)) {
-        if (until === undefined) alighted.set(c.trip, c.arr);
-        late(c.from, c.dep);
-      }
-    }
-    const items: { spans: Span[]; t: number; back: boolean; fwd: boolean }[] = [];
-    for (const [x, t] of ea) {
-      const st = stays.get(x);
-      if (st) items.push({ spans: st.spans, t, back: false, fwd: true });
-    }
-    for (const [x, t] of ld) {
-      const st = stays.get(x);
-      if (st) items.push({ spans: st.spans, t, back: true, fwd: false });
-    }
-    return reachSegments(items);
-  };
-  for (const e of edges.values()) {
+  for (const e of edges) {
     if (e.pts[0][2] === e.pts[1][2]) continue;
     // On this train between two stops: reachable is what could lead onto it,
     // what it leads to, and the connections riding it.
@@ -738,11 +234,6 @@ function buildModel(): void {
   }
   // A station on the axis: every connection touching it, and what is
   // reachable through it at any time (arriving whenever, leaving whenever).
-  const touching = new Map<number, Set<number>>();
-  D.chains.forEach((c, i) => {
-    if (hidden.has(c.group)) return;
-    for (const pi of c.pieces) for (const [, , s] of item(D.pieces, pi).pts) entry(touching, s, () => new Set()).add(i);
-  });
   const stationTargets = new Map<number, Target>();
   const stationTarget = (s: number): Target =>
     entry(stationTargets, s, () => {
@@ -766,10 +257,10 @@ function buildModel(): void {
       };
     });
   model = {
-    edges: [...edges.values()],
-    waits: [...waits.values()],
+    edges,
+    waits: net.waits,
     walks: [...walks.keys()],
-    warns: [...warns],
+    warns: net.warns,
     targets,
     stationTarget,
   };
@@ -819,13 +310,11 @@ function render(): void {
   // Every visible station gets a label: labels of nearby stations are pushed
   // apart and joined to their row by a leader line in the row's band colour.
   const gap = Math.min(12, (H - m.t - m.b) / Math.max(1, st.length));
-  const at = st.map((s) => s.py);
-  for (let k = 1; k < at.length; k++) at[k] = Math.max(item(at, k), item(at, k - 1) + gap);
-  const lastAt = at[at.length - 1];
-  if (lastAt !== undefined && lastAt > H - m.b) {
-    at[at.length - 1] = H - m.b;
-    for (let k = at.length - 2; k >= 0; k--) at[k] = Math.min(item(at, k), item(at, k + 1) - gap);
-  }
+  const at = spreadLabels(
+    st.map((s) => s.py),
+    gap,
+    H - m.b,
+  );
   const stations = el("g", { class: "station" }, svg);
   st.forEach((s, k) => {
     const ak = item(at, k);
@@ -865,8 +354,7 @@ function render(): void {
 
   // Time ticks: the coarsest step that still gives about ten labels.
   const axis = el("g", { class: "axis" }, svg);
-  const steps = [5, 10, 15, 30, 60, 120, 180, 360].map((mins) => mins * 60e3);
-  const step = steps.find((s) => (dom.t1 - dom.t0) / s <= 12) ?? item(steps, steps.length - 1);
+  const step = tickStep(dom.t1 - dom.t0);
   for (let t = Math.ceil(dom.t0 / step) * step; t <= dom.t1; t += step) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
     el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = timeFmt.format(t);
@@ -913,19 +401,10 @@ function render(): void {
       if (!(h instanceof SVGPolylineElement)) continue;
       const i = h.dataset[key];
       if (i === undefined) continue;
-      const p = [...h.points];
-      for (let k = 0; k < p.length; k++) {
-        const a = item(p, k),
-          b = item(p, Math.min(k + 1, p.length - 1));
-        const dx = b.x - a.x,
-          dy = b.y - a.y,
-          len = dx * dx + dy * dy;
-        const u = len ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len)) : 0;
-        const d = Math.hypot(px - a.x - u * dx, py - a.y - u * dy);
-        if (d < bestD) {
-          bestD = d;
-          best = Number(i);
-        }
+      const d = distanceToLine(px, py, [...h.points]);
+      if (d < bestD) {
+        bestD = d;
+        best = Number(i);
       }
     }
     return best;
@@ -991,29 +470,6 @@ function scheduleRender(): void {
     render();
   });
 }
-function clampDomain(): void {
-  const minT = 10 * 60e3,
-    minY = (full.y1 - full.y0) / 200;
-  if (dom.t1 - dom.t0 < minT) {
-    const c = (dom.t0 + dom.t1) / 2;
-    dom.t0 = c - minT / 2;
-    dom.t1 = c + minT / 2;
-  }
-  if (dom.y1 - dom.y0 < minY) {
-    const c = (dom.y0 + dom.y1) / 2;
-    dom.y0 = c - minY / 2;
-    dom.y1 = c + minY / 2;
-  }
-  const span = (lo: number, hi: number, a: number, b: number): Interval => {
-    // Never wider than everything, and never off it.
-    if (hi - lo > b - a) return [a, b];
-    if (lo < a) return [a, a + hi - lo];
-    if (hi > b) return [b - (hi - lo), b];
-    return [lo, hi];
-  };
-  [dom.t0, dom.t1] = span(dom.t0, dom.t1, full.t0, full.t1);
-  [dom.y0, dom.y1] = span(dom.y0, dom.y1, full.y0, full.y1);
-}
 function mouseInPlot(e: MouseEvent, { W, H, m }: Geom): { px: number; py: number; fx: number; fy: number } {
   const r = plotEl.getBoundingClientRect();
   const px = e.clientX - r.left,
@@ -1026,18 +482,7 @@ plotEl.addEventListener(
     e.preventDefault();
     if (!geom) return;
     const { fx, fy } = mouseInPlot(e, geom);
-    const k = Math.exp(e.deltaY * 0.0015);
-    if (!e.altKey) {
-      const at = dom.t0 + fx * (dom.t1 - dom.t0);
-      dom.t0 = at - (at - dom.t0) * k;
-      dom.t1 = at + (dom.t1 - at) * k;
-    }
-    if (!e.shiftKey) {
-      const at = dom.y1 - fy * (dom.y1 - dom.y0);
-      dom.y0 = at - (at - dom.y0) * k;
-      dom.y1 = at + (dom.y1 - at) * k;
-    }
-    clampDomain();
+    dom = zoom(dom, full, { fx, fy }, Math.exp(e.deltaY * 0.0015), { time: !e.altKey, height: !e.shiftKey });
     scheduleRender();
   },
   { passive: false },
@@ -1056,11 +501,7 @@ window.addEventListener("mousemove", (e) => {
   if (!dragged && Math.hypot(dx, dy) < 4) return;
   dragged = true;
   tip.style.display = "none";
-  const { W, H, m } = geom;
-  const dt = (dx / (W - m.l - m.r)) * (drag.dom.t1 - drag.dom.t0);
-  const dv = (dy / (H - m.t - m.b)) * (drag.dom.y1 - drag.dom.y0);
-  dom = { t0: drag.dom.t0 - dt, t1: drag.dom.t1 - dt, y0: drag.dom.y0 + dv, y1: drag.dom.y1 + dv };
-  clampDomain();
+  dom = pan(drag.dom, full, dx, dy, geom);
   scheduleRender();
 });
 window.addEventListener("mouseup", () => {
@@ -1084,34 +525,13 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
 // picks narrow down: the listed connections pass all of them, the highlight is
 // what is reachable through each. One connection left is selected directly.
 function choose(target: Target | Picked): void {
-  const k = picks.findIndex((p) => p.id === target.id);
-  if (k >= 0) picks.splice(k, 1);
-  else picks.push({ id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
+  picks = toggle(picks, { id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
   applyPicks();
   refresh();
 }
 function applyPicks(): void {
-  const [first, ...rest] = picks;
-  if (!first) {
-    candidates = null;
-    pinned = null;
-    return;
-  }
-  let chains = first.chains.filter((i) => !hidden.has(item(D.chains, i).group));
-  for (const p of rest) {
-    const s = new Set(p.chains);
-    chains = chains.filter((i) => s.has(i));
-  }
-  // Reachable through every pick: per piece, the stretch all their highlights share.
-  const reaches = picks.map((p) => p.reach).filter((r): r is Reach => r !== null);
-  const reach = reaches.length
-    ? {
-        key: picks.map((p) => p.reach?.key ?? p.id).join("|"),
-        segments: intersectReach(reaches.map((r) => r.segments)),
-      }
-    : null;
-  candidates = { info: picks.map((p) => p.info).join(" + "), chains, reach };
-  pinned = chains.length === 1 ? item(chains, 0) : pinned !== null && chains.includes(pinned) ? pinned : null;
+  candidates = narrow(picks, (i) => !hidden.has(item(D.chains, i).group));
+  pinned = candidates === null ? null : pinAfter(candidates.chains, pinned);
 }
 function clearPicks(): void {
   picks = [];
@@ -1156,29 +576,7 @@ function refresh(): void {
     // A piece, or its stretch between two times (reach highlights).
     const draw = (pi: number, cls: string, from = -Infinity, to = Infinity): void => {
       const p = item(D.pieces, pi);
-      let s = p.pts;
-      if (from > -Infinity || to < Infinity) {
-        // Each edge clipped to [from, to]; time runs forward along a piece.
-        const at = (a: Pt, b: Pt, t: number): Pt => [t, a[1] + ((b[1] - a[1]) * (t - a[0])) / (b[0] - a[0]), a[2]];
-        const cut: Pt[] = [];
-        const push = (q: Pt): void => {
-          const l = cut[cut.length - 1];
-          if (l?.[0] !== q[0] || l[1] !== q[1]) cut.push(q);
-        };
-        for (let k = 1; k < s.length; k++) {
-          const a = item(s, k - 1),
-            b = item(s, k);
-          if (b[0] < from || a[0] > to) continue;
-          if (a[0] === b[0]) {
-            push(a);
-            push(b);
-            continue;
-          }
-          push(at(a, b, Math.max(a[0], from)));
-          push(at(a, b, Math.min(b[0], to)));
-        }
-        s = cut;
-      }
+      const s = clipLine(p.pts, from, to);
       if (s.length < 2 && p.pts.length >= 2) return;
       const line = el(
         "polyline",
@@ -1408,11 +806,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (!candidates || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
   e.preventDefault();
-  const list = candidates.chains;
-  const now = pinned === null ? -1 : list.indexOf(pinned);
-  const next = now < 0 ? 0 : (now + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
-  // An empty list has nothing to step to.
-  pinned = list[next] ?? null;
+  pinned = step(candidates.chains, pinned, e.key === "ArrowDown");
   refresh();
 });
 

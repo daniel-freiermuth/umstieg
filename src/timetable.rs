@@ -213,10 +213,6 @@ pub fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// `all_stops`: fetch DB boards for every stop of the rough routes' trains,
 /// not only where they start or end. More change points (e.g. RE7 to
 /// Schleswig to catch the RJ there), roughly three times the DB requests.
-#[expect(
-    clippy::too_many_lines,
-    reason = "MOTIS legs to trips, boards, merge and footpaths in one pass over shared state"
-)]
 pub async fn build(
     motis: &Motis,
     db: Option<&Db>,
@@ -227,19 +223,9 @@ pub async fn build(
 ) -> Build {
     let mut warnings = Vec::new();
 
-    // DB station for every German rail station MOTIS mentions.
-    let mut places: HashMap<&str, Option<&str>> = HashMap::new();
-    places.insert(&origin.name, Some(&origin.id));
-    places.insert(&destination.name, Some(&destination.id));
-    for leg in itineraries.iter().flat_map(|i| &i.legs).filter(|l| l.class().is_some()) {
-        for p in leg_places(leg) {
-            if p.tz.as_deref().is_none_or(|tz| tz == DB_TIME_ZONE) {
-                places.insert(&p.name, p.stop_id.as_deref());
-            }
-        }
-    }
     let mut resolved: HashMap<String, db::Station> = HashMap::new();
     if let Some(db) = db {
+        let places = db_places(itineraries, origin, destination);
         let lookups = places.iter().map(|(name, id)| async move { (*name, db.resolve(name, *id).await) });
         for (name, result) in join_all(lookups).await {
             match result {
@@ -251,22 +237,88 @@ pub async fn build(
             }
         }
     }
-    let sighting = |name, tz, position| sighting(&resolved, name, tz, position);
 
     let mut stations = Stations::default();
-    let origin_idx = stations.intern(sighting(&origin.name, None, origin.position));
-    let destination_idx = stations.intern(sighting(&destination.name, None, destination.position));
+    let origin_idx = stations.intern(sighting(&resolved, &origin.name, None, origin.position));
+    let destination_idx = stations.intern(sighting(&resolved, &destination.name, None, destination.position));
+    let rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
 
-    // Trains and walks from MOTIS.
-    let mut raw: HashMap<String, Trip> = HashMap::new();
-    // Stations of rail legs, with the time span MOTIS has there; their DB boards are fetched.
-    let mut corridor: HashMap<usize, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
-    let mut footpaths: HashMap<(usize, usize), TimeDelta> = HashMap::new();
+    let mut discovered = Vec::new();
+    let trips = match db {
+        Some(db) => {
+            let boards = fetch_boards(motis, db, &mut stations, &rough.corridor, &mut discovered, &mut warnings).await;
+            merge(&stations.list, &boards, rough.trips)
+        }
+        None => rough.trips.into_values().collect(),
+    };
+
+    Build {
+        timetable: Timetable {
+            footpaths: footpaths(&stations.list, rough.footpaths),
+            stations: stations.list,
+            trips: finish(trips),
+            origin: origin_idx,
+            destination: destination_idx,
+        },
+        discovered,
+        warnings,
+    }
+}
+
+/// Every German rail station MOTIS mentions (no time zone or DB's), by name
+/// with its stop id: these are looked up as DB stations.
+fn db_places<'a>(
+    itineraries: &'a [Itinerary],
+    origin: &'a Stop,
+    destination: &'a Stop,
+) -> HashMap<&'a str, Option<&'a str>> {
+    let mut places: HashMap<&str, Option<&str>> = HashMap::new();
+    places.insert(&origin.name, Some(&origin.id));
+    places.insert(&destination.name, Some(&destination.id));
+    for leg in itineraries.iter().flat_map(|i| &i.legs).filter(|l| l.class().is_some()) {
+        for p in leg_places(leg) {
+            if p.tz.as_deref().is_none_or(|tz| tz == DB_TIME_ZONE) {
+                places.insert(&p.name, p.stop_id.as_deref());
+            }
+        }
+    }
+    places
+}
+
+/// What the rough routes contribute before DB is asked.
+struct Rough {
+    /// Trains keyed by MOTIS trip id.
+    trips: HashMap<String, Trip>,
+    /// Stations of rail legs, with the time span MOTIS has there; their DB boards are fetched.
+    corridor: HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
+    /// Shortest walk seen per (from, to).
+    footpaths: HashMap<(usize, usize), TimeDelta>,
+}
+
+/// Shortest walk per (from, to); none from a station to itself.
+fn add_walk(footpaths: &mut HashMap<(usize, usize), TimeDelta>, from: usize, to: usize, walk: TimeDelta) {
+    if from != to {
+        let entry = footpaths.entry((from, to)).or_insert(walk);
+        *entry = (*entry).min(walk);
+    }
+}
+
+/// MOTIS itineraries as trains, walks and corridor; `ends` are the
+/// (origin, destination) station indices.
+fn from_motis(
+    itineraries: &[Itinerary],
+    resolved: &HashMap<String, db::Station>,
+    stations: &mut Stations,
+    ends: (usize, usize),
+    all_stops: bool,
+) -> Rough {
+    let (origin_idx, destination_idx) = ends;
+    let mut rough = Rough { trips: HashMap::new(), corridor: HashMap::new(), footpaths: HashMap::new() };
     for itinerary in itineraries {
         // Walks at the ends lead from / to the queried place: coordinates
         // (no stop id) stand for our origin or destination, stops for a hub.
         let end_station = |stations: &mut Stations, p: &Place, coordinate: usize| match p.stop_id {
-            Some(_) => stations.intern(self::sighting(&resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
+            Some(_) => stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
             None => coordinate,
         };
         let mut previous_end: Option<usize> = None;
@@ -282,7 +334,7 @@ pub async fn build(
                 .iter()
                 .enumerate()
                 .map(|(k, p)| Call {
-                    station: stations.intern(sighting(&p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
+                    station: stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
                     arrival: if k > 0 { Time::new(p.scheduled_arrival, p.arrival) } else { None },
                     departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
                     platform: p.track.clone(),
@@ -295,14 +347,11 @@ pub async fn build(
             let Some(last) = calls.len().checked_sub(1) else { continue };
             let from = match previous_end {
                 Some(end) => Some(end),
-                None if walk > TimeDelta::zero() => {
-                    Some(end_station(&mut stations, &itinerary.legs[0].from, origin_idx))
-                }
+                None if walk > TimeDelta::zero() => Some(end_station(stations, &itinerary.legs[0].from, origin_idx)),
                 None => None,
             };
-            if let Some(from) = from.filter(|&from| from != calls[0].station) {
-                let entry = footpaths.entry((from, calls[0].station)).or_insert(walk);
-                *entry = (*entry).min(walk);
+            if let Some(from) = from {
+                add_walk(&mut rough.footpaths, from, calls[0].station, walk);
             }
             previous_end = Some(calls[last].station);
             walk = TimeDelta::zero();
@@ -314,42 +363,44 @@ pub async fn build(
             };
             for call in stops {
                 if let Some(t) = call.planned() {
-                    let range = corridor.entry(call.station).or_insert((t, t));
+                    let range = rough.corridor.entry(call.station).or_insert((t, t));
                     *range = (range.0.min(t), range.1.max(t));
                 }
             }
 
-            let entry = raw.entry(trip_id.clone()).or_insert_with(|| Trip {
+            let entry = rough.trips.entry(trip_id.clone()).or_insert_with(|| Trip {
                 label: leg.label(),
                 numbers: leg.train_number().into_iter().collect(),
                 class: leg.class(),
                 headsign: leg.headsign.clone(),
                 calls: Vec::new(),
             });
+            // Legs of one trip from different itineraries meet where one ends
+            // (arrival only) and another starts (departure only).
             for call in calls {
-                if entry.call_at(call.station).is_none() {
-                    entry.calls.push(call);
+                match entry.calls.iter_mut().find(|c| c.station == call.station) {
+                    Some(known) => {
+                        known.arrival = known.arrival.or(call.arrival);
+                        known.departure = known.departure.or(call.departure);
+                        if known.platform.is_none() {
+                            known.platform = call.platform;
+                        }
+                    }
+                    None => entry.calls.push(call),
                 }
             }
         }
         if let (Some(from), Some(last)) = (previous_end, itinerary.legs.last().filter(|l| !l.is_transit())) {
-            let to = end_station(&mut stations, &last.to, destination_idx);
-            if from != to {
-                let entry = footpaths.entry((from, to)).or_insert(walk);
-                *entry = (*entry).min(walk);
-            }
+            let to = end_station(stations, &last.to, destination_idx);
+            add_walk(&mut rough.footpaths, from, to, walk);
         }
     }
+    rough
+}
 
-    let mut discovered = Vec::new();
-    let trips = match db {
-        Some(db) => {
-            let boards = fetch_boards(motis, db, &mut stations, &corridor, &mut discovered, &mut warnings).await;
-            merge(&stations.list, &boards, raw)
-        }
-        None => raw.into_values().collect(),
-    };
-    let trips = trips
+/// Trains with at least two calls, in time order, delays carried forward.
+fn finish(trips: Vec<Trip>) -> Vec<Trip> {
+    trips
         .into_iter()
         .filter(|t| t.calls.len() >= 2)
         .map(|mut t| {
@@ -357,34 +408,26 @@ pub async fn build(
             propagate_delays(&mut t.calls);
             t
         })
-        .collect();
+        .collect()
+}
 
-    // Nearby stations kept apart (different EVA numbers) are a short walk apart.
-    for (a, sa) in stations.list.iter().enumerate() {
-        for (b, sb) in stations.list.iter().enumerate().filter(|&(b, _)| b != a) {
+/// The walks from MOTIS, plus walks between nearby stations kept apart
+/// (different EVA numbers), sorted by (from, to).
+fn footpaths(stations: &[Station], mut walks: HashMap<(usize, usize), TimeDelta>) -> Vec<Footpath> {
+    for (a, sa) in stations.iter().enumerate() {
+        for (b, sb) in stations.iter().enumerate().filter(|&(b, _)| b != a) {
             let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
             let distance = meters(pa, pb);
             if distance <= SAME_STATION_METERS {
                 let walk = TimeDelta::seconds(whole_seconds(distance / WALK_METERS_PER_SECOND)).max(MIN_WALK);
-                footpaths.entry((a, b)).or_insert(walk);
+                walks.entry((a, b)).or_insert(walk);
             }
         }
     }
     let mut footpaths: Vec<Footpath> =
-        footpaths.into_iter().map(|((from, to), duration)| Footpath { from, to, duration }).collect();
+        walks.into_iter().map(|((from, to), duration)| Footpath { from, to, duration }).collect();
     footpaths.sort_by_key(|f| (f.from, f.to));
-
-    Build {
-        timetable: Timetable {
-            stations: stations.list,
-            trips,
-            footpaths,
-            origin: origin_idx,
-            destination: destination_idx,
-        },
-        discovered,
-        warnings,
-    }
+    footpaths
 }
 
 /// MOTIS stops merged into a DB train often lack live data while DB's stops
@@ -697,3 +740,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
     }
     trips
 }
+
+#[cfg(test)]
+#[path = "timetable_tests.rs"]
+mod tests;

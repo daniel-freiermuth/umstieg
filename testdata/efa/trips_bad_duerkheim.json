@@ -1,0 +1,699 @@
+{
+ "journeys": [
+  {
+   "legs": [
+    {
+     "duration": 2700,
+     "origin": {
+      "name": "Bad Dürkheim, Bahnhof",
+      "id": "de:07332:116:2:Tram",
+      "coord": [
+       49.461452,
+       8.170438
+      ],
+      "departureTimePlanned": "2026-10-24T02:13:00Z",
+      "departureTimeEstimated": "2026-10-24T02:13:00Z",
+      "properties": {
+       "platform": "G1"
+      }
+     },
+     "destination": {
+      "name": "Ludwigsh., B. Pl. Bf LU Mitte",
+      "id": "de:07314:2066:1:TrRiS",
+      "coord": [
+       49.479759,
+       8.450811
+      ],
+      "arrivalTimePlanned": "2026-10-24T02:58:00Z",
+      "arrivalTimeEstimated": "2026-10-24T02:58:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "transportation": {
+      "id": "vrn:08004:s:H:j26",
+      "number": "RNV 4",
+      "product": {
+       "class": 4
+      },
+      "destination": {
+       "name": "Waldhof, Waldfriedhof"
+      },
+      "properties": {
+       "tripCode": 515
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Bad Dürkheim, Bahnhof",
+       "id": "de:07332:116:2:Tram",
+       "coord": [
+        49.461452,
+        8.170438
+       ],
+       "departureTimePlanned": "2026-10-24T02:13:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Bad Dürkheim, Ost",
+       "id": "de:07332:134:0:2",
+       "coord": [
+        49.463332,
+        8.184676
+       ],
+       "arrivalTimePlanned": "2026-10-24T02:16:00Z",
+       "departureTimePlanned": "2026-10-24T02:16:00Z",
+       "properties": {
+        "platform": "2"
+       }
+      },
+      {
+       "name": "Friedelsheim, Bahnhof",
+       "id": "de:07332:856:0:TrRiO",
+       "coord": [
+        49.457996,
+        8.224912
+       ],
+       "arrivalTimePlanned": "2026-10-24T02:19:00Z",
+       "departureTimePlanned": "2026-10-24T02:19:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Ludwigsh., B. Pl. Bf LU Mitte",
+       "id": "de:07314:2066:1:TrRiS",
+       "coord": [
+        49.479759,
+        8.450811
+       ],
+       "arrivalTimePlanned": "2026-10-24T02:58:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      }
+     ]
+    },
+    {
+     "duration": 300,
+     "origin": {
+      "name": "Ludwigsh., B. Pl. Bf LU Mitte",
+      "id": "de:07314:2066:1:TrRiS",
+      "coord": [
+       49.479759,
+       8.450811
+      ],
+      "departureTimePlanned": "2026-10-24T03:00:00Z",
+      "departureTimeEstimated": "2026-10-24T03:00:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "destination": {
+      "name": "Mannheim, Hauptbahnhof",
+      "id": "de:08222:2417:3:RiO2",
+      "coord": [
+       49.480138,
+       8.469667
+      ],
+      "arrivalTimePlanned": "2026-10-24T03:05:00Z",
+      "arrivalTimeEstimated": "2026-10-24T03:05:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "transportation": {
+      "id": "vrn:08006:s:R:j26",
+      "number": "RNV 6",
+      "product": {
+       "class": 4
+      },
+      "destination": {
+       "name": "Neuostheim"
+      },
+      "properties": {
+       "tripCode": 125
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Ludwigsh., B. Pl. Bf LU Mitte",
+       "id": "de:07314:2066:1:TrRiS",
+       "coord": [
+        49.479759,
+        8.450811
+       ],
+       "departureTimePlanned": "2026-10-24T03:00:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      },
+      {
+       "name": "Mannheim, Universität",
+       "id": "de:08222:2471:3:2",
+       "coord": [
+        49.481632,
+        8.465562
+       ],
+       "arrivalTimePlanned": "2026-10-24T03:03:00Z",
+       "departureTimePlanned": "2026-10-24T03:03:00Z",
+       "properties": {
+        "platform": "B"
+       }
+      },
+      {
+       "name": "Mannheim, Hauptbahnhof",
+       "id": "de:08222:2417:3:RiO2",
+       "coord": [
+        49.480138,
+        8.469667
+       ],
+       "arrivalTimePlanned": "2026-10-24T03:05:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "duration": 3000,
+     "origin": {
+      "name": "Bad Dürkheim, Bahnhof",
+      "id": "de:07332:116:2:Tram",
+      "coord": [
+       49.461452,
+       8.170438
+      ],
+      "departureTimePlanned": "2026-10-24T02:13:00Z",
+      "departureTimeEstimated": "2026-10-24T02:13:00Z",
+      "properties": {
+       "platform": "G1"
+      }
+     },
+     "destination": {
+      "name": "Mannheim, Universität",
+      "id": "de:08222:2471:2:1",
+      "coord": [
+       49.482916,
+       8.465571
+      ],
+      "arrivalTimePlanned": "2026-10-24T03:03:00Z",
+      "arrivalTimeEstimated": "2026-10-24T03:03:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "transportation": {
+      "id": "vrn:08004:s:H:j26",
+      "number": "RNV 4",
+      "product": {
+       "class": 4
+      },
+      "destination": {
+       "name": "Waldhof, Waldfriedhof"
+      },
+      "properties": {
+       "tripCode": 515
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Bad Dürkheim, Bahnhof",
+       "id": "de:07332:116:2:Tram",
+       "coord": [
+        49.461452,
+        8.170438
+       ],
+       "departureTimePlanned": "2026-10-24T02:13:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Bad Dürkheim, Ost",
+       "id": "de:07332:134:0:2",
+       "coord": [
+        49.463332,
+        8.184676
+       ],
+       "arrivalTimePlanned": "2026-10-24T02:16:00Z",
+       "departureTimePlanned": "2026-10-24T02:16:00Z",
+       "properties": {
+        "platform": "2"
+       }
+      },
+      {
+       "name": "Friedelsheim, Bahnhof",
+       "id": "de:07332:856:0:TrRiO",
+       "coord": [
+        49.457996,
+        8.224912
+       ],
+       "arrivalTimePlanned": "2026-10-24T02:19:00Z",
+       "departureTimePlanned": "2026-10-24T02:19:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Mannheim, Universität",
+       "id": "de:08222:2471:2:1",
+       "coord": [
+        49.482916,
+        8.465571
+       ],
+       "arrivalTimePlanned": "2026-10-24T03:03:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      }
+     ]
+    },
+    {
+     "duration": 600,
+     "origin": {
+      "name": "Mannheim, Universität",
+      "id": "de:08222:2471:2:1",
+      "coord": [
+       49.482916,
+       8.465571
+      ],
+      "departureTimePlanned": "2026-10-24T03:03:00Z",
+      "departureTimeEstimated": "2026-10-24T03:03:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "destination": {
+      "name": "Mannheim, Hauptbahnhof",
+      "id": "de:08222:2417",
+      "coord": [
+       49.479747,
+       8.469936
+      ],
+      "arrivalTimePlanned": "2026-10-24T03:13:00Z",
+      "arrivalTimeEstimated": "2026-10-24T03:13:00Z"
+     },
+     "transportation": {
+      "product": {
+       "class": 99
+      },
+      "properties": {
+       "tripCode": 0
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Mannheim, Universität",
+       "id": "de:08222:2471:2:1",
+       "coord": [
+        49.482916,
+        8.465571
+       ],
+       "departureTimePlanned": "2026-10-24T03:03:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      },
+      {
+       "name": "Mannheim, Hauptbahnhof",
+       "id": "de:08222:2417",
+       "coord": [
+        49.479747,
+        8.469936
+       ],
+       "arrivalTimePlanned": "2026-10-24T03:13:00Z"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "duration": 1620,
+     "origin": {
+      "name": "Bad Dürkheim, Bahnhof",
+      "id": "de:07332:116:2:Tram",
+      "coord": [
+       49.461452,
+       8.170438
+      ],
+      "departureTimePlanned": "2026-10-24T04:13:00Z",
+      "departureTimeEstimated": "2026-10-24T04:13:00Z",
+      "properties": {
+       "platform": "G1"
+      }
+     },
+     "destination": {
+      "name": "Oggersheim, Hans-Warsch-Pl.",
+      "id": "de:07314:2154:0:TrRiS",
+      "coord": [
+       49.492516,
+       8.376503
+      ],
+      "arrivalTimePlanned": "2026-10-24T04:40:00Z",
+      "arrivalTimeEstimated": "2026-10-24T04:40:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "transportation": {
+      "id": "vrn:08004:s:H:j26",
+      "number": "RNV 4",
+      "product": {
+       "class": 4
+      },
+      "destination": {
+       "name": "Waldhof, Waldfriedhof"
+      },
+      "properties": {
+       "tripCode": 517
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Bad Dürkheim, Bahnhof",
+       "id": "de:07332:116:2:Tram",
+       "coord": [
+        49.461452,
+        8.170438
+       ],
+       "departureTimePlanned": "2026-10-24T04:13:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Bad Dürkheim, Ost",
+       "id": "de:07332:134:0:2",
+       "coord": [
+        49.463332,
+        8.184676
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:16:00Z",
+       "departureTimePlanned": "2026-10-24T04:16:00Z",
+       "properties": {
+        "platform": "2"
+       }
+      },
+      {
+       "name": "Friedelsheim, Bahnhof",
+       "id": "de:07332:856:0:TrRiO",
+       "coord": [
+        49.457996,
+        8.224912
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:19:00Z",
+       "departureTimePlanned": "2026-10-24T04:19:00Z",
+       "properties": {
+        "platform": "G1"
+       }
+      },
+      {
+       "name": "Oggersheim, Hans-Warsch-Pl.",
+       "id": "de:07314:2154:0:TrRiS",
+       "coord": [
+        49.492516,
+        8.376503
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:40:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      }
+     ]
+    },
+    {
+     "duration": 420,
+     "origin": {
+      "name": "Oggersheim, Hans-Warsch-Pl.",
+      "id": "de:07314:2154:0:TrRiS",
+      "coord": [
+       49.492516,
+       8.376503
+      ],
+      "departureTimePlanned": "2026-10-24T04:40:00Z",
+      "departureTimeEstimated": "2026-10-24T04:40:00Z",
+      "properties": {
+       "platform": "A"
+      }
+     },
+     "destination": {
+      "name": "LU-Oggersheim, Bahnhof",
+      "id": "de:07314:2148:1:1",
+      "coord": [
+       49.49321,
+       8.381398
+      ],
+      "arrivalTimePlanned": "2026-10-24T04:47:00Z",
+      "arrivalTimeEstimated": "2026-10-24T04:47:00Z",
+      "properties": {
+       "platform": "1"
+      }
+     },
+     "transportation": {
+      "product": {
+       "class": 99
+      },
+      "properties": {
+       "tripCode": 0
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Oggersheim, Hans-Warsch-Pl.",
+       "id": "de:07314:2154:0:TrRiS",
+       "coord": [
+        49.492516,
+        8.376503
+       ],
+       "departureTimePlanned": "2026-10-24T04:40:00Z",
+       "properties": {
+        "platform": "A"
+       }
+      },
+      {
+       "name": "LU-Oggersheim, Bahnhof",
+       "id": "de:07314:2148:1:1",
+       "coord": [
+        49.49321,
+        8.381398
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:47:00Z",
+       "properties": {
+        "platform": "1"
+       }
+      }
+     ]
+    },
+    {
+     "duration": 600,
+     "origin": {
+      "name": "LU-Oggersheim, Bahnhof",
+      "id": "de:07314:2148:1:1",
+      "coord": [
+       49.49321,
+       8.381398
+      ],
+      "departureTimePlanned": "2026-10-24T04:48:00Z",
+      "departureTimeEstimated": "2026-10-24T04:48:00Z",
+      "properties": {
+       "platform": "1"
+      }
+     },
+     "destination": {
+      "name": "Mannheim, Hauptbahnhof",
+      "id": "de:08222:2417:11:12",
+      "coord": [
+       49.478574,
+       8.469325
+      ],
+      "arrivalTimePlanned": "2026-10-24T04:58:00Z",
+      "arrivalTimeEstimated": "2026-10-24T04:58:00Z",
+      "properties": {
+       "platform": "12"
+      }
+     },
+     "transportation": {
+      "id": "ddb:92V06: :R:j26",
+      "number": "S6",
+      "product": {
+       "class": 1
+      },
+      "destination": {
+       "name": "Mannheim, Hauptbahnhof"
+      },
+      "properties": {
+       "trainNumber": "38617",
+       "tripCode": 88
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "LU-Oggersheim, Bahnhof",
+       "id": "de:07314:2148:1:1",
+       "coord": [
+        49.49321,
+        8.381398
+       ],
+       "departureTimePlanned": "2026-10-24T04:48:00Z",
+       "properties": {
+        "platform": "1"
+       }
+      },
+      {
+       "name": "Ludwigshafen, Hauptbahnhof",
+       "id": "de:07314:2080:14:2",
+       "coord": [
+        49.478154,
+        8.432998
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:53:00Z",
+       "departureTimePlanned": "2026-10-24T04:53:00Z",
+       "properties": {
+        "platform": "2"
+       }
+      },
+      {
+       "name": "Ludwigshafen, Mitte",
+       "id": "de:07314:2019:4:3",
+       "coord": [
+        49.478854,
+        8.452159
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:55:00Z",
+       "departureTimePlanned": "2026-10-24T04:55:00Z",
+       "properties": {
+        "platform": "3"
+       }
+      },
+      {
+       "name": "Mannheim, Hauptbahnhof",
+       "id": "de:08222:2417:11:12",
+       "coord": [
+        49.478574,
+        8.469325
+       ],
+       "arrivalTimePlanned": "2026-10-24T04:58:00Z",
+       "properties": {
+        "platform": "12"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "legs": [
+    {
+     "duration": 1020,
+     "origin": {
+      "name": "Mannheim, Hauptbahnhof",
+      "id": "de:08222:2417:8:9",
+      "coord": [
+       49.478802,
+       8.469505
+      ],
+      "departureTimePlanned": "2026-10-24T21:04:00Z",
+      "departureTimeEstimated": "2026-10-24T21:09:00Z",
+      "properties": {
+       "platform": "9"
+      }
+     },
+     "destination": {
+      "name": "Heidelberg, Hauptbahnhof",
+      "id": "de:08221:1160:5:8",
+      "coord": [
+       49.40351,
+       8.674815
+      ],
+      "arrivalTimePlanned": "2026-10-24T21:22:00Z",
+      "arrivalTimeEstimated": "2026-10-24T21:26:00Z",
+      "properties": {
+       "platform": "8"
+      }
+     },
+     "transportation": {
+      "id": "ddb:920S3:D:H:j26",
+      "number": "S3",
+      "product": {
+       "class": 1
+      },
+      "destination": {
+       "name": "Karlsruhe Hauptbahnhof"
+      },
+      "properties": {
+       "trainNumber": "38377",
+       "tripCode": 245
+      }
+     },
+     "stopSequence": [
+      {
+       "name": "Mannheim, Hauptbahnhof",
+       "id": "de:08222:2417:8:9",
+       "coord": [
+        49.478802,
+        8.469505
+       ],
+       "departureTimePlanned": "2026-10-24T21:04:00Z",
+       "departureTimeEstimated": "2026-10-24T21:09:00Z",
+       "properties": {
+        "platform": "9"
+       }
+      },
+      {
+       "name": "Mannheim, Arena/Maimarkt (DB)",
+       "id": "de:08222:2641:4:2",
+       "coord": [
+        49.460004,
+        8.515741
+       ],
+       "arrivalTimePlanned": "2026-10-24T21:09:00Z",
+       "arrivalTimeEstimated": "2026-10-24T21:13:00Z",
+       "departureTimePlanned": "2026-10-24T21:09:00Z",
+       "departureTimeEstimated": "2026-10-24T21:14:00Z",
+       "properties": {
+        "platform": "Gl 2"
+       }
+      },
+      {
+       "name": "MA-Seckenheim, Bahnhof",
+       "id": "de:08222:2586:2:2",
+       "coord": [
+        49.451274,
+        8.538379
+       ],
+       "arrivalTimePlanned": "2026-10-24T21:11:00Z",
+       "arrivalTimeEstimated": "2026-10-24T21:16:00Z",
+       "departureTimePlanned": "2026-10-24T21:12:00Z",
+       "departureTimeEstimated": "2026-10-24T21:16:00Z",
+       "properties": {
+        "platform": "Gl 2"
+       }
+      },
+      {
+       "name": "Heidelberg, Hauptbahnhof",
+       "id": "de:08221:1160:5:8",
+       "coord": [
+        49.40351,
+        8.674815
+       ],
+       "arrivalTimePlanned": "2026-10-24T21:22:00Z",
+       "arrivalTimeEstimated": "2026-10-24T21:26:00Z",
+       "properties": {
+        "platform": "8"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

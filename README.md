@@ -210,3 +210,12 @@ lints with typescript-eslint's `strictTypeChecked` and `stylisticTypeChecked`,
 checks Prettier formatting and that `web/dist` matches a fresh bundle. No
 `any`, no type assertions, and `unknown` only where `decode.ts` checks
 `JSON.parse`'s output: all server data is decoded field by field.
+
+Tests: `cargo nextest run` (or `cargo test`) for the Rust code, `cd web && bun
+test` for the page logic; both are part of `just check`. Unit tests sit next to
+each module (`src/<module>_tests.rs`), with timetables written as small tables
+(`src/testkit.rs`) and trimmed real answers of the APIs in `testdata/`; property
+tests compare the search, profile scan and reachability against brute force on
+random timetables. `src/e2e_tests.rs` runs whole searches and the web front end
+against local stand-ins for Transitous, EFA and the DB API — no test touches the
+network or the user's caches. `just coverage` reports line coverage.

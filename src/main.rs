@@ -13,6 +13,11 @@ mod sync;
 mod text;
 mod timetable;
 
+#[cfg(test)]
+mod e2e_tests;
+#[cfg(test)]
+mod testkit;
+
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
@@ -62,7 +67,7 @@ async fn main() -> Result<()> {
         }
     };
     let plot = args.html.as_ref().map(|_| search::PlotPage { back: None });
-    let outcome = search::run(&args, &cli.endpoints, plot, &events).await?;
+    let outcome = search::run(&args, &cli.endpoints, db::Credentials::load()?, plot, &events).await?;
     print!("{}", outcome.text);
     if let (Some(path), Some(html)) = (&args.html, &outcome.html) {
         std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))?;
@@ -70,3 +75,7 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

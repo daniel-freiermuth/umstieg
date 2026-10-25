@@ -54,3 +54,8 @@ multiple_crate_versions = "allow"
 broken_intra_doc_links = "warn"
 private_intra_doc_links = "allow"
 bare_urls = "warn"
+
+[dev-dependencies]
+proptest = "1.12.0"
+tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }

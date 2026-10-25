@@ -1,0 +1,382 @@
+{
+ "title": "Mannheim Hbf → Frankfurt (Main) Hauptbahnhof",
+ "subtitle": "departing 09:00–09:30 · fastest 46m · limits: ≤ 3h46 travel time, ≤ 15 changes · 912 connections in 47 groups, 453 with a change missed by ≤ 5m",
+ "back": "/?from=Mannheim+Hbf&to=Frankfurt",
+ "tz": "Europe/Berlin",
+ "metrics": [
+  {
+   "id": "remaining-time",
+   "unit": "min",
+   "description": "fastest possible remaining ride time",
+   "heights": [
+    36.0,
+    0.0,
+    4.0,
+    3.0,
+    2.0,
+    3.0,
+    2.0,
+    1.0,
+    3.0,
+    2.0,
+    4.0,
+    2.0
+   ]
+  },
+  {
+   "id": "fastest-real",
+   "unit": "min",
+   "description": "fastest real remaining journey, any departure",
+   "heights": [
+    44.0,
+    0.0,
+    4.0,
+    5.0,
+    3.0,
+    7.0,
+    3.0,
+    1.0,
+    3.0,
+    2.0,
+    4.0,
+    2.0
+   ]
+  },
+  {
+   "id": "hyperbolic",
+   "unit": "km",
+   "description": "(distance to goal − distance from start + D) / 2",
+   "heights": [
+    71.08,
+    0.0,
+    1.16,
+    1.13,
+    0.7,
+    0.31,
+    0.18,
+    0.03,
+    0.77,
+    0.24,
+    0.69,
+    0.77
+   ]
+  },
+  {
+   "id": "axis",
+   "unit": "km",
+   "description": "distance left along the start–goal axis",
+   "heights": [
+    71.08,
+    0.0,
+    0.45,
+    0.03,
+    -1.17,
+    -1.23,
+    -1.07,
+    -0.9,
+    0.17,
+    -0.5,
+    0.31,
+    0.63
+   ]
+  },
+  {
+   "id": "ratio",
+   "unit": "%",
+   "description": "distance to goal / (distance from start + distance to goal)",
+   "heights": [
+    100.0,
+    0.0,
+    2.62,
+    3.08,
+    3.47,
+    2.51,
+    1.96,
+    1.3,
+    1.9,
+    1.35,
+    1.5,
+    1.27
+   ]
+  }
+ ],
+ "metric": 0,
+ "stations": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9
+ ],
+ "names": [
+  "Mannheim Hbf",
+  "Frankfurt (Main) Hauptbahnhof",
+  "Frankfurt (Main) Südbahnhof",
+  "Frankfurt (Main) Lokalbahnhof",
+  "Frankfurt (Main) Ostendstraße",
+  "Frankfurt (Main) Konstablerwache",
+  "Frankfurt (Main) Hauptwache",
+  "Frankfurt (Main) Taunusanlage",
+  "Frankfurt (Main) Schweizer Platz",
+  "Frankfurt (Main) Willy-Brandt-Platz",
+  "Frankfurt (Main) Otto-Hahn-Platz",
+  "Frankfurt (Main) Friedensbrücke"
+ ],
+ "trips": [
+  "ICE 692 → Berlin Gesundbrunnen",
+  "RE54 (4608) → Frankfurt(Main)Hbf",
+  "U5 (2100024) → Frankfurt (Main) Hauptbahnhof",
+  "U1 (10001) → Frankfurt (Main) Ginnheim Mitte",
+  "U4 (40001) → Frankfurt (Main) Bockenheimer Warte",
+  "U3 (30008) → Oberursel (Taunus)-Hohemark"
+ ],
+ "groups": [
+  {
+   "label": "ICE 692 … U5 (2100024)",
+   "count": 11
+  }
+ ],
+ "pieces": [
+  {
+   "kind": "ride",
+   "info": "ICE 692 → Berlin Gesundbrunnen · 09:29 Mannheim Hbf → 10:06 Frankfurt (Main) Südbahnhof",
+   "warn": false,
+   "trip": 0,
+   "pts": [
+    [
+     29881949,
+     0
+    ],
+    [
+     29881986,
+     2
+    ]
+   ]
+  },
+  {
+   "kind": "wait",
+   "info": "4m⚠ at Frankfurt (Main) Südbahnhof",
+   "warn": true,
+   "trip": null,
+   "pts": [
+    [
+     29881986,
+     2
+    ],
+    [
+     29881990,
+     2
+    ]
+   ]
+  },
+  {
+   "kind": "ride",
+   "info": "U1 (10001) → Frankfurt (Main) Ginnheim Mitte · 10:10 Frankfurt (Main) Südbahnhof → 10:12 Frankfurt (Main) Willy-Brandt-Platz",
+   "warn": false,
+   "trip": 3,
+   "pts": [
+    [
+     29881990,
+     2
+    ],
+    [
+     29881991,
+     8
+    ],
+    [
+     29881991,
+     8
+    ],
+    [
+     29881992,
+     9
+    ]
+   ]
+  },
+  {
+   "kind": "wait",
+   "info": "1m⚠ at Frankfurt (Main) Willy-Brandt-Platz",
+   "warn": true,
+   "trip": null,
+   "pts": [
+    [
+     29881992,
+     9
+    ],
+    [
+     29881993,
+     9
+    ]
+   ]
+  },
+  {
+   "kind": "ride",
+   "info": "U5 (2100024) → Frankfurt (Main) Hauptbahnhof · 10:13 Frankfurt (Main) Willy-Brandt-Platz → 10:15 Frankfurt (Main) Hauptbahnhof",
+   "warn": false,
+   "trip": 2,
+   "pts": [
+    [
+     29881993,
+     9
+    ],
+    [
+     29881995,
+     1
+    ]
+   ]
+  },
+  {
+   "kind": "wait",
+   "info": "14m at Frankfurt (Main) Südbahnhof after the missed train",
+   "warn": false,
+   "trip": null,
+   "pts": [
+    [
+     29881990,
+     2
+    ],
+    [
+     29882004,
+     2
+    ]
+   ]
+  },
+  {
+   "kind": "ride",
+   "info": "RE54 (4608) → Frankfurt(Main)Hbf · 10:24 Frankfurt (Main) Südbahnhof → 10:29 Frankfurt (Main) Hauptbahnhof",
+   "warn": false,
+   "trip": 1,
+   "pts": [
+    [
+     29882004,
+     2
+    ],
+    [
+     29882009,
+     1
+    ]
+   ]
+  },
+  {
+   "kind": "wait",
+   "info": "18m at Frankfurt (Main) Südbahnhof after the missed train",
+   "warn": false,
+   "trip": null,
+   "pts": [
+    [
+     29881990,
+     2
+    ],
+    [
+     29882008,
+     2
+    ]
+   ]
+  },
+  {
+   "kind": "ride",
+   "info": "U3 (30008) → Oberursel (Taunus)-Hohemark · 10:28 Frankfurt (Main) Südbahnhof → 10:30 Frankfurt (Main) Willy-Brandt-Platz",
+   "warn": false,
+   "trip": 5,
+   "pts": [
+    [
+     29882008,
+     2
+    ],
+    [
+     29882009,
+     8
+    ],
+    [
+     29882009,
+     8
+    ],
+    [
+     29882010,
+     9
+    ]
+   ]
+  },
+  {
+   "kind": "wait",
+   "info": "3m⚠ at Frankfurt (Main) Willy-Brandt-Platz",
+   "warn": true,
+   "trip": null,
+   "pts": [
+    [
+     29882010,
+     9
+    ],
+    [
+     29882013,
+     9
+    ]
+   ]
+  },
+  {
+   "kind": "ride",
+   "info": "U4 (40001) → Frankfurt (Main) Bockenheimer Warte · 10:33 Frankfurt (Main) Willy-Brandt-Platz → 10:35 Frankfurt (Main) Hauptbahnhof",
+   "warn": false,
+   "trip": 4,
+   "pts": [
+    [
+     29882013,
+     9
+    ],
+    [
+     29882015,
+     1
+    ]
+   ]
+  }
+ ],
+ "fallbacks": [
+  {
+   "at": "Frankfurt (Main) Südbahnhof",
+   "line": "10:24 RE54 (4608) → 10:29 Frankfurt (Main) Hauptbahnhof",
+   "pieces": [
+    5,
+    6
+   ]
+  },
+  {
+   "at": "Frankfurt (Main) Südbahnhof",
+   "line": "10:28 U3 (30008) → 10:30 Frankfurt (Main) Willy-Brandt-Platz ‖3m⚠‖ 10:33 U4 (40001) → 10:35 Frankfurt (Main) Hauptbahnhof",
+   "pieces": [
+    7,
+    8,
+    9,
+    10
+   ]
+  }
+ ],
+ "chains": [
+  {
+   "group": 0,
+   "header": "09:29 → 10:15  46m  2×  min 1m⚠",
+   "route": "09:29 ICE 692 → 10:06 Frankfurt (Main) Südbahnhof ‖4m⚠‖ 10:10 U1 (10001) → 10:12 Frankfurt (Main) Willy-Brandt-Platz ‖1m⚠‖ 10:13 U5 (2100024) → 10:15 Frankfurt (Main) Hauptbahnhof",
+   "pieces": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "fallbacks": [
+    [
+     0,
+     "10:29 (+14m)"
+    ],
+    [
+     1,
+     "10:35 (+20m)"
+    ]
+   ]
+  }
+ ]
+}

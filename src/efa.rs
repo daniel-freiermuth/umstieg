@@ -18,6 +18,8 @@ use crate::motis::{Itinerary, Leg, Place};
 const TRIPS_PER_REQUEST: &str = "6";
 const CACHE_TTL: Duration = Duration::from_mins(10);
 const ATTEMPTS: u32 = 3;
+/// First retry delay, doubled per attempt; tests don't wait seconds.
+const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
 
 #[derive(Deserialize)]
 struct TripResponse {
@@ -149,7 +151,7 @@ impl Efa {
             .await;
             match result {
                 Ok(text) => return Ok(text),
-                Err(_) if attempt < ATTEMPTS => tokio::time::sleep(Duration::from_secs(1 << attempt)).await,
+                Err(_) if attempt < ATTEMPTS => tokio::time::sleep(BACKOFF * (1 << attempt)).await,
                 Err(e) => return Err(e).with_context(|| format!("GET {url}")),
             }
         }
@@ -249,3 +251,7 @@ fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg
         intermediate_stops: Vec::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "efa_tests.rs"]
+mod tests;

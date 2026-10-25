@@ -26,4 +26,9 @@ export default tseslint.config(
   },
   // The one place unchecked input (JSON.parse) is looked at.
   { files: ["decode.ts"], rules: { "@typescript-eslint/no-restricted-types": "off" } },
+  // Tests run in Bun: type-checked against its types, not the browser's.
+  {
+    files: ["*.test.ts"],
+    languageOptions: { parserOptions: { projectService: false, project: "./tsconfig.test.json" } },
+  },
 );

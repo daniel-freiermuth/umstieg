@@ -1,0 +1,438 @@
+{
+ "legs": [
+  {
+   "mode": "WALK",
+   "from": {
+    "name": "START",
+    "tz": "Europe/Berlin",
+    "lat": 49.460632,
+    "lon": 8.170701,
+    "departure": "2026-10-24T04:28:00Z",
+    "scheduledDeparture": "2026-10-24T04:28:00Z"
+   },
+   "to": {
+    "name": "Bad Dürkheim, Bahnhof",
+    "stopId": "de-DELFI_de:07332:116:5:3",
+    "tz": "Europe/Berlin",
+    "track": "3",
+    "lat": 49.460533000000005,
+    "lon": 8.170483,
+    "arrival": "2026-10-24T04:29:00Z",
+    "scheduledArrival": "2026-10-24T04:29:00Z"
+   },
+   "startTime": "2026-10-24T04:28:00Z",
+   "endTime": "2026-10-24T04:29:00Z"
+  },
+  {
+   "mode": "REGIONAL_RAIL",
+   "from": {
+    "name": "Bad Dürkheim, Bahnhof",
+    "stopId": "de-DELFI_de:07332:116:5:3",
+    "tz": "Europe/Berlin",
+    "track": "3",
+    "lat": 49.460533000000005,
+    "lon": 8.170483,
+    "departure": "2026-10-24T04:29:00Z",
+    "scheduledDeparture": "2026-10-24T04:29:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Neustadt, Böbig",
+    "stopId": "de-DELFI_de:07316:3145:1:1",
+    "parentId": "de-DELFI_de:07316:3145",
+    "tz": "Europe/Berlin",
+    "track": "1",
+    "lat": 49.35396599999999,
+    "lon": 8.157781,
+    "arrival": "2026-10-24T04:51:00Z",
+    "scheduledArrival": "2026-10-24T04:51:00Z",
+    "cancelled": false
+   },
+   "startTime": "2026-10-24T04:29:00Z",
+   "endTime": "2026-10-24T04:51:00Z",
+   "displayName": "RB45 (13307)",
+   "routeShortName": "RB45",
+   "tripId": "20261024_06:14_de-DELFI_3448990207",
+   "tripShortName": "013307",
+   "headsign": "Neustadt, Hauptbahnhof",
+   "agencyName": "DB Regio AG Mitte Region Südwest",
+   "intermediateStops": [
+    {
+     "name": "Wachenheim/Wstr, Bahnhof",
+     "stopId": "de-DELFI_de:07332:3895:1:DB",
+     "tz": "Europe/Berlin",
+     "track": "DB",
+     "lat": 49.439278,
+     "lon": 8.191161999999998,
+     "arrival": "2026-10-24T04:33:00Z",
+     "departure": "2026-10-24T04:33:00Z",
+     "scheduledArrival": "2026-10-24T04:33:00Z",
+     "scheduledDeparture": "2026-10-24T04:33:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Deidesheim, Bahnhof",
+     "stopId": "de-DELFI_de:07332:470:5:1",
+     "tz": "Europe/Berlin",
+     "track": "1",
+     "lat": 49.408500000000004,
+     "lon": 8.192670999999999,
+     "arrival": "2026-10-24T04:36:00Z",
+     "departure": "2026-10-24T04:37:00Z",
+     "scheduledArrival": "2026-10-24T04:36:00Z",
+     "scheduledDeparture": "2026-10-24T04:37:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Mußbach, Bahnhof",
+     "stopId": "de-DELFI_de:07316:3135:1:1",
+     "tz": "Europe/Berlin",
+     "track": "1",
+     "lat": 49.37187599999999,
+     "lon": 8.168516,
+     "arrival": "2026-10-24T04:41:00Z",
+     "departure": "2026-10-24T04:47:00Z",
+     "scheduledArrival": "2026-10-24T04:41:00Z",
+     "scheduledDeparture": "2026-10-24T04:47:00Z",
+     "cancelled": false
+    }
+   ]
+  },
+  {
+   "mode": "WALK",
+   "from": {
+    "name": "Neustadt, Böbig",
+    "stopId": "de-DELFI_de:07316:3145:1:1",
+    "parentId": "de-DELFI_de:07316:3145",
+    "tz": "Europe/Berlin",
+    "track": "1",
+    "lat": 49.35396599999999,
+    "lon": 8.157781,
+    "arrival": "2026-10-24T04:51:00Z",
+    "departure": "2026-10-24T04:51:00Z",
+    "scheduledArrival": "2026-10-24T04:51:00Z",
+    "scheduledDeparture": "2026-10-24T04:51:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Neustadt, Böbig",
+    "stopId": "de-DELFI_de:07316:3145:3:2",
+    "parentId": "de-DELFI_de:07316:3145",
+    "tz": "Europe/Berlin",
+    "track": "2",
+    "lat": 49.35378599999999,
+    "lon": 8.157655,
+    "arrival": "2026-10-24T04:53:00Z",
+    "scheduledArrival": "2026-10-24T04:53:00Z"
+   },
+   "startTime": "2026-10-24T04:51:00Z",
+   "endTime": "2026-10-24T04:53:00Z"
+  },
+  {
+   "mode": "SUBURBAN",
+   "from": {
+    "name": "Neustadt, Böbig",
+    "stopId": "de-DELFI_de:07316:3145:3:2",
+    "parentId": "de-DELFI_de:07316:3145",
+    "tz": "Europe/Berlin",
+    "track": "2",
+    "lat": 49.35378599999999,
+    "lon": 8.157655,
+    "departure": "2026-10-24T05:08:00Z",
+    "scheduledDeparture": "2026-10-24T05:08:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Mannheim, Hauptbahnhof",
+    "stopId": "de-DELFI_de:08222:2417:8:9",
+    "parentId": "de-DELFI_de:08222:2417",
+    "tz": "Europe/Berlin",
+    "track": "9",
+    "lat": 49.4788,
+    "lon": 8.469505000000002,
+    "arrival": "2026-10-24T05:48:00Z",
+    "scheduledArrival": "2026-10-24T05:48:00Z",
+    "cancelled": false
+   },
+   "startTime": "2026-10-24T05:08:00Z",
+   "endTime": "2026-10-24T05:48:00Z",
+   "displayName": "S4",
+   "routeShortName": "S4",
+   "tripId": "20261024_07:06_de-DELFI_3449008863",
+   "tripShortName": "038415",
+   "headsign": "Heidelberg, Hauptbahnhof",
+   "agencyName": "DB Regio AG Mitte Region Südwest",
+   "intermediateStops": [
+    {
+     "name": "Haßloch, Bahnhof",
+     "stopId": "de-DELFI_de:07332:1080:1:1",
+     "parentId": "de-DELFI_de:07332:1080",
+     "tz": "Europe/Berlin",
+     "track": "1",
+     "lat": 49.371902,
+     "lon": 8.252661,
+     "arrival": "2026-10-24T05:12:00Z",
+     "departure": "2026-10-24T05:13:00Z",
+     "scheduledArrival": "2026-10-24T05:12:00Z",
+     "scheduledDeparture": "2026-10-24T05:13:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Böhl-Iggelheim, Bahnhof",
+     "stopId": "de-DELFI_de:07338:373:1:1",
+     "tz": "Europe/Berlin",
+     "track": "1",
+     "lat": 49.379833,
+     "lon": 8.304709,
+     "arrival": "2026-10-24T05:17:00Z",
+     "departure": "2026-10-24T05:17:00Z",
+     "scheduledArrival": "2026-10-24T05:17:00Z",
+     "scheduledDeparture": "2026-10-24T05:17:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Schifferstadt, Bahnhof",
+     "stopId": "de-DELFI_de:07338:3430:4:2",
+     "parentId": "de-DELFI_de:07338:3430",
+     "tz": "Europe/Berlin",
+     "track": "2",
+     "lat": 49.392967,
+     "lon": 8.365283000000002,
+     "arrival": "2026-10-24T05:22:00Z",
+     "departure": "2026-10-24T05:29:00Z",
+     "scheduledArrival": "2026-10-24T05:22:00Z",
+     "scheduledDeparture": "2026-10-24T05:29:00Z",
+     "cancelled": false
+    }
+   ]
+  },
+  {
+   "mode": "WALK",
+   "from": {
+    "name": "Mannheim, Hauptbahnhof",
+    "stopId": "de-DELFI_de:08222:2417:8:9",
+    "parentId": "de-DELFI_de:08222:2417",
+    "tz": "Europe/Berlin",
+    "track": "9",
+    "lat": 49.4788,
+    "lon": 8.469505000000002,
+    "arrival": "2026-10-24T05:48:00Z",
+    "departure": "2026-10-24T05:48:00Z",
+    "scheduledArrival": "2026-10-24T05:48:00Z",
+    "scheduledDeparture": "2026-10-24T05:48:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Mannheim, Hauptbahnhof",
+    "stopId": "de-DELFI_de:08222:2417:4:2",
+    "parentId": "de-DELFI_de:08222:2417",
+    "tz": "Europe/Berlin",
+    "track": "2",
+    "lat": 49.47923,
+    "lon": 8.470026,
+    "arrival": "2026-10-24T05:50:00Z",
+    "scheduledArrival": "2026-10-24T05:50:00Z"
+   },
+   "startTime": "2026-10-24T05:48:00Z",
+   "endTime": "2026-10-24T05:50:00Z"
+  },
+  {
+   "mode": "HIGHSPEED_RAIL",
+   "from": {
+    "name": "Mannheim, Hauptbahnhof",
+    "stopId": "de-DELFI_de:08222:2417:4:2",
+    "parentId": "de-DELFI_de:08222:2417",
+    "tz": "Europe/Berlin",
+    "track": "2",
+    "lat": 49.47923,
+    "lon": 8.470026,
+    "departure": "2026-10-24T06:03:00Z",
+    "scheduledDeparture": "2026-10-24T06:03:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Hamburg Hbf",
+    "stopId": "de-DELFI_de:02000:10950",
+    "tz": "Europe/Berlin",
+    "track": "12",
+    "lat": 53.552734,
+    "lon": 10.006909,
+    "arrival": "2026-10-24T10:36:00Z",
+    "scheduledArrival": "2026-10-24T10:28:00Z",
+    "cancelled": false
+   },
+   "startTime": "2026-10-24T06:03:00Z",
+   "endTime": "2026-10-24T10:36:00Z",
+   "displayName": "ICE 774",
+   "routeShortName": "22",
+   "tripId": "20261024_07:23_de-DELFI_3448677552",
+   "tripShortName": "ICE 774",
+   "headsign": "Kiel Hbf",
+   "agencyName": "DB Fernverkehr AG",
+   "intermediateStops": [
+    {
+     "name": "Frankfurt (Main) Südbahnhof",
+     "stopId": "de-DELFI_de:06412:912:4:7",
+     "parentId": "de-DELFI_de:06412:912",
+     "tz": "Europe/Berlin",
+     "track": "7",
+     "lat": 50.099068,
+     "lon": 8.686112999999999,
+     "arrival": "2026-10-24T06:46:00Z",
+     "departure": "2026-10-24T06:51:00Z",
+     "scheduledArrival": "2026-10-24T06:37:00Z",
+     "scheduledDeparture": "2026-10-24T06:39:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Kassel Bahnhof Wilhelmshöhe",
+     "stopId": "de-DELFI_de:06611:200007",
+     "tz": "Europe/Berlin",
+     "track": "4",
+     "lat": 51.312557,
+     "lon": 9.447116,
+     "arrival": "2026-10-24T08:19:00Z",
+     "departure": "2026-10-24T08:22:00Z",
+     "scheduledArrival": "2026-10-24T08:10:00Z",
+     "scheduledDeparture": "2026-10-24T08:12:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Göttingen",
+     "stopId": "de-DELFI_de:03159:33817::9",
+     "tz": "Europe/Berlin",
+     "track": "9",
+     "lat": 51.53674,
+     "lon": 9.925647000000001,
+     "arrival": "2026-10-24T08:39:00Z",
+     "departure": "2026-10-24T08:42:00Z",
+     "scheduledArrival": "2026-10-24T08:30:00Z",
+     "scheduledDeparture": "2026-10-24T08:32:00Z",
+     "cancelled": false
+    }
+   ]
+  },
+  {
+   "mode": "WALK",
+   "from": {
+    "name": "Hamburg Hbf",
+    "stopId": "de-DELFI_de:02000:10950",
+    "tz": "Europe/Berlin",
+    "track": "12",
+    "lat": 53.552734,
+    "lon": 10.006909,
+    "arrival": "2026-10-24T10:36:00Z",
+    "departure": "2026-10-24T10:36:00Z",
+    "scheduledArrival": "2026-10-24T10:28:00Z",
+    "scheduledDeparture": "2026-10-24T10:36:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Hamburg Hbf",
+    "stopId": "de-DELFI_de:02000:10950_G",
+    "tz": "Europe/Berlin",
+    "lat": 53.55281,
+    "lon": 10.007920999999998,
+    "arrival": "2026-10-24T10:41:00Z",
+    "scheduledArrival": "2026-10-24T10:41:00Z"
+   },
+   "startTime": "2026-10-24T10:36:00Z",
+   "endTime": "2026-10-24T10:41:00Z"
+  },
+  {
+   "mode": "SUBURBAN",
+   "from": {
+    "name": "Hamburg Hbf",
+    "stopId": "de-DELFI_de:02000:10950_G",
+    "tz": "Europe/Berlin",
+    "lat": 53.55281,
+    "lon": 10.007920999999998,
+    "departure": "2026-10-24T10:42:00Z",
+    "scheduledDeparture": "2026-10-24T10:42:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Altona",
+    "stopId": "de-DELFI_de:02000:80953",
+    "tz": "Europe/Berlin",
+    "lat": 53.551852999999994,
+    "lon": 9.934554,
+    "arrival": "2026-10-24T10:54:00Z",
+    "scheduledArrival": "2026-10-24T10:54:00Z",
+    "cancelled": false
+   },
+   "startTime": "2026-10-24T10:42:00Z",
+   "endTime": "2026-10-24T10:54:00Z",
+   "displayName": "S1",
+   "routeShortName": "S1",
+   "tripId": "20261024_12:29_de-DELFI_3449055858",
+   "tripShortName": "041618",
+   "headsign": "Altona",
+   "agencyName": "S-Bahn Hamburg",
+   "intermediateStops": [
+    {
+     "name": "Jungfernstieg",
+     "stopId": "de-DELFI_de:02000:11950",
+     "tz": "Europe/Berlin",
+     "lat": 53.552193,
+     "lon": 9.993883,
+     "arrival": "2026-10-24T10:44:00Z",
+     "departure": "2026-10-24T10:45:00Z",
+     "scheduledArrival": "2026-10-24T10:44:00Z",
+     "scheduledDeparture": "2026-10-24T10:45:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Stadthausbrücke",
+     "stopId": "de-DELFI_de:02000:11952",
+     "tz": "Europe/Berlin",
+     "lat": 53.549465,
+     "lon": 9.984804,
+     "arrival": "2026-10-24T10:46:00Z",
+     "departure": "2026-10-24T10:47:00Z",
+     "scheduledArrival": "2026-10-24T10:46:00Z",
+     "scheduledDeparture": "2026-10-24T10:47:00Z",
+     "cancelled": false
+    },
+    {
+     "name": "Landungsbrücken",
+     "stopId": "de-DELFI_de:02000:80950",
+     "tz": "Europe/Berlin",
+     "lat": 53.546130000000005,
+     "lon": 9.971281,
+     "arrival": "2026-10-24T10:48:00Z",
+     "departure": "2026-10-24T10:49:00Z",
+     "scheduledArrival": "2026-10-24T10:48:00Z",
+     "scheduledDeparture": "2026-10-24T10:49:00Z",
+     "cancelled": false
+    }
+   ]
+  },
+  {
+   "mode": "WALK",
+   "from": {
+    "name": "Altona",
+    "stopId": "de-DELFI_de:02000:80953",
+    "tz": "Europe/Berlin",
+    "lat": 53.551852999999994,
+    "lon": 9.934554,
+    "arrival": "2026-10-24T10:54:00Z",
+    "departure": "2026-10-24T10:54:00Z",
+    "scheduledArrival": "2026-10-24T10:54:00Z",
+    "scheduledDeparture": "2026-10-24T10:54:00Z",
+    "cancelled": false
+   },
+   "to": {
+    "name": "Hamburg-Altona",
+    "stopId": "dk-rejseplanen_000008020403",
+    "tz": "Europe/Berlin",
+    "lat": 53.5525,
+    "lon": 9.934992999999999,
+    "arrival": "2026-10-24T10:58:00Z",
+    "scheduledArrival": "2026-10-24T10:58:00Z"
+   },
+   "startTime": "2026-10-24T10:54:00Z",
+   "endTime": "2026-10-24T10:58:00Z"
+  }
+ ]
+}
