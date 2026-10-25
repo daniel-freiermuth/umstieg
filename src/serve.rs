@@ -76,11 +76,10 @@ impl App {
     }
 }
 
-#[expect(clippy::print_stderr, reason = "the server's one startup line on the terminal")]
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
     let app = Arc::new(App::new(parallel, endpoints, db::Credentials::load)?);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("umstieg: route planner on http://{addr}/");
+    tracing::info!("route planner on http://{addr}/");
     axum::serve(listener, router(app)).await?;
     Ok(())
 }
@@ -105,6 +104,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/job/{id}/status", get(status))
         .route("/job/{id}/plot", get(plot))
         .with_state(app)
+        // Every request at debug: the progress page polls its status each second.
+        .layer(tower_http::trace::TraceLayer::new_for_http())
 }
 
 /// One form field, described from the command-line option.
@@ -241,6 +242,7 @@ fn admit(jobs: &mut HashMap<u64, Job>, id: u64, job: Job) {
     jobs.insert(id, job);
 }
 
+#[tracing::instrument(name = "job", skip_all, fields(id = id))]
 async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     let note = |line: String| {
         if let Some(job) = lock(&app.jobs).get_mut(&id) {
@@ -248,11 +250,15 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
             job.log.push(format!("{secs:>3}s  {line}"));
         }
     };
+    let query = lock(&app.jobs).get(&id).map(|j| j.query.clone()).unwrap_or_default();
+    tracing::info!(query, "search asked");
     if app.permits.available_permits() == 0 {
+        tracing::info!("waiting for another search to finish");
         note("Waiting for another search to finish".to_owned());
     }
     let Ok(_permit) = app.permits.acquire().await else { return };
-    let back = lock(&app.jobs).get(&id).map(|j| format!("/?{}", j.query));
+    let started = Instant::now();
+    let back = Some(format!("/?{query}"));
     let events = |event: Event<'_>| match event {
         Event::Stage(stage) => note(stage.to_owned()),
         Event::Warning(warning) => note(format!("warning: {warning}")),
@@ -262,9 +268,16 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
         Ok(credentials) => search::run(&args, &app.endpoints, credentials, Some(PlotPage { back }), &events).await,
         Err(e) => Err(e),
     };
+    let secs = started.elapsed().as_secs();
     let result = match result {
-        Ok(outcome) => outcome.html.ok_or(outcome.text),
-        Err(e) => Err(format!("{e:#}")),
+        Ok(outcome) => {
+            tracing::info!(secs, "search done");
+            outcome.html.ok_or(outcome.text)
+        }
+        Err(e) => {
+            tracing::error!(secs, "search failed: {e:#}");
+            Err(format!("{e:#}"))
+        }
     };
     note(if result.is_ok() { "Done".to_owned() } else { "Failed".to_owned() });
     if let Some(job) = lock(&app.jobs).get_mut(&id) {

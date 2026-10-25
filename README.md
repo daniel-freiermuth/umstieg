@@ -109,6 +109,14 @@ the same settings. Searches beyond `--parallel` wait their turn: each loads
 Transitous and the DB quota. The last 20 results stay available. There is no
 login; put it behind an authenticating proxy before exposing it.
 
+Logs go to stderr (the journal under systemd), filtered by `RUST_LOG`. The
+server logs at `info` by default: startup, each search asked, done (with its
+duration) or failed (with the error), its warnings, and the requests it sent
+per service plus time spent waiting for the DB quota. `RUST_LOG=umstieg=debug`
+adds every request to Transitous, EFA and DB (URL, status, attempt, duration)
+and cache hits; `RUST_LOG=debug` also every request to the server itself. The
+command line logs nothing unless `RUST_LOG` is set.
+
 ## How it works
 
 1. **Rough routes** (MOTIS/Transitous): the planner's answers, plus

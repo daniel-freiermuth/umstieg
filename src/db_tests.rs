@@ -680,6 +680,7 @@ async fn requests_keep_to_the_quota_per_minute() {
     assert_eq!(start.elapsed(), waited, "the old requests aged out, a new window's quota is free");
     db.pace().await;
     assert!(start.elapsed() >= waited.saturating_add(QUOTA_WINDOW));
+    assert_eq!(db.waited(), start.elapsed(), "all the time went into waiting for the quota");
 }
 
 #[tokio::test]

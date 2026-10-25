@@ -181,6 +181,8 @@ pub struct Db {
     plans: Mutex<HashMap<(String, String), Board>>,
     changes: Mutex<HashMap<String, Arc<HashMap<String, Visit>>>>,
     requests: AtomicUsize,
+    /// Time spent waiting for the per-minute quota.
+    waited: Mutex<Duration>,
 }
 
 impl Db {
@@ -202,11 +204,17 @@ impl Db {
             plans: Mutex::new(HashMap::new()),
             changes: Mutex::new(HashMap::new()),
             requests: AtomicUsize::new(0),
+            waited: Mutex::new(Duration::ZERO),
         })
     }
 
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    /// How long requests waited for the per-minute quota so far.
+    pub fn waited(&self) -> Duration {
+        *lock(&self.waited)
     }
 
     /// Wait until another request fits into the per-minute quota.
@@ -216,7 +224,13 @@ impl Db {
             if oldest.elapsed() >= QUOTA_WINDOW {
                 recent.pop_front();
             } else if recent.len() >= REQUESTS_PER_MINUTE {
-                tokio::time::sleep(QUOTA_WINDOW.saturating_sub(oldest.elapsed())).await;
+                let wait = QUOTA_WINDOW.saturating_sub(oldest.elapsed());
+                tracing::debug!("DB: {REQUESTS_PER_MINUTE} requests per minute reached; waiting {wait:?}");
+                {
+                    let mut waited = lock(&self.waited);
+                    *waited = waited.saturating_add(wait);
+                }
+                tokio::time::sleep(wait).await;
             } else {
                 break;
             }
@@ -233,6 +247,7 @@ impl Db {
             attempt = attempt.saturating_add(1);
             self.pace().await;
             self.requests.fetch_add(1, Ordering::Relaxed);
+            let sent_at = Instant::now();
             let sent = self
                 .http
                 .get(&url)
@@ -245,8 +260,14 @@ impl Db {
                 Ok(resp) => resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || resp.status().is_server_error(),
                 Err(e) => e.is_connect() || e.is_request() || e.is_timeout(),
             };
+            match &sent {
+                Ok(resp) => tracing::debug!(url, status = %resp.status(), attempt, elapsed = ?sent_at.elapsed(), "DB"),
+                Err(e) => tracing::debug!(url, attempt, elapsed = ?sent_at.elapsed(), "DB: {e}"),
+            }
             if transient && attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(BACKOFF.saturating_mul(2_u32.saturating_pow(attempt))).await;
+                let wait = BACKOFF.saturating_mul(2_u32.saturating_pow(attempt));
+                tracing::warn!(url, attempt, "DB: transient failure; retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
                 continue;
             }
             let resp = sent.with_context(|| format!("GET {url}"))?;

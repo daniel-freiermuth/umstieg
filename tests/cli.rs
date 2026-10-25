@@ -49,7 +49,11 @@ fn serve_listens_until_stopped() {
         .unwrap();
     let mut started = String::new();
     BufReader::new(server.stderr.take().unwrap()).read_line(&mut started).unwrap();
-    assert_eq!(started, format!("umstieg: route planner on http://{addr}/\n"));
+    // The startup line is logged at info, which the server shows without RUST_LOG.
+    assert!(
+        started.contains(" INFO ") && started.ends_with(&format!("route planner on http://{addr}/\n")),
+        "{started}"
+    );
 
     let mut socket = std::net::TcpStream::connect(addr).unwrap();
     socket.write_all(b"GET / HTTP/1.1\r\nHost: umstieg\r\nConnection: close\r\n\r\n").unwrap();

@@ -144,15 +144,19 @@ impl Efa {
     async fn get(&self, url: &str, query: &[(&str, String)]) -> Result<String> {
         for attempt in 1..=ATTEMPTS {
             self.requests.fetch_add(1, Ordering::Relaxed);
+            let sent_at = std::time::Instant::now();
             let result = async {
                 let resp = self.http.get(url).query(query).send().await?.error_for_status()?;
                 resp.text().await
             }
             .await;
+            tracing::debug!(url, ?query, ok = result.is_ok(), attempt, elapsed = ?sent_at.elapsed(), "EFA");
             match result {
                 Ok(text) => return Ok(text),
-                Err(_) if attempt < ATTEMPTS => {
-                    tokio::time::sleep(BACKOFF.saturating_mul(2_u32.saturating_pow(attempt))).await;
+                Err(e) if attempt < ATTEMPTS => {
+                    let wait = BACKOFF.saturating_mul(2_u32.saturating_pow(attempt));
+                    tracing::warn!(url, attempt, "EFA: {e}; retrying in {wait:?}");
+                    tokio::time::sleep(wait).await;
                 }
                 Err(e) => return Err(e).with_context(|| format!("GET {url}")),
             }

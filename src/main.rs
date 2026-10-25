@@ -19,10 +19,12 @@ mod e2e_tests;
 #[cfg(test)]
 mod testkit;
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
 
 /// Lists every public transport connection within limits, including those
 /// journey planners hide, grouped by first and last train.
@@ -58,6 +60,15 @@ enum Command {
 #[expect(clippy::print_stdout, clippy::print_stderr, reason = "the command line's report and warnings")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Operator logs on stderr (the journal under systemd), filtered by RUST_LOG.
+    // The server logs its jobs by default; the command line shows its report and
+    // warnings already, so it logs only when asked.
+    let default = if cli.command.is_some() { "info" } else { "off" };
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default)))
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .init();
     if let Some(Command::Serve { addr, parallel, endpoints }) = cli.command {
         return serve::serve(addr, parallel, endpoints).await;
     }

@@ -181,21 +181,25 @@ impl Motis {
         for attempt in 1..=MAX_ATTEMPTS {
             let backoff = BACKOFF.saturating_mul(2_u32.saturating_pow(attempt));
             self.requests.fetch_add(1, Ordering::Relaxed);
+            let sent_at = std::time::Instant::now();
             let sent = self.http.get(&url).query(query).send().await;
             let resp = match sent {
-                Err(_) if attempt < MAX_ATTEMPTS => {
+                Err(e) if attempt < MAX_ATTEMPTS => {
+                    tracing::warn!(url, attempt, "Transitous: {e}; retrying in {backoff:?}");
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
                 other => other.with_context(|| format!("GET {url}"))?,
             };
             let status = resp.status();
+            tracing::debug!(url, ?query, %status, attempt, elapsed = ?sent_at.elapsed(), "Transitous");
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_ATTEMPTS {
                 let wait = resp
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok()?.parse().ok())
                     .map_or(backoff, std::time::Duration::from_secs);
+                tracing::warn!(url, attempt, "Transitous: too many requests; retrying in {wait:?}");
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -205,7 +209,7 @@ impl Motis {
             match resp.text().await {
                 Ok(text) => return Ok(text),
                 Err(e) if attempt >= MAX_ATTEMPTS => return Err(e).with_context(|| format!("reading {url}")),
-                Err(_) => {}
+                Err(e) => tracing::warn!(url, attempt, "Transitous: reading the answer: {e}; retrying"),
             }
         }
         bail!("GET {url}: no attempts left")

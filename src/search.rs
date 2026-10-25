@@ -156,6 +156,7 @@ pub struct PlotPage {
 
 /// Runs a search; with `plot`, also renders the plot page. Without
 /// `credentials` (or with `--no-db`), only Transitous and EFA are asked.
+#[tracing::instrument(name = "search", skip_all, fields(from = %args.from, to = %args.to))]
 pub async fn run(
     args: &SearchArgs,
     endpoints: &Endpoints,
@@ -163,6 +164,13 @@ pub async fn run(
     plot: Option<PlotPage>,
     events: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Outcome> {
+    // Warnings also go to the operator's log.
+    let events = &|event: Event<'_>| {
+        if let Event::Warning(warning) = event {
+            tracing::warn!("{warning}");
+        }
+        events(event);
+    };
     let user_agent = endpoints.user_agent();
     let motis = Motis::new(&endpoints.api, &user_agent)?;
     let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;
@@ -209,6 +217,14 @@ pub async fn run(
         motis.request_count(),
         efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
         db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
+    );
+    // What the search cost the services, for the operator (Transitous asks to keep the load light).
+    tracing::info!(
+        transitous = motis.request_count(),
+        efa = efa.as_ref().map(efa::Efa::request_count),
+        db = db.as_ref().map(db::Db::request_count),
+        db_quota_wait = ?db.as_ref().map(db::Db::waited),
+        "requests sent"
     );
     let report = Report {
         args: args.clone(),

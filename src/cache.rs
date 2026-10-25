@@ -65,8 +65,10 @@ impl DiskCache {
             (age < self.ttl).then(|| std::fs::read_to_string(f).ok()).flatten()
         });
         if let Some(text) = fresh {
+            tracing::debug!(key, "cache hit");
             return Ok(text);
         }
+        tracing::debug!(key, "cache miss");
         let text = fetch.await?;
         if let Some(file) = &file {
             write_atomic(file, &text)?;
