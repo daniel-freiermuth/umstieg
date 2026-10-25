@@ -22,5 +22,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["*.ts"],
-  "exclude": ["*.test.ts"]
+  "exclude": ["*.test.ts", "eslint.config.ts"]
 }

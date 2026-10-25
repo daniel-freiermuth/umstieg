@@ -1,9 +1,10 @@
 // Strictest typescript-eslint presets, type-aware.
 import js from "@eslint/js";
+import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 
-export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "eslint.config.js"] },
+export default defineConfig(
+  { ignores: ["dist/", "node_modules/"] },
   js.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
@@ -26,9 +27,9 @@ export default tseslint.config(
   },
   // The one place unchecked input (JSON.parse) is looked at.
   { files: ["decode.ts"], rules: { "@typescript-eslint/no-restricted-types": "off" } },
-  // Tests run in Bun: type-checked against its types, not the browser's.
+  // Tests and this config run in Bun/Node: type-checked against their types, not the browser's.
   {
-    files: ["*.test.ts"],
+    files: ["*.test.ts", "eslint.config.ts"],
     languageOptions: { parserOptions: { projectService: false, project: "./tsconfig.test.json" } },
   },
 );

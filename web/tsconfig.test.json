@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "types": ["bun"] },
-  "include": ["*.test.ts"],
+  "include": ["*.test.ts", "eslint.config.ts"],
   "exclude": []
 }
