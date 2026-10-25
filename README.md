@@ -200,6 +200,12 @@ as an error, tests and rustdoc. The lint set lives in `Cargo.toml`: clippy's
 Deliberate exceptions use `#[expect(…, reason = "…")]`, so they fail once they
 no longer apply.
 
+The code doesn't panic: `unwrap`/`expect`/`panic!`/`unreachable!`, indexing,
+slicing and arithmetic that can overflow or divide by zero are lint errors
+outside tests, with no exceptions. Bad feed data skips the item or fails the
+search with an error, internal bounds saturate (`src/checked.rs`), and
+command-line and form limits are range-checked (`--window` up to a week, …).
+
 The pages' scripts are TypeScript in `web/` (`plot.ts`, `form.ts`,
 `progress.ts`, sharing `decode.ts` and `dom.ts`; templates next to them),
 bundled by Bun into `web/dist/`, which is committed and embedded by the binary —
