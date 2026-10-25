@@ -19,7 +19,7 @@ fn age_files(name: &str, age: Duration) {
     let dir = root().unwrap().join(name);
     for entry in std::fs::read_dir(dir).unwrap() {
         let file = std::fs::File::options().write(true).open(entry.unwrap().path()).unwrap();
-        file.set_modified(SystemTime::now() - age).unwrap();
+        file.set_modified(SystemTime::now().checked_sub(age).unwrap()).unwrap();
     }
 }
 

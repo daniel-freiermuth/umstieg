@@ -28,7 +28,7 @@ fn station(tt: &Timetable, name: &str) -> usize {
 
 /// A piece point: (unix minutes, station).
 fn pt(tt: &Timetable, hhmm: &str, name: &str) -> (i64, usize) {
-    (at(hhmm).timestamp() / 60, station(tt, name))
+    (at(hhmm).timestamp().div_euclid(60), station(tt, name))
 }
 
 fn builder(tt: &Timetable) -> Builder<'_> {
@@ -58,7 +58,7 @@ fn network() -> Timetable {
 #[test]
 fn time_heights_are_remaining_minutes_with_and_without_waits() {
     let tt = network();
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let (a, b, c, d) = (station(&tt, "A"), station(&tt, "B"), station(&tt, "C"), station(&tt, "D"));
 
     let remaining = heights(&net, Metric::RemainingTime).unwrap();
@@ -85,7 +85,7 @@ fn geographic_heights_follow_their_geometry() {
     for (s, p) in tt.stations.iter_mut().zip(positions) {
         s.position = p;
     }
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let d = meters((0.0, 0.0), (0.0, 1.0)) / 1000.0;
     // (station, hyperbolic, axis, ratio)
     let cases = [
@@ -114,7 +114,7 @@ fn geographic_heights_follow_their_geometry() {
 fn geographic_heights_need_both_ends_located() {
     let mut tt = network();
     tt.stations[tt.destination].position = Some((0.0, 1.0));
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     for metric in [Metric::Hyperbolic, Metric::Axis, Metric::Ratio] {
         let err = heights(&net, metric).unwrap_err().to_string();
         assert!(err.contains(&format!("{metric:?}")) && err.contains("coordinates"), "{err}");
@@ -131,7 +131,7 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
     let mut tt = in_utc(b.build("A", "D"));
     tt.trips[ice].headsign = Some("D".to_owned());
     let mut plot = builder(&tt);
-    let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None);
+    let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None).unwrap();
     assert_eq!(pieces, [0]);
     let piece = &plot.pieces[0];
     assert_eq!((piece.kind, piece.trip, piece.warn), ("ride", Some(ice), false));
@@ -159,7 +159,7 @@ fn waits_carry_the_buffer_and_warn_below_the_minimum_transfer() {
         let re = b.trip("RE 2", &[("B", "", departure), ("C", "10:00", "")]);
         let tt = in_utc(b.build("A", "C"));
         let mut plot = builder(&tt);
-        let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None);
+        let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None).unwrap();
         let kinds: Vec<&str> = pieces.iter().map(|&i| plot.pieces[i].kind).collect();
         assert_eq!(kinds, ["ride", "wait", "ride"], "{departure}");
         let wait = &plot.pieces[pieces[1]];
@@ -176,7 +176,7 @@ fn a_fallback_starts_waiting_at_the_missed_departure_without_warning() {
     let tt = in_utc(b.build("A", "D"));
     let mut plot = builder(&tt);
     let chain = Chain { steps: vec![ride(x, 0, 1), ride(y, 0, 1)] };
-    let pieces = plot.pieces(&chain, None, Some((station(&tt, "B"), at("09:08"))));
+    let pieces = plot.pieces(&chain, None, Some((station(&tt, "B"), at("09:08")))).unwrap();
     let kinds: Vec<&str> = pieces.iter().map(|&i| plot.pieces[i].kind).collect();
     assert_eq!(kinds, ["wait", "ride", "wait", "ride"]);
     let start = &plot.pieces[pieces[0]];
@@ -196,8 +196,9 @@ fn walks_are_drawn_from_the_arrival_and_the_wait_after_them_counts_from_the_walk
     b.walk("B", "B2", 4);
     let tt = in_utc(b.build("A", "C"));
     let mut plot = builder(&tt);
-    let pieces =
-        plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] }, None, None);
+    let pieces = plot
+        .pieces(&Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] }, None, None)
+        .unwrap();
     let got: Vec<(&str, &str, bool)> =
         pieces.iter().map(|&i| (plot.pieces[i].kind, plot.pieces[i].info.as_str(), plot.pieces[i].warn)).collect();
     assert_eq!(got[1..3], [("walk", "walk 4m to B2", false), ("wait", "6m at B2", false)]);
@@ -216,7 +217,7 @@ fn until_cuts_before_the_rejoining_ride_but_keeps_the_wait_for_it() {
     let start = Some((station(&tt, "B"), at("12:30")));
 
     let mut plot = builder(&tt);
-    let pieces = plot.pieces(&chain, Some(1), start);
+    let pieces = plot.pieces(&chain, Some(1), start).unwrap();
     let got: Vec<(&str, &str)> = pieces.iter().map(|&i| (plot.pieces[i].kind, plot.pieces[i].info.as_str())).collect();
     assert_eq!(
         got,
@@ -229,7 +230,7 @@ fn until_cuts_before_the_rejoining_ride_but_keeps_the_wait_for_it() {
     assert!(!plot.used.contains(&station(&tt, "Flensburg")));
 
     let mut plot = builder(&tt);
-    let pieces = plot.pieces(&chain, Some(0), start);
+    let pieces = plot.pieces(&chain, Some(0), start).unwrap();
     assert_eq!(pieces.len(), 1);
     assert_eq!(plot.pieces[pieces[0]].kind, "wait");
 }
@@ -242,18 +243,19 @@ fn identical_stretches_are_stored_once() {
     let s = b.trip("S 3", &[("B", "", "09:20"), ("C", "10:20", "")]);
     let tt = in_utc(b.build("A", "C"));
     let mut plot = builder(&tt);
-    let first = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None);
-    let second = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(s, 0, 1)] }, None, None);
-    let again = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None);
+    let first = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None).unwrap();
+    let second = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(s, 0, 1)] }, None, None).unwrap();
+    let again = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None).unwrap();
     assert_eq!(first[0], second[0], "same train, same stretch");
     assert_ne!(first[1], second[1], "waits of different length");
     assert_eq!(first, again);
     // The whole run of the train is another stretch than its first part.
-    let whole = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None);
+    let whole = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None).unwrap();
     assert!(!first.contains(&whole[0]));
     assert_eq!(plot.pieces.len(), 6);
     // A fallback's start wait over the same span as a change is another piece.
-    let start = plot.pieces(&Chain { steps: vec![ride(re, 0, 1)] }, None, Some((station(&tt, "B"), at("09:00"))));
+    let start =
+        plot.pieces(&Chain { steps: vec![ride(re, 0, 1)] }, None, Some((station(&tt, "B"), at("09:00")))).unwrap();
     assert_ne!(start[0], first[1]);
     assert_eq!(plot.pieces[start[0]].pts, plot.pieces[first[1]].pts);
 }
@@ -284,11 +286,11 @@ fn chains(net: &Network<'_>) -> Vec<enumerate::Group> {
         forward_only: false,
         max_nodes: 1_000_000,
     };
-    enumerate::group(net.tt, enumerate::enumerate(net, &limits).chains)
+    enumerate::group(net.tt, enumerate::enumerate(net, &limits).unwrap().chains).unwrap()
 }
 
 fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
-    let net = Network::new(tt);
+    let net = Network::new(tt)?;
     let groups = chains(&net);
     let mut fallbacks = Fallbacks::new(&net, MIN);
     let plot = Plot {
@@ -368,7 +370,7 @@ fn rendered_data_is_consistent() {
     assert_eq!(fallback["at"], "B");
     let first = &pieces[indexes(&fallback["pieces"])[0]];
     assert_eq!(first["kind"], "wait");
-    assert_eq!(first["pts"][0], serde_json::json!([at("09:10").timestamp() / 60, station(&tt, "B")]));
+    assert_eq!(first["pts"][0], serde_json::json!([at("09:10").timestamp().div_euclid(60), station(&tt, "B")]));
     assert_eq!(first["warn"], false);
 }
 

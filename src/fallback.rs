@@ -2,10 +2,13 @@
 //! after the missed departure, cut where they catch a train of the plan again.
 
 use std::cmp::Reverse;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
+use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 
+use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network};
 use crate::text;
 
@@ -38,72 +41,83 @@ impl<'n> Fallbacks<'n> {
         Self { net, min_transfer, cache: HashMap::new() }
     }
 
-    fn candidates(&mut self, station: usize, missed: DateTime<Utc>) -> &[Chain] {
+    fn candidates(&mut self, station: usize, missed: DateTime<Utc>) -> Result<&[Chain]> {
         let (net, min_transfer) = (self.net, self.min_transfer);
-        self.cache.entry((station, missed)).or_insert_with(|| {
-            let after = missed + TimeDelta::minutes(1);
-            let limits = Limits {
-                origin: station,
-                depart_from: after,
-                depart_until: after + WINDOW,
-                max_changes: CHANGES,
-                extra_time: EXTRA,
-                min_transfer,
-                // What to do once the change is missed: only what still works.
-                missed_by: TimeDelta::zero(),
-                keep_detours: false,
-                forward_only: false,
-                max_nodes: NODES,
-            };
-            enumerate::enumerate(net, &limits).chains
-        })
+        match self.cache.entry((station, missed)) {
+            Entry::Occupied(found) => Ok(found.into_mut()),
+            Entry::Vacant(slot) => {
+                let after = checked::later(missed, TimeDelta::minutes(1), "departure after a missed train")?;
+                let limits = Limits {
+                    origin: station,
+                    depart_from: after,
+                    // Saturating: a window reaching past the latest time there is ends there.
+                    depart_until: checked::later_or_max(after, WINDOW),
+                    max_changes: CHANGES,
+                    extra_time: EXTRA,
+                    min_transfer,
+                    // What to do once the change is missed: only what still works.
+                    missed_by: TimeDelta::zero(),
+                    keep_detours: false,
+                    forward_only: false,
+                    max_nodes: NODES,
+                };
+                Ok(slot.insert(enumerate::enumerate(net, &limits)?.chains))
+            }
+        }
     }
 
     /// The best fallbacks if the train after change `change` of `chain` is missed.
     /// Ranked by what happens until the plan is rejoined: from there on the trip
     /// continues as planned, so its arrival is the planned one.
-    pub fn for_change(&mut self, chain: &Chain, change: usize) -> Vec<Fallback> {
+    pub fn for_change(&mut self, chain: &Chain, change: usize) -> Result<Vec<Fallback>> {
         let tt = self.net.tt;
         let min_transfer = self.min_transfer;
-        let transfer = &chain.transfers(tt)[change];
+        let transfers = chain.transfers(tt)?;
+        let transfer = transfers.get(change).with_context(|| format!("the connection has no change {change}"))?;
+        // The rides after the change; `change` is below the number of changes.
+        let after_change = change.saturating_add(1);
         // Catching a later train of the plan (also the missed one, further on)
         // before the plan leaves it ends the detour. Trip → where the plan leaves it.
         let rejoin: HashMap<usize, usize> =
-            chain.rides().skip(change + 1).map(|(trip, _, alight)| (trip, alight)).collect();
-        let arrival = chain.arrival(tt);
+            chain.rides().skip(after_change).map(|(trip, _, alight)| (trip, alight)).collect();
+        let arrival = chain.arrival(tt)?;
 
         // After a change with a walk, the missed train left from where the walk
         // led; fallbacks start there too (the search doesn't begin with a walk).
         let mut starts = vec![transfer.station];
-        if let Some((trip, board, _)) = chain.rides().nth(change + 1) {
-            let boards_at = tt.trips[trip].calls[board].station;
+        if let Some((trip, board, _)) = chain.rides().nth(after_change) {
+            let boards_at = tt.call(trip, board)?.station;
             if boards_at != transfer.station {
                 starts.push(boards_at);
             }
         }
-        let candidates: Vec<Chain> =
-            starts.into_iter().flat_map(|s| self.candidates(s, transfer.departure).to_vec()).collect();
-        let mut ranked: Vec<_> = candidates
+        let mut candidates: Vec<Chain> = Vec::new();
+        for s in starts {
+            candidates.extend_from_slice(self.candidates(s, transfer.departure)?);
+        }
+        let mut ranked = candidates
             .iter()
             .map(|fallback| {
                 let rides: Vec<_> = fallback.rides().collect();
                 let back =
                     rides.iter().position(|(trip, board, _)| rejoin.get(trip).is_some_and(|alight| board < alight));
-                let changes = back.unwrap_or(rides.len() - 1);
-                let slack = fallback.transfers(tt)[..changes].iter().map(|t| t.slack).min();
-                let lands = if back.is_some() { arrival } else { fallback.arrival(tt) };
-                let marked: HashSet<usize> = back.map(|i| rides[i].0).into_iter().collect();
-                let line = text::route(tt, fallback, min_transfer, &marked);
-                (lands, changes, Reverse(slack), line, back, fallback)
+                // Every fallback has a ride.
+                let changes = back.unwrap_or_else(|| rides.len().saturating_sub(1));
+                let slack = fallback.transfers(tt)?.iter().take(changes).map(|t| t.slack).min();
+                let lands = if back.is_some() { arrival } else { fallback.arrival(tt)? };
+                let marked: HashSet<usize> =
+                    back.and_then(|i| rides.get(i)).map(|&(trip, _, _)| trip).into_iter().collect();
+                let line = text::route(tt, fallback, min_transfer, &marked)?;
+                Ok((lands, changes, Reverse(slack), line, back, fallback))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         ranked.sort_by(|a, b| (a.0, a.1, a.2, &a.3).cmp(&(b.0, b.1, b.2, &b.3)));
         ranked.dedup_by(|a, b| a.3 == b.3);
-        ranked
+        Ok(ranked
             .into_iter()
             .take(SHOWN)
             .map(|(lands, _, _, line, rejoins_at, chain)| Fallback { chain: chain.clone(), lands, rejoins_at, line })
-            .collect()
+            .collect())
     }
 }
 

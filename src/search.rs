@@ -13,7 +13,31 @@ use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::fallback::{self, Fallbacks};
 use crate::motis::Motis;
 use crate::text::{buffer, clock, duration, header, route, timed};
-use crate::{db, efa, plot, rough, timetable};
+use crate::{checked, db, efa, plot, rough, timetable};
+
+/// Upper limit of the options in minutes (`--window`, `--min-transfer`,
+/// `--missed-by`): a week, far beyond any search the timetable covers.
+const MAX_MINUTES: i64 = 7 * 24 * 60;
+/// Upper limit of `--extra-hours`, a week too.
+const MAX_EXTRA_HOURS: f64 = 7.0 * 24.0;
+/// Upper limit of `--max-changes`: more than any journey has.
+const MAX_CHANGES: usize = 100;
+
+/// `--extra-hours`: a number of hours from 0 to a week.
+fn extra_hours(s: &str) -> Result<f64, String> {
+    let hours: f64 = s.parse().map_err(|e| format!("{e}"))?;
+    if (0.0..=MAX_EXTRA_HOURS).contains(&hours) {
+        Ok(hours)
+    } else {
+        Err(format!("{hours} is not in 0..={MAX_EXTRA_HOURS}"))
+    }
+}
+
+/// `--max-changes`: 0 to `MAX_CHANGES`.
+fn max_changes(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|e| format!("{e}"))?;
+    if n <= MAX_CHANGES { Ok(n) } else { Err(format!("{n} is not in 0..={MAX_CHANGES}")) }
+}
 
 /// Stations, time and every limit of a search. The web form is generated from
 /// these arguments, so options added here show up there too.
@@ -28,20 +52,20 @@ pub struct SearchArgs {
     #[arg(long)]
     pub at: Option<String>,
     /// Departure window in minutes.
-    #[arg(long, default_value_t = 120)]
+    #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub window: i64,
     /// Maximum number of changes.
-    #[arg(long, default_value_t = 15)]
+    #[arg(long, default_value_t = 15, value_parser = max_changes)]
     pub max_changes: usize,
     /// Show connections taking at most this many hours longer than the fastest.
-    #[arg(long, default_value_t = 3.0)]
+    #[arg(long, default_value_t = 3.0, value_parser = extra_hours)]
     pub extra_hours: f64,
     /// Changes shorter than this many minutes are flagged with ⚠.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub min_transfer: i64,
     /// Also list changes that live data says are missed by up to this many
     /// minutes (marked ✗): delays can still shift either way. 0 = only feasible ones.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub missed_by: i64,
     /// Connections listed per (first train, last train) group; 0 = all.
     #[arg(long, default_value_t = 5)]
@@ -132,7 +156,6 @@ pub struct PlotPage {
 
 /// Runs a search; with `plot`, also renders the plot page. Without
 /// `credentials` (or with `--no-db`), only Transitous and EFA are asked.
-#[expect(clippy::too_many_lines, reason = "the search pipeline, stage after stage, with the report in between")]
 pub async fn run(
     args: &SearchArgs,
     endpoints: &Endpoints,
@@ -155,7 +178,13 @@ pub async fn run(
     };
 
     let time = parse_time(args.at.as_deref())?;
-    let window = TimeDelta::minutes(args.window);
+    // Options are range-checked by clap; checked again here for searches set up
+    // in code, so that none of them can make the time arithmetic overflow.
+    let window = checked::minutes(args.window, "--window")?;
+    let depart_until = checked::later(time, window, "--window")?;
+    let min_transfer = checked::minutes(args.min_transfer, "--min-transfer")?;
+    let missed_by = checked::minutes(args.missed_by.max(0), "--missed-by")?;
+    let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
     let (origin, destination) = tokio::try_join!(motis.stop(&args.from), motis.stop(&args.to))?;
     let vias = try_join_all(args.via.iter().map(|v| motis.stop(v))).await?;
@@ -175,50 +204,124 @@ pub async fn run(
     }
 
     events(Event::Stage("Enumerating connections"));
-    // CPU-bound from here on; keep the runtime's other tasks (e.g. a web server) responsive.
-    tokio::task::block_in_place(|| {
+    let requests = format!(
+        "{} Transitous requests{}{}",
+        motis.request_count(),
+        efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
+        db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
+    );
+    let report = Report {
+        args: args.clone(),
+        built,
+        hubs: rough.hubs,
+        requests,
+        with_db: db.is_some(),
+        time,
+        depart_until,
+        min_transfer,
+        missed_by,
+        extra_time,
+        plot,
+    };
+    // CPU-bound from here on: on a blocking thread, keeping the runtime's other
+    // tasks (e.g. a web server) responsive on any runtime. Stages are passed on
+    // as they happen.
+    let (stages, mut stage) = tokio::sync::mpsc::unbounded_channel();
+    let job = tokio::task::spawn_blocking(move || report.write(&stages));
+    // Ends when the job drops its sender: finished, failed or panicked.
+    while let Some(s) = stage.recv().await {
+        events(Event::Stage(s));
+    }
+    job.await.context("the search thread failed")?
+}
+
+/// `--extra-hours` as a duration, negative meaning none.
+fn extra_time(hours: f64) -> Result<TimeDelta> {
+    let seconds = hours * 3600.0;
+    if !(seconds.is_finite() && seconds.abs() < 1e12) {
+        bail!("--extra-hours: {hours} is out of range");
+    }
+    TimeDelta::try_seconds(timetable::whole_seconds(seconds).max(0))
+        .with_context(|| format!("--extra-hours: {hours} is out of range"))
+}
+
+/// Everything the report needs, owned, to be written on a blocking thread.
+struct Report {
+    args: SearchArgs,
+    built: timetable::Build,
+    hubs: Vec<String>,
+    /// "12 Transitous requests, 3 EFA requests, …".
+    requests: String,
+    with_db: bool,
+    time: DateTime<Utc>,
+    depart_until: DateTime<Utc>,
+    min_transfer: TimeDelta,
+    missed_by: TimeDelta,
+    extra_time: TimeDelta,
+    plot: Option<PlotPage>,
+}
+
+impl Report {
+    /// Enumerates the connections and writes the report, sending the stages
+    /// that follow "Enumerating connections" to `stages`.
+    #[expect(clippy::too_many_lines, reason = "the report, section after section")]
+    fn write(self, stages: &tokio::sync::mpsc::UnboundedSender<&'static str>) -> Result<Outcome> {
+        let Self {
+            args,
+            built,
+            hubs,
+            requests,
+            with_db,
+            time,
+            depart_until,
+            min_transfer,
+            missed_by,
+            extra_time,
+            plot,
+        } = self;
         let tt = &built.timetable;
-        let net = Network::new(tt);
-        let min_transfer = TimeDelta::minutes(args.min_transfer);
+        let net = Network::new(tt)?;
         let limits = Limits {
             origin: tt.origin,
             depart_from: time,
-            depart_until: time + window,
+            depart_until,
             max_changes: args.max_changes,
-            extra_time: TimeDelta::seconds(timetable::whole_seconds(args.extra_hours * 3600.0).max(0)),
+            extra_time,
             min_transfer,
-            missed_by: TimeDelta::minutes(args.missed_by.max(0)),
+            missed_by,
             keep_detours: args.keep_detours,
             forward_only: args.forward_only,
             max_nodes: args.max_nodes,
         };
-        let result = enumerate::enumerate(&net, &limits);
+        let result = enumerate::enumerate(&net, &limits)?;
         let total = result.chains.len();
-        let missed = result.chains.iter().filter(|c| c.min_slack(tt).is_some_and(|s| s < TimeDelta::zero())).count();
-        let groups = enumerate::group(tt, result.chains);
+        let mut missed = 0_usize;
+        for chain in &result.chains {
+            if chain.min_slack(tt)?.is_some_and(|s| s < TimeDelta::zero()) {
+                missed = missed.saturating_add(1);
+            }
+        }
+        let groups = enumerate::group(tt, result.chains)?;
 
         let mut out = String::new();
-        let title = format!("{} → {}", tt.stations[tt.origin].name, tt.stations[tt.destination].name);
+        let title = format!("{} → {}", tt.station(tt.origin)?.name, tt.station(tt.destination)?.name);
         let departing = format!(
             "departing {}–{}{}",
             clock(time, None),
-            clock(time + window, None),
+            clock(depart_until, None),
             if args.planned { " · planned times, delays ignored" } else { "" }
         );
         writeln!(out, "{title}, {departing}")?;
         writeln!(
             out,
-            "timetable: {} stations, {} trains · {} · {} Transitous requests{}{}",
+            "timetable: {} stations, {} trains · {} · {requests}",
             tt.stations.len(),
             tt.trips.len(),
-            if rough.hubs.is_empty() {
+            if hubs.is_empty() {
                 "no change stations in the rough routes".to_owned()
             } else {
-                format!("rough routes via {}", rough.hubs.join(", "))
+                format!("rough routes via {}", hubs.join(", "))
             },
-            motis.request_count(),
-            efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
-            db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
         )?;
         if !built.discovered.is_empty() {
             writeln!(out, "stations found via DB train paths: {}", built.discovered.join(", "))?;
@@ -235,7 +338,7 @@ pub async fn run(
         let summary = format!(
             "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups{}",
             duration(fastest),
-            duration(fastest + limits.extra_time),
+            duration(checked::sum(fastest, limits.extra_time)),
             limits.max_changes,
             total,
             groups.len(),
@@ -252,8 +355,8 @@ pub async fn run(
             writeln!(
                 out,
                 "■ {} … {}  ({})",
-                tt.trips[group.first].label,
-                tt.trips[group.last].label,
+                tt.trip(group.first)?.label,
+                tt.trip(group.last)?.label,
                 group.chains.len()
             )?;
             let shown = if args.per_group == 0 { group.chains.len() } else { args.per_group };
@@ -261,24 +364,25 @@ pub async fn run(
                 if args.detail {
                     write_detail(&mut out, tt, chain, &mut fallbacks, min_transfer)?;
                 } else {
-                    let route = route(tt, chain, min_transfer, &HashSet::new());
-                    writeln!(out, "  {}   {route}", header(tt, chain, min_transfer))?;
+                    let route = route(tt, chain, min_transfer, &HashSet::new())?;
+                    writeln!(out, "  {}   {route}", header(tt, chain, min_transfer)?)?;
                 }
             }
             if group.chains.len() > shown {
-                writeln!(out, "    … {} more", group.chains.len() - shown)?;
+                writeln!(out, "    … {} more", group.chains.len().saturating_sub(shown))?;
             }
             writeln!(out)?;
         }
         let times = if args.planned { "planned times" } else { "live data where available" };
         writeln!(out, "Data: Transitous, https://transitous.org/sources/ — {times}.")?;
-        if db.is_some() {
+        if with_db {
             writeln!(out, "      Deutsche Bahn Timetables API.")?;
         }
 
         let html = match plot {
             Some(PlotPage { back }) => {
-                events(Event::Stage("Drawing the plot"));
+                // Only fails once `run` has stopped listening.
+                stages.send("Drawing the plot").ok();
                 let plot = plot::Plot {
                     title,
                     subtitle: format!("{departing} · {summary}{completeness}"),
@@ -292,7 +396,7 @@ pub async fn run(
             None => None,
         };
         Ok(Outcome { text: out, html })
-    })
+    }
 }
 
 fn parse_time(at: Option<&str>) -> Result<DateTime<Utc>> {
@@ -326,20 +430,22 @@ fn write_detail(
     chain: &Chain,
     fallbacks: &mut Fallbacks<'_>,
     min_transfer: TimeDelta,
-) -> std::fmt::Result {
-    writeln!(out, "  {}", header(tt, chain, min_transfer))?;
-    let transfers = chain.transfers(tt);
-    let mut ride = 0;
+) -> Result<()> {
+    writeln!(out, "  {}", header(tt, chain, min_transfer)?)?;
+    let transfers = chain.transfers(tt)?;
+    let arrival = chain.arrival(tt)?;
+    let destination_tz = tt.station(tt.destination)?.tz.as_deref();
+    let mut ride = 0_usize;
     for step in &chain.steps {
         match *step {
             Step::Walk { footpath } => {
-                let fp = &tt.footpaths[footpath];
-                writeln!(out, "      walk {} to {}", duration(fp.duration), tt.stations[fp.to].name)?;
+                let fp = tt.footpath(footpath)?;
+                writeln!(out, "      walk {} to {}", duration(fp.duration), tt.station(fp.to)?.name)?;
             }
             Step::Ride { trip, board, alight } => {
-                let t = &tt.trips[trip];
-                let (b, a) = (&t.calls[board], &t.calls[alight]);
-                let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
+                let t = tt.trip(trip)?;
+                let (b, a) = (tt.call(trip, board)?, tt.call(trip, alight)?);
+                let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
                 let platform = |p: &Option<String>| p.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default();
                 let source = if b.from_db && a.from_db {
                     "DB"
@@ -362,18 +468,17 @@ fn write_detail(
                 )?;
                 if let Some(tr) = transfers.get(ride) {
                     writeln!(out, "      ↳ {} buffer · if missed:", buffer(tr.slack, min_transfer))?;
-                    let arrival = chain.arrival(tt);
-                    let options = fallbacks.for_change(chain, ride);
+                    let options = fallbacks.for_change(chain, ride)?;
                     for f in &options {
-                        let late = (f.lands - arrival).max(TimeDelta::zero());
-                        let tz = tt.stations[tt.destination].tz.as_deref();
-                        writeln!(out, "          {} · arrive {} (+{})", f.line, clock(f.lands, tz), duration(late))?;
+                        let late = f.lands.signed_duration_since(arrival).max(TimeDelta::zero());
+                        let lands = clock(f.lands, destination_tz);
+                        writeln!(out, "          {} · arrive {lands} (+{})", f.line, duration(late))?;
                     }
                     if options.is_empty() {
                         writeln!(out, "          nothing within {}", duration(fallback::WINDOW))?;
                     }
                 }
-                ride += 1;
+                ride = ride.saturating_add(1);
             }
         }
     }

@@ -151,7 +151,9 @@ impl Efa {
             .await;
             match result {
                 Ok(text) => return Ok(text),
-                Err(_) if attempt < ATTEMPTS => tokio::time::sleep(BACKOFF * (1 << attempt)).await,
+                Err(_) if attempt < ATTEMPTS => {
+                    tokio::time::sleep(BACKOFF.saturating_mul(2_u32.saturating_pow(attempt))).await;
+                }
                 Err(e) => return Err(e).with_context(|| format!("GET {url}")),
             }
         }
@@ -181,8 +183,8 @@ fn place(s: &EfaStop) -> Place {
         parent_id: None,
         tz: None,
         track: s.properties.as_ref().and_then(|p| p.platform.clone()).filter(|p| !p.is_empty()),
-        lat: coord.map(|c| c[0]),
-        lon: coord.map(|c| c[1]),
+        lat: coord.and_then(|c| c.first().copied()),
+        lon: coord.and_then(|c| c.get(1).copied()),
         arrival: s.arrival_time_estimated.or(s.arrival_time_planned),
         departure: s.departure_time_estimated.or(s.departure_time_planned),
         scheduled_arrival: s.arrival_time_planned,
@@ -199,8 +201,9 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         let transport = leg.transportation.as_ref();
         let Some(mode) = mode(transport.and_then(|t| t.product.as_ref()?.class).unwrap_or(99)) else {
             // A walk: EFA gives its duration, times follow from the legs around it.
+            // A duration beyond representable time makes the journey unusable.
             let start = from.departure.or(clock)?;
-            let end = start + TimeDelta::seconds(leg.duration.unwrap_or(0));
+            let end = start.checked_add_signed(TimeDelta::try_seconds(leg.duration.unwrap_or(0))?)?;
             legs.push(walk(from, to, start, end));
             clock = Some(end);
             continue;
@@ -214,8 +217,8 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         let run = properties.and_then(|p| p.trip_code).unwrap_or_default();
         let day = from.scheduled_departure.unwrap_or(start).with_timezone(&Berlin).format("%Y%m%d");
         let stops = &leg.stop_sequence;
-        let intermediate =
-            if stops.len() > 2 { stops[1..stops.len() - 1].iter().map(place).collect() } else { Vec::new() };
+        let inner = stops.get(1..stops.len().saturating_sub(1)).unwrap_or_default();
+        let intermediate = inner.iter().map(place).collect();
         legs.push(Leg {
             mode: mode.to_owned(),
             from,

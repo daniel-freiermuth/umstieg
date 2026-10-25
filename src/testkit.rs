@@ -7,6 +7,8 @@
 //! ```
 //! Times are on 2026-10-24 in UTC; "09:02+5" is planned 09:02, actual 09:07.
 
+#![expect(clippy::arithmetic_side_effects, reason = "fixture times")]
+
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 
 use crate::timetable::{Call, Footpath, Station, Time, Timetable, Trip};

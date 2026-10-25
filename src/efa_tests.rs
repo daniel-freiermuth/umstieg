@@ -1,3 +1,5 @@
+#![expect(clippy::arithmetic_side_effects, reason = "fixture times")]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -154,6 +156,17 @@ fn journeys_without_usable_transit_are_dropped() {
     ];
     for (what, text) in cases {
         assert!(itineraries(&text).is_empty(), "{what}");
+    }
+}
+
+#[test]
+fn walks_too_long_for_any_date_drop_the_journey() {
+    for duration in [i64::MAX, 1_000_000_000_000_000] {
+        let text = journey(&[
+            (0, Some("2026-10-24T08:00:00Z"), Some("2026-10-24T08:30:00Z"), json!({})),
+            (100, None, None, json!({ "duration": duration })),
+        ]);
+        assert!(itineraries(&text).is_empty(), "{duration} s");
     }
 }
 

@@ -6,11 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::checked;
 use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::Fallbacks;
 use crate::page;
@@ -62,12 +63,14 @@ impl Metric {
 fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
     let tt = net.tt;
     let minutes = |d: &Option<TimeDelta>| d.map(|d| d.as_seconds_f64() / 60.0);
-    match metric {
+    let geometric: fn(f64, f64, f64) -> f64 = match metric {
         Metric::RemainingTime => return Ok(net.lower_bound.iter().map(minutes).collect()),
-        Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt).iter().map(minutes).collect()),
-        _ => {}
-    }
-    let (Some(start), Some(goal)) = (tt.stations[tt.origin].position, tt.stations[tt.destination].position) else {
+        Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt)?.iter().map(minutes).collect()),
+        Metric::Hyperbolic => |a, b, total| f64::midpoint(b - a, total),
+        Metric::Axis => |a, b, total| total - f64::mul_add(b, -b, f64::mul_add(a, a, total * total)) / (2.0 * total),
+        Metric::Ratio => |a, b, _| 100.0 * b / (a + b).max(f64::EPSILON),
+    };
+    let (Some(start), Some(goal)) = (tt.station(tt.origin)?.position, tt.station(tt.destination)?.position) else {
         bail!("--metric {metric:?} needs coordinates of origin and destination");
     };
     let km = |a, b| meters(a, b) / 1000.0;
@@ -77,13 +80,7 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
         .iter()
         .map(|s| {
             let p = s.position?;
-            let (a, b) = (km(p, start), km(p, goal));
-            Some(match metric {
-                Metric::RemainingTime | Metric::FastestReal => unreachable!("handled above"),
-                Metric::Hyperbolic => f64::midpoint(b - a, total),
-                Metric::Axis => total - f64::mul_add(b, -b, f64::mul_add(a, a, total * total)) / (2.0 * total),
-                Metric::Ratio => 100.0 * b / (a + b).max(f64::EPSILON),
-            })
+            Some(geometric(km(p, start), km(p, goal), total))
         })
         .collect())
 }
@@ -170,7 +167,7 @@ struct Builder<'a> {
 }
 
 const fn point(station: usize, t: DateTime<Utc>) -> (i64, usize) {
-    (t.timestamp() / 60, station)
+    (t.timestamp().div_euclid(60), station)
 }
 
 impl Builder<'_> {
@@ -178,42 +175,48 @@ impl Builder<'_> {
         if let Some(&i) = self.index.get(&piece) {
             return i;
         }
+        let i = self.pieces.len();
         self.pieces.push(piece.clone());
-        self.index.insert(piece, self.pieces.len() - 1);
-        self.pieces.len() - 1
+        self.index.insert(piece, i);
+        i
     }
 
     /// Pieces of `chain`, up to boarding ride `until` (exclusive) if given.
     /// `start`: where and from when the chain's first ride is waited for (a
     /// fallback, from the missed departure on).
-    #[expect(clippy::expect_used, reason = "chains only board calls that depart and alight at calls that arrive")]
-    fn pieces(&mut self, chain: &Chain, until: Option<usize>, start: Option<(usize, DateTime<Utc>)>) -> Vec<usize> {
+    fn pieces(
+        &mut self,
+        chain: &Chain,
+        until: Option<usize>,
+        start: Option<(usize, DateTime<Utc>)>,
+    ) -> Result<Vec<usize>> {
         let tt = self.tt;
         let mut out = Vec::new();
         let mut here = start;
-        let mut ride = 0;
+        let mut ride = 0_usize;
         for step in &chain.steps {
             match *step {
                 Step::Walk { footpath } => {
-                    let fp = &tt.footpaths[footpath];
+                    let fp = tt.footpath(footpath)?;
                     let Some((from, t)) = here else { continue };
-                    let to_time = t + fp.duration;
+                    let to_time = checked::later(t, fp.duration, "walk")?;
                     let pts = vec![point(from, t), point(fp.to, to_time)];
-                    let info = format!("walk {} to {}", text::duration(fp.duration), tt.stations[fp.to].name);
+                    let info = format!("walk {} to {}", text::duration(fp.duration), tt.station(fp.to)?.name);
                     out.push(self.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
                     self.used.insert(fp.to);
                     here = Some((fp.to, to_time));
                 }
                 Step::Ride { trip, board, alight } => {
-                    let t = &tt.trips[trip];
-                    let (b, a) = (&t.calls[board], &t.calls[alight]);
-                    let departure = b.departure_time().expect("boarded calls depart");
+                    let t = tt.trip(trip)?;
+                    let (b, a) = (tt.call(trip, board)?, tt.call(trip, alight)?);
+                    let departure =
+                        b.departure_time().with_context(|| format!("{} boarded where it doesn't depart", t.label))?;
                     if let Some((_, since)) = here {
-                        let wait = departure - since;
+                        let wait = departure.signed_duration_since(since);
                         // A missed change (`--missed-by`) leaves before the arrival: drawn
                         // forward over the gap, red like other too-short changes.
                         let pts = vec![point(b.station, since.min(departure)), point(b.station, since.max(departure))];
-                        let station = &tt.stations[b.station].name;
+                        let station = &tt.station(b.station)?.name;
                         // Waiting after a missed train is no change that could be too short.
                         let (info, warn) = if ride == 0 && start.is_some() {
                             (format!("{} at {station} after the missed train", text::duration(wait)), false)
@@ -230,7 +233,7 @@ impl Builder<'_> {
                         break;
                     }
                     let mut pts = Vec::new();
-                    for (k, call) in t.calls.iter().enumerate().take(alight + 1).skip(board) {
+                    for (k, call) in t.calls.iter().enumerate().take(alight.saturating_add(1)).skip(board) {
                         if k > board {
                             pts.extend(call.arrival_time().map(|at| point(call.station, at)));
                         }
@@ -238,7 +241,7 @@ impl Builder<'_> {
                             pts.extend(call.departure_time().map(|at| point(call.station, at)));
                         }
                     }
-                    let (bs, as_) = (&tt.stations[b.station], &tt.stations[a.station]);
+                    let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
                     let info = format!(
                         "{}{} · {} {} → {} {}",
                         t.label,
@@ -250,12 +253,14 @@ impl Builder<'_> {
                     );
                     out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts }));
                     self.used.insert(a.station);
-                    here = Some((a.station, a.arrival_time().expect("alighted calls arrive")));
-                    ride += 1;
+                    let arrival =
+                        a.arrival_time().with_context(|| format!("{} alighted where it doesn't arrive", t.label))?;
+                    here = Some((a.station, arrival));
+                    ride = ride.saturating_add(1);
                 }
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -296,42 +301,44 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         pieces: Vec::new(),
         index: HashMap::new(),
     };
-    let destination_tz = tt.stations[tt.destination].tz.as_deref();
+    let destination_tz = tt.station(tt.destination)?.tz.as_deref();
 
     let mut fallback_out: Vec<FallbackOut> = Vec::new();
     let mut fallback_index: HashMap<(usize, DateTime<Utc>, String), usize> = HashMap::new();
     let mut chains = Vec::new();
     for (g, group) in plot.groups.iter().enumerate() {
         for chain in &group.chains {
+            let arrival = chain.arrival(tt)?;
             let mut refs = Vec::new();
-            for (change, transfer) in chain.transfers(tt).iter().enumerate() {
-                for fallback in fallbacks.for_change(chain, change) {
+            for (change, transfer) in chain.transfers(tt)?.iter().enumerate() {
+                for fallback in fallbacks.for_change(chain, change)? {
                     let key = (transfer.station, transfer.departure, fallback.line.clone());
                     let i = if let Some(&i) = fallback_index.get(&key) {
                         i
                     } else {
+                        let i = fallback_out.len();
                         fallback_out.push(FallbackOut {
-                            at: tt.stations[transfer.station].name.clone(),
+                            at: tt.station(transfer.station)?.name.clone(),
                             pieces: builder.pieces(
                                 &fallback.chain,
                                 fallback.rejoins_at,
                                 Some((transfer.station, transfer.departure)),
-                            ),
+                            )?,
                             line: fallback.line,
                         });
-                        fallback_index.insert(key, fallback_out.len() - 1);
-                        fallback_out.len() - 1
+                        fallback_index.insert(key, i);
+                        i
                     };
-                    let late = (fallback.lands - chain.arrival(tt)).max(TimeDelta::zero());
+                    let late = fallback.lands.signed_duration_since(arrival).max(TimeDelta::zero());
                     let arrive = format!("{} (+{})", text::clock(fallback.lands, destination_tz), text::duration(late));
                     refs.push((i, arrive));
                 }
             }
             chains.push(ChainOut {
                 group: g,
-                header: text::header(tt, chain, plot.min_transfer),
-                route: text::route(tt, chain, plot.min_transfer, &HashSet::new()),
-                pieces: builder.pieces(chain, None, None),
+                header: text::header(tt, chain, plot.min_transfer)?,
+                route: text::route(tt, chain, plot.min_transfer, &HashSet::new())?,
+                pieces: builder.pieces(chain, None, None)?,
                 fallbacks: refs,
             });
         }
@@ -344,7 +351,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         title: plot.title.clone(),
         subtitle: plot.subtitle.clone(),
         back: plot.back.clone(),
-        tz: tt.stations[tt.origin].tz.clone().unwrap_or_else(|| "Europe/Berlin".to_owned()),
+        tz: tt.station(tt.origin)?.tz.clone().unwrap_or_else(|| "Europe/Berlin".to_owned()),
         metrics,
         metric: shown,
         stations,
@@ -357,11 +364,13 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         groups: plot
             .groups
             .iter()
-            .map(|g| GroupOut {
-                label: format!("{} … {}", tt.trips[g.first].label, tt.trips[g.last].label),
-                count: g.chains.len(),
+            .map(|g| {
+                Ok(GroupOut {
+                    label: format!("{} … {}", tt.trip(g.first)?.label, tt.trip(g.last)?.label),
+                    count: g.chains.len(),
+                })
             })
-            .collect(),
+            .collect::<Result<_>>()?,
         pieces: builder.pieces,
         fallbacks: fallback_out,
         chains,

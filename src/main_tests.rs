@@ -60,3 +60,30 @@ fn search_options_are_rejected_with_serve() {
     assert!(Cli::try_parse_from(["umstieg", "serve", "--window", "30"]).is_err());
     assert!(Cli::try_parse_from(["umstieg", "A", "B", "serve"]).is_err());
 }
+
+#[test]
+fn out_of_range_options_are_rejected_instead_of_overflowing() {
+    let cases = [
+        ("--window", "99999999999999"),
+        ("--window", "-1"),
+        ("--window", "10081"),
+        ("--extra-hours", "1e300"),
+        ("--extra-hours", "NaN"),
+        ("--extra-hours", "inf"),
+        ("--extra-hours", "-1"),
+        ("--min-transfer", "99999999999999"),
+        ("--min-transfer", "-5"),
+        ("--missed-by", "99999999999999"),
+        ("--max-changes", "101"),
+        ("--max-nodes", "-1"),
+    ];
+    for (option, value) in cases {
+        let Err(error) = Cli::try_parse_from(["umstieg", "A", "B", &format!("{option}={value}")]) else {
+            panic!("{option} {value} accepted");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation, "{option} {value}: {error}");
+    }
+    let extremes = ["--window=10080", "--extra-hours=168", "--min-transfer=0", "--missed-by=0", "--max-changes=100"];
+    let search = Cli::try_parse_from(["umstieg", "A", "B"].into_iter().chain(extremes)).unwrap().search.unwrap();
+    assert_eq!((search.window, search.extra_hours, search.max_changes), (10080, 168.0, 100));
+}

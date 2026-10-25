@@ -649,9 +649,9 @@ async fn concurrent_lookups_leave_one_intact_cache_line_each() {
     let clients = [Arc::new(client(&fake).await), Arc::new(client(&fake).await)];
     let lookups: Vec<_> = names
         .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let (db, name) = (clients[i % 2].clone(), name.clone());
+        .zip(clients.iter().cycle())
+        .map(|(name, db)| {
+            let (db, name) = (db.clone(), name.clone());
             tokio::spawn(async move { db.resolve(&name, None).await })
         })
         .collect();

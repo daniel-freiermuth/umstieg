@@ -46,7 +46,7 @@ fn summary(tt: &Timetable, f: &Fallback) -> (String, DateTime<Utc>) {
     let parts: Vec<String> = rides
         .iter()
         .enumerate()
-        .take(f.rejoins_at.map_or(rides.len(), |k| k + 1))
+        .take(f.rejoins_at.map_or(rides.len(), |k| k.saturating_add(1)))
         .map(|(i, &(trip, board, alight))| {
             let label = &tt.trips[trip].label;
             if Some(i) == f.rejoins_at {
@@ -72,10 +72,11 @@ fn expect(rows: &[(&str, &str)]) -> Vec<(String, DateTime<Utc>)> {
 #[test]
 fn candidates_leave_after_the_missed_train_within_the_window() {
     let tt = hamburg();
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
     let hamburg = tt.stations.iter().position(|s| s.name == "Hamburg").unwrap();
-    let mut got: Vec<String> = fallbacks.candidates(hamburg, at("12:00")).iter().map(|c| show(&tt, &c.steps)).collect();
+    let mut got: Vec<String> =
+        fallbacks.candidates(hamburg, at("12:00")).unwrap().iter().map(|c| show(&tt, &c.steps)).collect();
     got.sort();
     let mut expected = vec![
         "RE 7 Hamburg-Schleswig / RJ 384 Schleswig-København",
@@ -93,11 +94,11 @@ fn candidates_leave_after_the_missed_train_within_the_window() {
 #[test]
 fn fallbacks_rank_by_landing_and_end_back_on_plan() {
     let tt = hamburg();
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
     let p = plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
     assert_eq!(
-        summaries(&tt, &fallbacks.for_change(&p, 0)),
+        summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
         expect(&[
             // 32 min at Schleswig beats 10 at Altona.
             ("RE 7 Hamburg-Schleswig / RJ 384 from Schleswig (back on plan)", "17:00"),
@@ -112,14 +113,14 @@ fn fallbacks_rank_by_landing_and_end_back_on_plan() {
 #[test]
 fn rejoining_counts_only_before_the_plan_leaves_the_train() {
     let tt = hamburg();
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
     let p = plan(
         &tt,
         &[("IC 5", "Kiel", "Hamburg"), ("RJ 384", "Hamburg", "Schleswig"), ("RE 9", "Schleswig", "København")],
     );
     assert_eq!(
-        summaries(&tt, &fallbacks.for_change(&p, 0)),
+        summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
         expect(&[
             ("RE 7 Hamburg-Schleswig / RJ 384 Schleswig-København", "17:00"),
             ("RE 7 Hamburg-Schleswig / RE 9 from Schleswig (back on plan)", "17:30"),
@@ -139,11 +140,11 @@ fn catching_a_plan_train_after_the_plan_left_it_lands_on_its_own() {
     b.trip("RB 4", &[("B", "", "09:10"), ("E", "09:45", "")]);
     b.trip("RB 5", &[("B", "", "09:05"), ("C", "09:20", "")]);
     let tt = b.build("A", "D");
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
     let p = plan(&tt, &[("RE 1", "A", "B"), ("ICE 2", "B", "C"), ("ICE 3", "C", "D")]);
     assert_eq!(
-        summaries(&tt, &fallbacks.for_change(&p, 0)),
+        summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
         expect(&[
             ("RB 5 B-C / ICE 3 from C (back on plan)", "10:30"),
             ("RB 4 B-E / ICE 2 E-D", "10:40"), // 16 min at E
@@ -157,7 +158,7 @@ fn catching_a_plan_train_after_the_plan_left_it_lands_on_its_own() {
 #[test]
 fn cached_candidates_serve_each_plan_like_fresh_ones() {
     let tt = hamburg();
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let plans = [
         plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]),
         plan(
@@ -170,8 +171,8 @@ fn cached_candidates_serve_each_plan_like_fresh_ones() {
     let mut shared = Fallbacks::new(&net, MIN_TRANSFER);
     let mut seen = Vec::new();
     for p in plans.iter().chain(&plans) {
-        let got = summaries(&tt, &shared.for_change(p, 0));
-        assert_eq!(got, summaries(&tt, &Fallbacks::new(&net, MIN_TRANSFER).for_change(p, 0)));
+        let got = summaries(&tt, &shared.for_change(p, 0).unwrap());
+        assert_eq!(got, summaries(&tt, &Fallbacks::new(&net, MIN_TRANSFER).for_change(p, 0).unwrap()));
         seen.push(got);
     }
     assert!(seen[0] != seen[1] && seen[0] != seen[2] && seen[1] != seen[2], "{seen:#?}");
@@ -185,9 +186,21 @@ fn nothing_within_the_window_means_no_fallbacks() {
     b.trip("RE 2", &[("B", "", "09:00"), ("D", "09:30", "")]);
     b.trip("RE 3", &[("B", "", "11:02"), ("D", "11:30", "")]); // 2h01 after the missed one
     let tt = b.build("A", "D");
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let p = plan(&tt, &[("RE 1", "A", "B"), ("RE 2", "B", "D")]);
-    assert!(Fallbacks::new(&net, MIN_TRANSFER).for_change(&p, 0).is_empty());
+    assert!(Fallbacks::new(&net, MIN_TRANSFER).for_change(&p, 0).unwrap().is_empty());
+}
+
+#[test]
+fn a_change_the_plan_does_not_have_is_an_error() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:50", "")]);
+    b.trip("RE 2", &[("B", "", "09:00"), ("D", "09:30", "")]);
+    let tt = b.build("A", "D");
+    let net = Network::new(&tt).unwrap();
+    let p = plan(&tt, &[("RE 1", "A", "B"), ("RE 2", "B", "D")]);
+    let err = Fallbacks::new(&net, MIN_TRANSFER).for_change(&p, 1).err().unwrap().to_string();
+    assert_eq!(err, "the connection has no change 1");
 }
 
 #[test]
@@ -200,7 +213,7 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt);
+    let net = Network::new(&tt).unwrap();
     let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
     let chain = Chain {
         steps: vec![
@@ -210,6 +223,6 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
         ],
     };
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
-    let found: Vec<_> = fallbacks.for_change(&chain, 0).iter().map(|f| summary(&tt, f)).collect();
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
     assert_eq!(found, [("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
 }

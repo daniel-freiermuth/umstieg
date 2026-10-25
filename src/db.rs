@@ -225,9 +225,9 @@ impl Db {
     async fn get(&self, path: &str) -> Result<Option<String>> {
         let _permit = self.permits.acquire().await?;
         let url = format!("{}{path}", self.base);
-        let mut attempt = 0;
+        let mut attempt: u32 = 0;
         loop {
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
             self.pace().await;
             self.requests.fetch_add(1, Ordering::Relaxed);
             let sent = self
@@ -243,7 +243,7 @@ impl Db {
                 Err(e) => e.is_connect() || e.is_request() || e.is_timeout(),
             };
             if transient && attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(BACKOFF * (1 << attempt)).await;
+                tokio::time::sleep(BACKOFF.saturating_mul(2_u32.saturating_pow(attempt))).await;
                 continue;
             }
             let resp = sent.with_context(|| format!("GET {url}"))?;

@@ -17,6 +17,8 @@
 //! arrival only Transitous knows. Fictional names and EVA numbers keep the
 //! per-process DB caches apart from other tests.
 
+#![expect(clippy::arithmetic_side_effects, reason = "fixture times")]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -882,6 +884,38 @@ async fn unknown_station_fails_the_search() {
     assert!(format!("{error:#}").starts_with("no stop named like \"Atlantis\" found"), "{error:#}");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn search_runs_on_a_current_thread_runtime() {
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::start(Efa::Working).await;
+    let stages = Mutex::new(Vec::new());
+    let events = |event: Event<'_>| {
+        if let Event::Stage(s) = event {
+            stages.lock().unwrap().push(s.to_owned());
+        }
+    };
+    let plot = Some(PlotPage { back: None });
+    let outcome = search::run(&args(&[]), &stand_in.endpoints(), Some(credentials()), plot, &events).await.unwrap();
+    assert!(summary(&outcome.text).starts_with("fastest 2h01 "), "{}", outcome.text);
+    assert!(outcome.html.is_some());
+    let stages = stages.into_inner().unwrap();
+    assert_eq!(stages.iter().rev().take(2).collect::<Vec<_>>(), ["Drawing the plot", "Enumerating connections"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn out_of_range_limits_set_in_code_fail_the_search_before_asking() {
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::start(Efa::Working).await;
+    let mut window = args(&[]);
+    window.window = i64::MAX;
+    let mut extra = args(&[]);
+    extra.extra_hours = f64::INFINITY;
+    for (args, option) in [(window, "--window"), (extra, "--extra-hours")] {
+        let error = search::run(&args, &stand_in.endpoints(), None, None, &|_| {}).await.err().expect("out of range");
+        assert!(format!("{error:#}").starts_with(option), "{error:#}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn plot_embeds_every_connection_of_the_report() {
     let _serial = SERIAL.lock().await;
@@ -934,7 +968,7 @@ async fn plot_embeds_every_connection_of_the_report() {
             .map(|i| &pieces[usize::try_from(i.as_u64().unwrap()).unwrap()])
             .collect()
     };
-    let minute = |hhmm: &str| json!(berlin(hhmm).timestamp() / 60);
+    let minute = |hhmm: &str| json!(berlin(hhmm).timestamp().div_euclid(60));
     let point = |p: &Value| (p[0].clone(), names[usize::try_from(p[1].as_u64().unwrap()).unwrap()]);
 
     // Tram, walk, wait, ICE: the walk runs from the tram stop to the station in 8 minutes.

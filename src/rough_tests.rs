@@ -1,3 +1,5 @@
+#![expect(clippy::arithmetic_side_effects, reason = "fixture times")]
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -70,6 +72,16 @@ fn departing_keeps_itineraries_whose_first_train_leaves_in_the_window() {
         let kept_now = !departing(vec![itinerary(legs)], at("08:00"), TimeDelta::hours(2)).is_empty();
         assert_eq!(kept_now, kept, "{what}");
     }
+}
+
+#[test]
+fn windows_reaching_past_representable_time_end_there() {
+    let o = ("o", "Origin");
+    let d = ("d", "Dest");
+    let kept = departing(vec![itinerary(vec![leg(Some("t"), o, d, "08:00", "09:00")])], at("08:00"), TimeDelta::MAX);
+    assert_eq!(kept.len(), 1);
+    let end = DateTime::<Utc>::MAX_UTC;
+    assert_eq!(starts(end - TimeDelta::minutes(90), TimeDelta::MAX, SLICE).len(), 2);
 }
 
 // ---- hubs ----

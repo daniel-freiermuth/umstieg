@@ -106,18 +106,18 @@ fn header_shows_times_in_origin_and_destination_zones_and_the_smallest_buffer() 
 
     let two = Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1), ride(s, 0, 1)] };
     // Buffers 7m and 4m: the smaller, flagged. Arrival 21:06 UTC is 22:06 in London.
-    assert_eq!(header(&tt, &two, MIN), "06:39 → 22:06  14h27  2×  min 4m⚠");
+    assert_eq!(header(&tt, &two, MIN).unwrap(), "06:39 → 22:06  14h27  2×  min 4m⚠");
 
     tt.destination = tt.stations.iter().position(|s| s.name == "B").unwrap();
     let direct = Chain { steps: vec![ride(ice, 0, 1)] };
-    assert_eq!(header(&tt, &direct, MIN), "06:39 → 08:03  1h24  0×  direct");
+    assert_eq!(header(&tt, &direct, MIN).unwrap(), "06:39 → 08:03  1h24  0×  direct");
 
     let mut b = Builder::new();
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00+8", "")]);
     let re = b.trip("RE 2", &[("B", "", "09:05"), ("C", "10:00", "")]);
     let tt = in_utc(b.build("A", "C"));
     let missed = Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] };
-    assert_eq!(header(&tt, &missed, MIN), "08:00 → 10:00  2h00  1×  min missed 3m✗");
+    assert_eq!(header(&tt, &missed, MIN).unwrap(), "08:00 → 10:00  2h00  1×  min missed 3m✗");
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn header_arrival_includes_a_final_walk() {
     b.walk("B", "C", 10);
     let tt = in_utc(b.build("A", "C"));
     let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }] };
-    assert_eq!(header(&tt, &chain, MIN), "08:00 → 09:10  1h10  0×  direct");
+    assert_eq!(header(&tt, &chain, MIN).unwrap(), "08:00 → 09:10  1h10  0×  direct");
 }
 
 #[test]
@@ -141,11 +141,11 @@ fn route_lists_trains_changes_and_buffers() {
     let none = HashSet::new();
 
     let direct = Chain { steps: vec![ride(ice, 0, 2)] };
-    assert_eq!(route(&tt, &direct, MIN, &none), "08:00 ICE 1 → 10:02 (+2) C");
+    assert_eq!(route(&tt, &direct, MIN, &none).unwrap(), "08:00 ICE 1 → 10:02 (+2) C");
 
     let chain = Chain { steps: vec![ride(ice, 0, 2), ride(re, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] };
     assert_eq!(
-        route(&tt, &chain, MIN, &none),
+        route(&tt, &chain, MIN, &none).unwrap(),
         // Same station: not repeated; another station after a walk: named.
         "08:00 ICE 1 → 10:02 (+2) C ‖3m⚠‖ 10:05 RE 2 → 10:40 D ‖6m walk 4m‖ 10:50 D2 S 3 → 11:00 E"
     );
@@ -159,11 +159,17 @@ fn route_names_the_change_station_only_when_its_name_differs() {
     b.walk("B", "B'", 2);
     let mut tt = in_utc(b.build("A", "C"));
     let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(re, 0, 1)] };
-    assert_eq!(route(&tt, &chain, MIN, &HashSet::new()), "08:00 ICE 1 → 09:00 B ‖8m walk 2m‖ 09:10 B' RE 2 → 10:00 C");
+    assert_eq!(
+        route(&tt, &chain, MIN, &HashSet::new()).unwrap(),
+        "08:00 ICE 1 → 09:00 B ‖8m walk 2m‖ 09:10 B' RE 2 → 10:00 C"
+    );
     // Two feeds' entries of one station: same name, nothing to tell apart.
     let b2 = tt.stations.iter().position(|s| s.name == "B'").unwrap();
     tt.stations[b2].name = "B".to_owned();
-    assert_eq!(route(&tt, &chain, MIN, &HashSet::new()), "08:00 ICE 1 → 09:00 B ‖8m walk 2m‖ 09:10 RE 2 → 10:00 C");
+    assert_eq!(
+        route(&tt, &chain, MIN, &HashSet::new()).unwrap(),
+        "08:00 ICE 1 → 09:00 B ‖8m walk 2m‖ 09:10 RE 2 → 10:00 C"
+    );
 }
 
 #[test]
@@ -176,13 +182,13 @@ fn route_stops_at_the_first_train_of_the_plan() {
     let chain = Chain { steps: vec![ride(s1, 0, 1), ride(rj, 0, 1), ride(ic, 0, 1)] };
 
     let rejoin = HashSet::from([rj]);
-    assert_eq!(route(&tt, &chain, MIN, &rejoin), "12:42 S1 → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan)");
+    assert_eq!(route(&tt, &chain, MIN, &rejoin).unwrap(), "12:42 S1 → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan)");
     // The first rejoining train counts, even if a later one is in the plan too.
     let rejoin = HashSet::from([rj, ic]);
-    assert_eq!(route(&tt, &chain, MIN, &rejoin), "12:42 S1 → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan)");
+    assert_eq!(route(&tt, &chain, MIN, &rejoin).unwrap(), "12:42 S1 → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan)");
     // Back on plan from the first ride on.
     let rejoin = HashSet::from([s1]);
-    assert_eq!(route(&tt, &chain, MIN, &rejoin), "12:42 S1 (back on plan)");
+    assert_eq!(route(&tt, &chain, MIN, &rejoin).unwrap(), "12:42 S1 (back on plan)");
 }
 
 #[test]
@@ -192,5 +198,5 @@ fn route_ends_with_a_walk_to_the_destination() {
     b.walk("B", "C", 10);
     let tt = in_utc(b.build("A", "C"));
     let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }] };
-    assert_eq!(route(&tt, &chain, MIN, &HashSet::new()), "08:00 ICE 1 → 09:00 B walk 10m to C");
+    assert_eq!(route(&tt, &chain, MIN, &HashSet::new()).unwrap(), "08:00 ICE 1 → 09:00 B walk 10m to C");
 }

@@ -1,11 +1,13 @@
+#![expect(clippy::arithmetic_side_effects, reason = "fixture times")]
+
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
 use super::{
-    Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, db_places, finish, footpaths, from_motis, merge,
-    meters, propagate_delays, whole_seconds,
+    Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, db_places, finish, footpaths, from_motis, hours,
+    merge, meters, propagate_delays, whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Place, Stop};
@@ -314,6 +316,36 @@ fn propagate_delays_carries_the_last_known_delay_forward() {
         assert_eq!(times.iter().map(|t| t.actual).collect::<Vec<_>>(), expected, "{name}");
         assert_eq!(times.iter().map(|t| t.planned).collect::<Vec<_>>(), planned, "{name}: planned untouched");
     }
+}
+
+#[test]
+fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
+    let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
+    let mut calls = vec![
+        Call {
+            station: 0,
+            arrival: None,
+            departure: Some(Time { planned: min, actual: max }),
+            platform: None,
+            cancelled: false,
+            from_db: true,
+        },
+        call(1, false, "09:00", ""),
+    ];
+    propagate_delays(&mut calls);
+    assert_eq!(calls[1].arrival.map(|t| t.actual), Some(max));
+}
+
+#[test]
+fn board_hours_near_the_ends_of_time_stay_in_range() {
+    let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
+    let none: Vec<DateTime<Utc>> = Vec::new();
+    assert_eq!(hours(min, min), none, "no hour before the earliest time");
+    // chrono can't round times past 2262 to the hour: no boards asked for, no panic.
+    assert_eq!(hours(max - TimeDelta::minutes(10), max), none);
+    let far = hours(at("08:10"), max);
+    assert_eq!((far.len(), far.first()), (10, Some(&at("07:00"))), "capped, the end saturates");
+    assert_eq!(hours(at("08:10"), at("08:50")), [at("07:00"), at("08:00"), at("09:00")]);
 }
 
 /// (from DB, arrival?, departure?, minutes since previous stop, dwell, arrival delay, departure delay)

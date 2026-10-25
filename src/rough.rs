@@ -8,6 +8,7 @@ use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
 
+use crate::checked;
 use crate::efa::{self, Efa};
 use crate::motis::{Itinerary, Leg, Motis, Stop};
 
@@ -70,9 +71,11 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
     for itinerary in baseline {
         let transit: Vec<&Leg> = itinerary.legs.iter().filter(|l| l.is_transit()).collect();
         for pair in transit.windows(2) {
-            for place in [&pair[0].to, &pair[1].from] {
+            let [arriving, leaving] = pair else { continue };
+            for place in [&arriving.to, &leaving.from] {
                 if let Some(id) = place.station_id() {
-                    *counts.entry((id, place.name.as_str())).or_default() += 1;
+                    let count = counts.entry((id, place.name.as_str())).or_default();
+                    *count = count.saturating_add(1);
                 }
             }
         }
@@ -88,7 +91,7 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
             hubs.push(stop.clone());
         }
     }
-    let limit = hubs.len() + q.auto_hubs;
+    let limit = hubs.len().saturating_add(q.auto_hubs);
     for ((id, name), _) in ranked {
         if hubs.len() >= limit {
             break;
@@ -116,8 +119,9 @@ async fn via_hub(motis: &Motis, efa: Option<&Efa>, q: &Query, hub: &Stop) -> Res
     // MOTIS's own arrivals at the hub can be later than what the DB-corrected
     // timetable reaches (a delay making its best change infeasible, a stop it
     // doesn't know), so onward trains are collected from before them as well.
-    let from = (lo - EARLIER_ONWARD).max(q.time);
-    let onward = hi - from + ONWARD_WINDOW;
+    let from = checked::earlier_or_min(lo, EARLIER_ONWARD).max(q.time);
+    // A window: saturating only widens it past anything a feed answers.
+    let onward = checked::sum(hi.signed_duration_since(from), ONWARD_WINDOW);
     let second = departing(sliced(motis, &hub.id, &q.destination.id, from, onward).await?, from, onward);
     first.extend(second);
     if let (Some(efa), Some(h), Some(d)) = (efa, &at_hub, &destination) {
@@ -135,12 +139,7 @@ async fn efa_window(
     window: TimeDelta,
     notes: &mut Vec<String>,
 ) -> Vec<Itinerary> {
-    let mut starts = Vec::new();
-    let mut t = time;
-    while t < time + window {
-        starts.push(t);
-        t += EFA_STEP;
-    }
+    let starts = starts(time, window, EFA_STEP);
     let mut found = Vec::new();
     for result in join_all(starts.iter().map(|&t| efa.trips(from, to, t))).await {
         match result {
@@ -157,20 +156,28 @@ async fn efa_window(
 /// the window is asked for in slices: each slice keeps its own best departures.
 /// Answers are unfiltered: MOTIS pads them with later departures.
 async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
-    let mut starts = Vec::new();
-    let mut t = time;
-    while t < time + window {
-        starts.push(t);
-        t += SLICE;
-    }
+    let starts = starts(time, window, SLICE);
     let slices = futures::future::try_join_all(starts.iter().map(|&t| motis.plan(from, to, t, SLICE))).await?;
     Ok(slices.into_iter().flatten().collect())
+}
+
+/// Request times `step` apart across the window. Its end saturates: a
+/// window reaching past representable time just ends there.
+fn starts(time: DateTime<Utc>, window: TimeDelta, step: TimeDelta) -> Vec<DateTime<Utc>> {
+    let end = checked::later_or_max(time, window);
+    let mut starts = Vec::new();
+    let mut t = Some(time);
+    while let Some(at) = t.filter(|&at| at < end) {
+        starts.push(at);
+        t = at.checked_add_signed(step);
+    }
+    starts
 }
 
 /// MOTIS pads short answers with later departures, up to days later when
 /// nothing runs; keep the asked-for window.
 fn departing(itineraries: Vec<Itinerary>, time: DateTime<Utc>, window: TimeDelta) -> Vec<Itinerary> {
-    let span = time..=time + window;
+    let span = time..=checked::later_or_max(time, window);
     itineraries
         .into_iter()
         .filter(|i| i.legs.iter().find(|l| l.is_transit()).is_some_and(|l| span.contains(&l.start_time)))

@@ -32,18 +32,29 @@ pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 # Restriction lints worth having: no panicking shortcuts, no leftovers.
+# Panics are for bugs only, and even then the code fails with an error
+# instead: no unwrap/expect/panic/unreachable, no indexing or slicing, no
+# arithmetic that can overflow or divide by zero.
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
+unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
+panic_in_result_fn = "warn"
+unwrap_in_result = "warn"
+get_unwrap = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+arithmetic_side_effects = "warn"
+integer_division = "warn"
+integer_division_remainder_used = "warn"
+exit = "warn"
 dbg_macro = "warn"
 print_stderr = "warn"
 print_stdout = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
-indexing_slicing = "allow"
-string_slice = "warn"
 as_conversions = "allow"
 undocumented_unsafe_blocks = "warn"
 # A binary: the package metadata lints of `cargo` don't apply.

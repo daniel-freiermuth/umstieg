@@ -73,7 +73,7 @@ impl Leg {
     }
 
     pub fn duration(&self) -> TimeDelta {
-        self.end_time - self.start_time
+        self.end_time.signed_duration_since(self.start_time)
     }
 
     /// "ICE 616", "RE7 (11174)", "RJ (384)", "Skånetrafiken 804 (1114)": feeds
@@ -178,12 +178,13 @@ impl Motis {
     async fn get_text(&self, path: &str, query: &[(&str, String)]) -> Result<String> {
         let _permit = self.permits.acquire().await?;
         let url = format!("{}{}", self.base, path);
-        for attempt in 1.. {
+        for attempt in 1..=MAX_ATTEMPTS {
+            let backoff = BACKOFF.saturating_mul(2_u32.saturating_pow(attempt));
             self.requests.fetch_add(1, Ordering::Relaxed);
             let sent = self.http.get(&url).query(query).send().await;
             let resp = match sent {
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    tokio::time::sleep(BACKOFF * (1 << attempt)).await;
+                    tokio::time::sleep(backoff).await;
                     continue;
                 }
                 other => other.with_context(|| format!("GET {url}"))?,
@@ -194,7 +195,7 @@ impl Motis {
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok()?.parse().ok())
-                    .map_or(BACKOFF * (1 << attempt), std::time::Duration::from_secs);
+                    .map_or(backoff, std::time::Duration::from_secs);
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -207,7 +208,7 @@ impl Motis {
                 Err(_) => {}
             }
         }
-        unreachable!("loop returns or bails")
+        bail!("GET {url}: no attempts left")
     }
 
     /// Resolve free text to a stop whose name contains every place word of the

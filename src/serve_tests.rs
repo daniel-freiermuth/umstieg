@@ -239,6 +239,25 @@ async fn invalid_search_shows_the_form_again_with_the_error() {
     assert_eq!(transitous.requests.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn out_of_range_values_show_the_form_again_with_the_error() {
+    let (api, transitous) = stand_in(json!([])).await;
+    let app = app(&api);
+    for (name, value, option) in [
+        ("window", "99999999999999", "--window"),
+        ("extra_hours", "1e300", "--extra-hours"),
+        ("min_transfer", "-1", "--min-transfer"),
+    ] {
+        let (status, _, html) = get_page(&app, &format!("/search?from=A&to=B&{name}={value}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let spec = embedded_json(&html, "spec");
+        assert!(spec["error"].as_str().unwrap().contains(option), "{}", spec["error"]);
+        assert_eq!(spec["values"][name], value);
+    }
+    assert!(lock(&app.jobs).is_empty());
+    assert_eq!(transitous.requests.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn search_runs_as_a_job_reporting_progress_and_failure() {
     // No stop matches: the search fails right after asking for the stations.
