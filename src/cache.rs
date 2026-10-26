@@ -52,7 +52,8 @@ impl DiskCache {
         Self { dir: root().map(|d| d.join(name)), ttl }
     }
 
-    /// The cached text for `key` if fresh, else `fetch()`'s result, stored.
+    /// The cached text for `key` if fresh, else `fetch()`'s result, stored if
+    /// the cache is writable (a failing cache must not fail the request).
     pub async fn get_or_fetch<F>(&self, key: &str, fetch: F) -> Result<String>
     where
         F: Future<Output = Result<String>>,
@@ -70,8 +71,10 @@ impl DiskCache {
         }
         tracing::debug!(key, "cache miss");
         let text = fetch.await?;
-        if let Some(file) = &file {
-            write_atomic(file, &text)?;
+        if let Some(file) = &file
+            && let Err(e) = write_atomic(file, &text)
+        {
+            tracing::warn!(key, "not cached: {e:#}");
         }
         Ok(text)
     }
