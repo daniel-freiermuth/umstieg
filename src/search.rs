@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
+use anyhow::{Context, Result, anyhow, bail};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono_tz::Tz;
 use futures::future::{join_all, try_join_all};
 
 use crate::enumerate::{self, Chain, Limits, Network, Step};
@@ -39,6 +40,24 @@ fn max_changes(s: &str) -> Result<usize, String> {
     if n <= MAX_CHANGES { Ok(n) } else { Err(format!("{n} is not in 0..={MAX_CHANGES}")) }
 }
 
+/// `--time-zone`: an IANA name such as "Europe/Berlin".
+fn time_zone(s: &str) -> Result<Tz, String> {
+    s.parse().map_err(|_| format!("{s:?} is not a time zone name such as Europe/Berlin"))
+}
+
+/// This machine's time zone: TZ ("Europe/Berlin", ":Europe/Berlin" or a
+/// zoneinfo path) if set, else the system's.
+fn machine_zone() -> Result<Tz> {
+    let name = match std::env::var("TZ") {
+        Ok(tz) if !tz.is_empty() => {
+            let tz = tz.trim_start_matches(':');
+            tz.split_once("zoneinfo/").map_or(tz, |(_, name)| name).to_owned()
+        }
+        _ => iana_time_zone::get_timezone().context("cannot tell this machine's time zone; give --time-zone")?,
+    };
+    time_zone(&name).map_err(|e| anyhow!("this machine's time zone: {e}; give --time-zone"))
+}
+
 /// Stations, time and every limit of a search. The web form is generated from
 /// these arguments, so options added here show up there too.
 #[derive(clap::Args, Clone)]
@@ -48,9 +67,13 @@ pub struct SearchArgs {
     pub from: String,
     /// Destination station: its name; the best-matching stop is taken.
     pub to: String,
-    /// Earliest departure, local time: "HH:MM" (today) or "YYYY-MM-DD HH:MM". Default: now.
+    /// Earliest departure in --time-zone: "HH:MM" (today) or "YYYY-MM-DD HH:MM". Default: now.
     #[arg(long)]
     pub at: Option<String>,
+    /// Time zone of --at and of every time shown, e.g. "Europe/Berlin". Default:
+    /// this machine's (TZ, else the system's).
+    #[arg(long, value_parser = time_zone)]
+    pub time_zone: Option<Tz>,
     /// Departure window in minutes.
     #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub window: i64,
@@ -195,7 +218,11 @@ pub async fn run(
         (true, _) => None,
     };
 
-    let time = parse_time(args.at.as_deref())?;
+    let zone = match args.time_zone {
+        Some(zone) => zone,
+        None => machine_zone()?,
+    };
+    let time = parse_time_in(args.at.as_deref(), zone, Utc::now())?;
     // Options are range-checked by clap; checked again here for searches set up
     // in code, so that none of them can make the time arithmetic overflow.
     let window = checked::minutes(args.window, "--window")?;
@@ -264,6 +291,7 @@ pub async fn run(
         hubs: rough.hubs,
         requests,
         with_db: db.is_some(),
+        zone,
         time,
         depart_until,
         min_transfer,
@@ -365,6 +393,8 @@ struct Report {
     /// "12 Transitous requests, 3 EFA requests, …".
     requests: String,
     with_db: bool,
+    /// Where every time is shown in: --time-zone, else the machine's.
+    zone: Tz,
     time: DateTime<Utc>,
     depart_until: DateTime<Utc>,
     min_transfer: TimeDelta,
@@ -384,6 +414,7 @@ impl Report {
             hubs,
             requests,
             with_db,
+            zone,
             time,
             depart_until,
             min_transfer,
@@ -404,8 +435,8 @@ impl Report {
         let title = format!("{} → {}", tt.station(tt.origin)?.name, tt.station(tt.destination)?.name);
         let departing = format!(
             "departing {}–{}{}",
-            clock(time, None),
-            clock(depart_until, None),
+            clock(time, zone),
+            clock(depart_until, zone),
             if args.planned { " · planned times, delays ignored" } else { "" }
         );
         writeln!(out, "{title}, {departing}")?;
@@ -447,7 +478,7 @@ impl Report {
         );
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 
-        let mut fallbacks = Fallbacks::new(&net, min_transfer);
+        let mut fallbacks = Fallbacks::new(&net, min_transfer, zone);
         for group in &groups {
             writeln!(
                 out,
@@ -459,10 +490,10 @@ impl Report {
             let shown = if args.per_group == 0 { group.chains.len() } else { args.per_group };
             for chain in group.chains.iter().take(shown) {
                 if args.detail {
-                    write_detail(&mut out, tt, chain, &mut fallbacks, min_transfer)?;
+                    write_detail(&mut out, tt, chain, &mut fallbacks, min_transfer, zone)?;
                 } else {
-                    let route = route(tt, chain, min_transfer, &HashSet::new())?;
-                    writeln!(out, "  {}   {route}", header(tt, chain, min_transfer)?)?;
+                    let route = route(tt, chain, min_transfer, &HashSet::new(), zone)?;
+                    writeln!(out, "  {}   {route}", header(tt, chain, min_transfer, zone)?)?;
                 }
             }
             if group.chains.len() > shown {
@@ -486,6 +517,7 @@ impl Report {
                     groups: &groups,
                     metric: args.metric,
                     min_transfer,
+                    zone,
                     back,
                 };
                 Some(plot::render(&net, &mut fallbacks, &plot)?)
@@ -496,15 +528,11 @@ impl Report {
     }
 }
 
-fn parse_time(at: Option<&str>) -> Result<DateTime<Utc>> {
-    parse_time_in(at, &Local, Utc::now())
-}
-
 /// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`.
-fn parse_time_in<Z: TimeZone>(at: Option<&str>, zone: &Z, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
+fn parse_time_in(at: Option<&str>, zone: Tz, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(now) };
     let naive = if let Ok(t) = NaiveTime::parse_from_str(at, "%H:%M") {
-        NaiveDateTime::new(now.with_timezone(zone).date_naive(), t)
+        NaiveDateTime::new(now.with_timezone(&zone).date_naive(), t)
     } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M") {
         dt
     } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M") {
@@ -517,7 +545,7 @@ fn parse_time_in<Z: TimeZone>(at: Option<&str>, zone: &Z, now: DateTime<Utc>) ->
     zone.from_local_datetime(&naive)
         .earliest()
         .map(|t| t.with_timezone(&Utc))
-        .with_context(|| format!("{at:?} does not exist in the local time zone"))
+        .with_context(|| format!("{at:?} does not exist in {zone}"))
 }
 
 /// One connection with platforms, and the fallbacks if a change is missed.
@@ -527,11 +555,11 @@ fn write_detail(
     chain: &Chain,
     fallbacks: &mut Fallbacks<'_>,
     min_transfer: TimeDelta,
+    zone: Tz,
 ) -> Result<()> {
-    writeln!(out, "  {}", header(tt, chain, min_transfer)?)?;
+    writeln!(out, "  {}", header(tt, chain, min_transfer, zone)?)?;
     let transfers = chain.transfers(tt)?;
     let arrival = chain.arrival(tt)?;
-    let destination_tz = tt.station(tt.destination)?.tz.as_deref();
     let mut ride = 0_usize;
     for step in &chain.steps {
         match *step {
@@ -554,10 +582,10 @@ fn write_detail(
                 writeln!(
                     out,
                     "    {} {}{} → {} {}{}   {}{}  ({source})",
-                    timed(b.departure, bs.tz.as_deref()),
+                    timed(b.departure, zone),
                     bs.name,
                     platform(&b.platform),
-                    timed(a.arrival.or(a.departure), as_.tz.as_deref()),
+                    timed(a.arrival.or(a.departure), zone),
                     as_.name,
                     platform(&a.platform),
                     t.label,
@@ -568,7 +596,7 @@ fn write_detail(
                     let options = fallbacks.for_change(chain, ride)?;
                     for f in &options {
                         let late = f.lands.signed_duration_since(arrival).max(TimeDelta::zero());
-                        let lands = clock(f.lands, destination_tz);
+                        let lands = clock(f.lands, zone);
                         writeln!(out, "          {} · arrive {lands} (+{})", f.line, duration(late))?;
                     }
                     if options.is_empty() {

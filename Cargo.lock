@@ -1987,6 +1987,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures",
+ "iana-time-zone",
  "proptest",
  "reqwest",
  "roxmltree",

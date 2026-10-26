@@ -1,10 +1,11 @@
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
+use chrono_tz::UTC;
 use clap::Parser;
 
-use super::{Endpoints, Report, SearchArgs, check_via_ids, extra_time, parse_time_in};
+use super::{Endpoints, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, time_zone};
 use crate::enumerate::{self, Limits, Network};
-use crate::testkit::{Builder, at};
+use crate::testkit::{self, Builder, at};
 
 fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
@@ -23,7 +24,7 @@ fn formats_are_read_in_the_given_zone() {
         ("2026-12-01", utc(2026, 11, 30, 23, 0)), // date only: midnight
     ];
     for (at, want) in cases {
-        assert_eq!(parse_time_in(Some(at), &Berlin, now).unwrap(), want, "{at}");
+        assert_eq!(parse_time_in(Some(at), Berlin, now).unwrap(), want, "{at}");
     }
 }
 
@@ -31,32 +32,32 @@ fn formats_are_read_in_the_given_zone() {
 fn today_is_the_date_in_the_zone_not_in_utc() {
     // 23:30 UTC on the 24th is already the 25th in Berlin.
     let now = utc(2026, 10, 24, 23, 30);
-    assert_eq!(parse_time_in(Some("09:00"), &Berlin, now).unwrap(), utc(2026, 10, 25, 8, 0));
-    assert_eq!(parse_time_in(Some("09:00"), &Utc, now).unwrap(), utc(2026, 10, 24, 9, 0));
+    assert_eq!(parse_time_in(Some("09:00"), Berlin, now).unwrap(), utc(2026, 10, 25, 8, 0));
+    assert_eq!(parse_time_in(Some("09:00"), UTC, now).unwrap(), utc(2026, 10, 24, 9, 0));
 }
 
 #[test]
 fn missing_or_empty_is_now() {
     let now = utc(2026, 10, 24, 10, 7);
-    assert_eq!(parse_time_in(None, &Berlin, now).unwrap(), now);
-    assert_eq!(parse_time_in(Some(""), &Berlin, now).unwrap(), now);
+    assert_eq!(parse_time_in(None, Berlin, now).unwrap(), now);
+    assert_eq!(parse_time_in(Some(""), Berlin, now).unwrap(), now);
 }
 
 #[test]
 fn dst_gap_is_an_error_and_the_repeated_hour_takes_the_first() {
     let now = utc(2026, 10, 24, 10, 0);
     // Clocks jump 02:00 → 03:00 on 2026-03-29: 02:30 never happens.
-    let err = parse_time_in(Some("2026-03-29 02:30"), &Berlin, now).unwrap_err();
-    assert!(err.to_string().contains("does not exist"), "{err}");
+    let err = parse_time_in(Some("2026-03-29 02:30"), Berlin, now).unwrap_err();
+    assert!(err.to_string().contains("does not exist in Europe/Berlin"), "{err}");
     // 02:30 happens twice on 2026-10-25; the earlier one (CEST) counts.
-    assert_eq!(parse_time_in(Some("2026-10-25 02:30"), &Berlin, now).unwrap(), utc(2026, 10, 25, 0, 30));
+    assert_eq!(parse_time_in(Some("2026-10-25 02:30"), Berlin, now).unwrap(), utc(2026, 10, 25, 0, 30));
 }
 
 #[test]
 fn invalid_input_is_an_error_naming_the_formats() {
     let now = utc(2026, 10, 24, 10, 0);
     for at in ["25:00", "8 Uhr", "2026-02-30 10:00", "24.10.2026 06:30", "2026-10-24 06:30:00", "tomorrow"] {
-        let err = parse_time_in(Some(at), &Berlin, now).unwrap_err().to_string();
+        let err = parse_time_in(Some(at), Berlin, now).unwrap_err().to_string();
         assert!(err.contains("cannot parse") && err.contains("YYYY-MM-DD HH:MM"), "{at}: {err}");
     }
 }
@@ -100,6 +101,40 @@ fn search_args(argv: &[&str]) -> SearchArgs {
     Line::try_parse_from(std::iter::once("umstieg").chain(argv.iter().copied())).unwrap().args
 }
 
+#[test]
+fn the_time_zone_is_a_zone_name() {
+    assert_eq!(search_args(&["A", "C", "--time-zone", "Asia/Kolkata"]).time_zone, Some(chrono_tz::Asia::Kolkata));
+    assert_eq!(search_args(&["A", "C"]).time_zone, None, "the machine's");
+    for zone in ["CEST", "+02:00", "europe/berlin ", ""] {
+        let err = time_zone(zone).unwrap_err();
+        assert!(err.ends_with("is not a time zone name such as Europe/Berlin"), "{zone}: {err}");
+    }
+}
+
+#[test]
+fn the_machine_zone_is_tz_else_the_system_s() {
+    const EXPECT: &str = "UMSTIEG_TEST_EXPECT";
+    if testkit::in_child() {
+        let got = machine_zone().map_or_else(|_| "error".to_owned(), |zone| zone.name().to_owned());
+        assert_eq!(got, std::env::var(EXPECT).unwrap());
+        return;
+    }
+    let test = "search::tests::the_machine_zone_is_tz_else_the_system_s";
+    let run = |tz: Option<&str>, expect: &str| {
+        let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![(EXPECT, expect.as_ref())];
+        env.extend(tz.map(|tz| ("TZ", tz.as_ref())));
+        testkit::rerun_with_env(test, &env);
+    };
+    run(Some("America/New_York"), "America/New_York");
+    run(Some(":Asia/Kolkata"), "Asia/Kolkata");
+    run(Some("/usr/share/zoneinfo/Europe/Berlin"), "Europe/Berlin");
+    run(Some("CET-1CEST"), "error");
+    if let Ok(system) = iana_time_zone::get_timezone() {
+        run(None, &system);
+        run(Some(""), &system);
+    }
+}
+
 /// The report for `tt`, departing 08:00–09:00, changes taking no time at all.
 fn report(tt: crate::timetable::Timetable) -> String {
     let args = search_args(&["A", "C"]);
@@ -124,6 +159,7 @@ fn report(tt: crate::timetable::Timetable) -> String {
         hubs: Vec::new(),
         requests: "0 Transitous requests".to_owned(),
         with_db: false,
+        zone: UTC,
         time: at("08:00"),
         depart_until: at("09:00"),
         min_transfer: TimeDelta::zero(),

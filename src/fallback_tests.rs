@@ -1,4 +1,5 @@
 use chrono::{DateTime, TimeDelta, Utc};
+use chrono_tz::UTC;
 
 use super::*;
 use crate::enumerate::Step;
@@ -73,7 +74,7 @@ fn expect(rows: &[(&str, &str)]) -> Vec<(String, DateTime<Utc>)> {
 fn candidates_leave_after_the_missed_train_within_the_window() {
     let tt = hamburg();
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let hamburg = tt.stations.iter().position(|s| s.name == "Hamburg").unwrap();
     let mut got: Vec<String> =
         fallbacks.candidates(hamburg, at("12:00")).unwrap().iter().map(|c| show(&tt, &c.steps)).collect();
@@ -95,7 +96,7 @@ fn candidates_leave_after_the_missed_train_within_the_window() {
 fn fallbacks_rank_by_landing_and_end_back_on_plan() {
     let tt = hamburg();
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let p = plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
     assert_eq!(
         summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
@@ -114,7 +115,7 @@ fn fallbacks_rank_by_landing_and_end_back_on_plan() {
 fn rejoining_counts_only_before_the_plan_leaves_the_train() {
     let tt = hamburg();
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let p = plan(
         &tt,
         &[("IC 5", "Kiel", "Hamburg"), ("RJ 384", "Hamburg", "Schleswig"), ("RE 9", "Schleswig", "København")],
@@ -141,7 +142,7 @@ fn catching_a_plan_train_after_the_plan_left_it_lands_on_its_own() {
     b.trip("RB 5", &[("B", "", "09:05"), ("C", "09:20", "")]);
     let tt = b.build("A", "D");
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let p = plan(&tt, &[("RE 1", "A", "B"), ("ICE 2", "B", "C"), ("ICE 3", "C", "D")]);
     assert_eq!(
         summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
@@ -168,11 +169,11 @@ fn cached_candidates_serve_each_plan_like_fresh_ones() {
         // Also missing a 12:00 departure, at Altona.
         plan(&tt, &[("RB 10", "Kiel", "Altona"), ("RE 11", "Altona", "København")]),
     ];
-    let mut shared = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut shared = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let mut seen = Vec::new();
     for p in plans.iter().chain(&plans) {
         let got = summaries(&tt, &shared.for_change(p, 0).unwrap());
-        assert_eq!(got, summaries(&tt, &Fallbacks::new(&net, MIN_TRANSFER).for_change(p, 0).unwrap()));
+        assert_eq!(got, summaries(&tt, &Fallbacks::new(&net, MIN_TRANSFER, UTC).for_change(p, 0).unwrap()));
         seen.push(got);
     }
     assert!(seen[0] != seen[1] && seen[0] != seen[2] && seen[1] != seen[2], "{seen:#?}");
@@ -188,7 +189,7 @@ fn nothing_within_the_window_means_no_fallbacks() {
     let tt = b.build("A", "D");
     let net = Network::new(&tt).unwrap();
     let p = plan(&tt, &[("RE 1", "A", "B"), ("RE 2", "B", "D")]);
-    assert!(Fallbacks::new(&net, MIN_TRANSFER).for_change(&p, 0).unwrap().is_empty());
+    assert!(Fallbacks::new(&net, MIN_TRANSFER, UTC).for_change(&p, 0).unwrap().is_empty());
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn a_change_the_plan_does_not_have_is_an_error() {
     let tt = b.build("A", "D");
     let net = Network::new(&tt).unwrap();
     let p = plan(&tt, &[("RE 1", "A", "B"), ("RE 2", "B", "D")]);
-    let err = Fallbacks::new(&net, MIN_TRANSFER).for_change(&p, 1).err().unwrap().to_string();
+    let err = Fallbacks::new(&net, MIN_TRANSFER, UTC).for_change(&p, 1).err().unwrap().to_string();
     assert_eq!(err, "the connection has no change 1");
 }
 
@@ -222,7 +223,7 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
             ride(&tt, "ICE 1", "Hbf", "Ziel"),
         ],
     };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
     assert_eq!(found, [("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
 }
