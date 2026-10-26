@@ -20,6 +20,11 @@ const CACHE_TTL: Duration = Duration::from_mins(10);
 const ATTEMPTS: u32 = 3;
 /// First retry delay, doubled per attempt; tests don't wait seconds.
 const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
+/// Trip ids of EFA runs start with this; the timetable prefers their times.
+pub const TRIP_PREFIX: &str = "efa:";
+/// Categories of long-distance trains, which EFA may file under the generic
+/// product class "Zug" (ICE 273, NJ 40420).
+const LONG_DISTANCE: [&str; 11] = ["ICE", "IC", "EC", "ECE", "EN", "NJ", "RJ", "RJX", "TGV", "FLX", "ICD"];
 
 #[derive(Deserialize)]
 struct TripResponse {
@@ -67,6 +72,8 @@ struct StopProperties {
 #[serde(rename_all = "camelCase")]
 struct Transportation {
     id: Option<String>,
+    /// `ICE 273 InterCityExpress`, `R-Bahn RE2`.
+    name: Option<String>,
     number: Option<String>,
     product: Option<Product>,
     destination: Option<Named>,
@@ -213,6 +220,12 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
             continue;
         };
         let transport = transport?;
+        let category = category(transport);
+        let mode = if category.is_some_and(|c| LONG_DISTANCE.contains(&c)) { "LONG_DISTANCE" } else { mode };
+        let name = match (category, transport.number.as_deref()) {
+            (Some(category), Some(number)) => Some(format!("{category} {number}")),
+            _ => transport.number.clone(),
+        };
         let start = from.departure?;
         let end = to.arrival?;
         let properties = transport.properties.as_ref();
@@ -229,9 +242,9 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
             to,
             start_time: start,
             end_time: end,
-            display_name: transport.number.clone(),
-            route_short_name: transport.number.clone(),
-            trip_id: Some(format!("efa:{}:{run}:{day}", transport.id.as_deref().unwrap_or("?"))),
+            display_name: name.clone(),
+            route_short_name: name,
+            trip_id: Some(format!("{TRIP_PREFIX}{}:{run}:{day}", transport.id.as_deref().unwrap_or("?"))),
             trip_short_name: train_number,
             headsign: transport.destination.as_ref().and_then(|d| d.name.clone()),
             agency_name: None,
@@ -240,6 +253,16 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         clock = Some(end);
     }
     legs.iter().any(Leg::is_transit).then_some(Itinerary { legs })
+}
+
+/// The category in front of the number in EFA's name: "ICE" for
+/// `ICE 273 InterCityExpress` with number 273, where the number alone says
+/// less. A number like "RE2" names the line already.
+fn category(transport: &Transportation) -> Option<&str> {
+    let number = transport.number.as_deref().filter(|n| n.chars().all(|c| c.is_ascii_digit()))?;
+    let mut words = transport.name.as_deref()?.split_whitespace();
+    let category = words.next()?;
+    (words.next() == Some(number)).then_some(category)
 }
 
 fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {

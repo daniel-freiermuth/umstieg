@@ -188,6 +188,32 @@ fn runs_are_told_apart_by_scheduled_day_in_germany() {
 }
 
 #[test]
+fn trains_are_labelled_with_the_category_in_their_name() {
+    // (product class, name, number) → (label, DB class).
+    let cases = [
+        // VRN files ICEs under the generic class "Zug".
+        (0, Some("ICE 273 InterCityExpress"), "273", "ICE 273", Some('F')),
+        (0, Some("NJ 40420 nightjet"), "40420", "NJ 40420", Some('F')),
+        (15, Some("IC 2023 InterCity"), "2023", "IC 2023", Some('F')),
+        (0, Some("Zug 4711"), "4711", "Zug 4711", Some('N')),
+        // The number is the line: kept as it is.
+        (13, Some("R-Bahn RE2"), "RE2", "RE2", Some('N')),
+        (0, Some("ICE InterCityExpress"), "273", "273", Some('N')),
+        (0, None, "273", "273", Some('N')),
+    ];
+    for (class, name, number, label, db_class) in cases {
+        let text = journey(&[(
+            class,
+            Some("2026-10-25T05:15:00Z"),
+            Some("2026-10-25T07:00:00Z"),
+            json!({ "transportation": { "id": "line", "name": name, "number": number, "product": { "class": class } } }),
+        )]);
+        let leg = &itineraries(&text)[0].legs[0];
+        assert_eq!((leg.label(), leg.class()), (label.to_owned(), db_class), "{name:?}");
+    }
+}
+
+#[test]
 fn places_drop_unusable_coordinates_and_platforms() {
     let text = journey(&[(
         0,
