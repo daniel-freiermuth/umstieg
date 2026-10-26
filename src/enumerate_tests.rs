@@ -438,6 +438,36 @@ fn detour_to_a_later_stop_of_the_same_train_is_pruned() {
     assert_eq!(listed(&tt, &keep), sorted(&[direct, detour]));
 }
 
+/// Arriving at Hamburg 12:00, the RJ leaves 12:10 (10 min). The detour via
+/// Harburg and Lüneburg changes 20 min at Hamburg and 20 at Lüneburg; its
+/// worst buffer is the change at Harburg in between.
+#[test]
+fn detour_worst_buffer_counts_every_change_since_the_earlier_stop() {
+    let direct = "ICE 1 Frankfurt-Hamburg / RJ 384 Hamburg-København";
+    let detour =
+        "ICE 1 Frankfurt-Hamburg / S 3 Hamburg-Harburg / RB 31 Harburg-Lüneburg / RJ 384 Lüneburg-København";
+    // (RB 31 leaves Harburg, detour kept)
+    let cases = [
+        // 2 min at Harburg: the 10 min direct change is better, pruned.
+        ("12:32", false),
+        // 15 min at Harburg: every change of the detour beats 10 min, kept.
+        ("12:45", true),
+    ];
+    for (rb, kept) in cases {
+        let mut b = Builder::new();
+        b.trip("ICE 1", &[("Frankfurt", "", "08:00"), ("Hamburg", "12:00", "")]);
+        b.trip("S 3", &[("Hamburg", "", "12:20"), ("Harburg", "12:30", "")]);
+        b.trip("RB 31", &[("Harburg", "", rb), ("Lüneburg", "12:55", "")]);
+        b.trip("RJ 384", &[("Hamburg", "", "12:10"), ("Lüneburg", "13:15", "13:15"), ("København", "17:40", "")]);
+        let tt = b.build("Frankfurt", "København");
+        let limits = limits(&tt, "08:00", "08:00");
+        let expected = if kept { sorted(&[direct, detour]) } else { vec![direct.to_owned()] };
+        assert_eq!(listed(&tt, &limits), expected, "RB 31 at {rb}");
+        let keep = Limits { keep_detours: true, ..limits };
+        assert_eq!(listed(&tt, &keep), sorted(&[direct, detour]), "keep detours");
+    }
+}
+
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {
