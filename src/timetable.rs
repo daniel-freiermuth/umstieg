@@ -89,6 +89,9 @@ pub struct Trip {
     pub class: Option<char>,
     pub headsign: Option<String>,
     pub calls: Vec<Call>,
+    /// Whether Transitous or EFA knows its stops: it came from a rough route
+    /// or one was merged into it. Otherwise only DB boards know it.
+    pub transitous: bool,
 }
 
 impl Trip {
@@ -105,6 +108,8 @@ pub struct Station {
     pub db_name: Option<String>,
     pub tz: Option<String>,
     pub position: Option<(f64, f64)>,
+    /// Transitous (MOTIS) station id, for asking about trains there.
+    pub motis_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +174,7 @@ struct Sighting<'a> {
     db_name: Option<&'a str>,
     tz: Option<&'a str>,
     position: Option<(f64, f64)>,
+    motis_id: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -178,6 +184,21 @@ struct Stations {
 }
 
 impl Stations {
+    /// Interning further stations into a finished timetable's list.
+    fn from_list(list: Vec<Station>) -> Self {
+        let mut by_key = HashMap::new();
+        for (i, s) in list.iter().enumerate() {
+            by_key.insert(format!("name:{}", db::fold(&s.name)), i);
+            if let Some(name) = &s.db_name {
+                by_key.insert(format!("name:{}", db::fold(name)), i);
+            }
+            if let Some(eva) = &s.eva {
+                by_key.insert(format!("eva:{eva}"), i);
+            }
+        }
+        Self { list, by_key }
+    }
+
     /// One index per physical station, unified by EVA number, folded name or
     /// proximity. Nearby stations with different EVA numbers stay separate
     /// (S-Bahn vs. long-distance station) and get a footpath instead.
@@ -195,7 +216,14 @@ impl Stations {
                 },
             );
         let idx = found.unwrap_or_else(|| {
-            self.list.push(Station { name: s.name.to_owned(), eva: None, db_name: None, tz: None, position: None });
+            self.list.push(Station {
+                name: s.name.to_owned(),
+                eva: None,
+                db_name: None,
+                tz: None,
+                position: None,
+                motis_id: None,
+            });
             self.list.len().saturating_sub(1)
         });
         self.by_key.insert(name_key, idx);
@@ -216,6 +244,9 @@ impl Stations {
         if station.position.is_none() {
             station.position = s.position;
         }
+        if station.motis_id.is_none() {
+            station.motis_id = s.motis_id.map(str::to_owned);
+        }
         idx
     }
 }
@@ -226,9 +257,10 @@ fn sighting<'a>(
     name: &'a str,
     tz: Option<&'a str>,
     position: Option<(f64, f64)>,
+    motis_id: Option<&'a str>,
 ) -> Sighting<'a> {
     let db = resolved.get(name);
-    Sighting { name, eva: db.map(|s| s.eva.as_str()), db_name: db.map(|s| s.name.as_str()), tz, position }
+    Sighting { name, eva: db.map(|s| s.eva.as_str()), db_name: db.map(|s| s.name.as_str()), tz, position, motis_id }
 }
 
 /// Great-circle distance between (lat, lon) pairs.
@@ -269,8 +301,9 @@ pub async fn build(
     }
 
     let mut stations = Stations::default();
-    let origin_idx = stations.intern(sighting(&resolved, &origin.name, None, origin.position));
-    let destination_idx = stations.intern(sighting(&resolved, &destination.name, None, destination.position));
+    let origin_idx = stations.intern(sighting(&resolved, &origin.name, None, origin.position, Some(&origin.id)));
+    let destination_idx =
+        stations.intern(sighting(&resolved, &destination.name, None, destination.position, Some(&destination.id)));
     let rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
 
     let mut discovered = Vec::new();
@@ -348,7 +381,7 @@ fn from_motis(
         // Walks at the ends lead from / to the queried place: coordinates
         // (no stop id) stand for our origin or destination, stops for a hub.
         let end_station = |stations: &mut Stations, p: &Place, coordinate: usize| match p.stop_id {
-            Some(_) => stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
+            Some(_) => stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon), p.station_id())),
             None => coordinate,
         };
         let mut previous_end: Option<usize> = None;
@@ -359,22 +392,7 @@ fn from_motis(
                 walk = checked::sum(walk, leg.duration());
                 continue;
             };
-            let places = leg_places(leg);
-            let last = places.len().saturating_sub(1);
-            let calls: Vec<Call> = places
-                .iter()
-                .enumerate()
-                .map(|(k, p)| Call {
-                    station: stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon))),
-                    arrival: if k > 0 { Time::new(p.scheduled_arrival, p.arrival) } else { None },
-                    departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
-                    platform: p.track.clone(),
-                    cancelled: p.cancelled,
-                    from_db: false,
-                })
-                // Stops passed without times (Limburg Süd for ICE 616) can't be used.
-                .filter(|c| c.arrival.is_some() || c.departure.is_some())
-                .collect();
+            let calls = leg_calls(leg, resolved, stations);
             let (Some(first), Some(final_call)) = (calls.first(), calls.last()) else { continue };
             let from = match previous_end {
                 Some(end) => Some(end),
@@ -407,6 +425,7 @@ fn from_motis(
                 class: leg.class(),
                 headsign: leg.headsign.clone(),
                 calls: Vec::new(),
+                transitous: true,
             });
             // Legs of one trip from different itineraries meet where one ends
             // (arrival only) and another starts (departure only).
@@ -489,6 +508,79 @@ fn leg_places(leg: &Leg) -> Vec<&Place> {
     std::iter::once(&leg.from).chain(&leg.intermediate_stops).chain(std::iter::once(&leg.to)).collect()
 }
 
+/// A MOTIS leg's stops as calls: no arrival where boarded, no departure where left.
+fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut Stations) -> Vec<Call> {
+    let places = leg_places(leg);
+    let last = places.len().saturating_sub(1);
+    // Ids of rail stops only: departures at a bus stop named "Berlin Hbf" lack the trains.
+    let rail = leg.class().is_some();
+    places
+        .iter()
+        .enumerate()
+        .map(|(k, p)| Call {
+            station: stations.intern(sighting(
+                resolved,
+                &p.name,
+                p.tz.as_deref(),
+                p.lat.zip(p.lon),
+                p.station_id().filter(|_| rail),
+            )),
+            arrival: if k > 0 { Time::new(p.scheduled_arrival, p.arrival) } else { None },
+            departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
+            platform: p.track.clone(),
+            cancelled: p.cancelled,
+            from_db: false,
+        })
+        // Stops passed without times (Limburg Süd for ICE 616) can't be used.
+        .filter(|c| c.arrival.is_some() || c.departure.is_some())
+        .collect()
+}
+
+/// Adds the stops of `leg`, the same train from Transitous, that `trip` (known
+/// from DB boards only) lacks between its first and last known call: for the
+/// display, after the search. Nothing is added if the two disagree on a time
+/// where both stop. Returns where each old call went, if anything was added.
+pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize>> {
+    let mut stations = Stations::from_list(std::mem::take(&mut tt.stations));
+    let calls = leg_calls(leg, &HashMap::new(), &mut stations);
+    tt.stations = stations.list;
+    let known = &tt.trips.get(trip)?.calls;
+    let close = |a: Option<Time>, b: Option<Time>| {
+        a.zip(b).is_none_or(|(a, b)| a.planned.signed_duration_since(b.planned).abs() <= SAME_TIME)
+    };
+    let mut shared = false;
+    for call in &calls {
+        if let Some(k) = known.iter().find(|k| k.station == call.station) {
+            if !(close(call.arrival, k.arrival) && close(call.departure, k.departure)) {
+                return None;
+            }
+            shared = true;
+        }
+    }
+    let times = known.iter().filter_map(Call::planned);
+    let (lo, hi) = times.clone().min().zip(times.max())?;
+    let added: Vec<Call> = calls
+        .into_iter()
+        .filter(|c| known.iter().all(|k| k.station != c.station))
+        .filter(|c| c.planned().is_some_and(|t| lo < t && t < hi))
+        .collect();
+    if !shared || added.is_empty() {
+        return None;
+    }
+    let trip = tt.trips.get_mut(trip)?;
+    let old = std::mem::take(&mut trip.calls).into_iter().enumerate().map(|(i, c)| (Some(i), c));
+    let mut all: Vec<(Option<usize>, Call)> = old.chain(added.into_iter().map(|c| (None, c))).collect();
+    all.sort_by_key(|(_, c)| c.planned());
+    let mut remap = vec![0; all.iter().filter(|(old, _)| old.is_some()).count()];
+    for (new, (old, _)) in all.iter().enumerate() {
+        if let Some(slot) = old.and_then(|old| remap.get_mut(old)) {
+            *slot = new;
+        }
+    }
+    trip.calls = all.into_iter().map(|(_, c)| c).collect();
+    Some(remap)
+}
+
 /// Fetched DB boards per station index.
 type Boards = HashMap<usize, (Vec<Visit>, Coverage)>;
 
@@ -568,14 +660,15 @@ async fn fetch_boards(
     between.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
     between.truncate(MAX_DISCOVERED);
 
-    // DB station plus a position from MOTIS, so feeds naming it differently unify.
+    // DB station plus position and id from MOTIS, so feeds naming it differently
+    // unify, and trains there can be looked up.
     let lookups = between.iter().map(|(name, _)| async move {
         let station = db.resolve(name, None).await;
-        let position = motis.stop(name).await.ok().filter(|s| db::same_place(&s.name, name)).and_then(|s| s.position);
-        (station, position)
+        let stop = motis.stop(name).await.ok().filter(|s| db::same_place(&s.name, name));
+        (station, stop)
     });
     let mut wanted = Vec::new();
-    for ((name, (_, lo, hi)), (result, position)) in between.iter().zip(join_all(lookups).await) {
+    for ((name, (_, lo, hi)), (result, stop)) in between.iter().zip(join_all(lookups).await) {
         match result {
             Ok(Some(station)) => {
                 let idx = stations.intern(Sighting {
@@ -583,7 +676,8 @@ async fn fetch_boards(
                     eva: Some(&station.eva),
                     db_name: Some(&station.name),
                     tz: Some(DB_TIME_ZONE),
-                    position,
+                    position: stop.as_ref().and_then(|s| s.position),
+                    motis_id: stop.as_ref().map(|s| s.id.as_str()),
                 });
                 if !boards.contains_key(&idx) {
                     discovered.push(station.name.clone());
@@ -668,6 +762,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
                     from_db: true,
                 })
                 .collect(),
+            transitous: false,
         });
         routes.push(route);
     }
@@ -773,6 +868,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
         });
         let target = twin.and_then(|i| Some((i, trips.get_mut(i)?, routes.get(i)?)));
         if let Some((i, trip, route)) = target {
+            trip.transitous = true;
             // DB's route lists every stop; a stop unknown to DB between its
             // first and last call is the same station under another name
             // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.

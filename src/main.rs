@@ -1,5 +1,6 @@
 mod cache;
 mod checked;
+mod complete;
 mod db;
 mod efa;
 mod enumerate;

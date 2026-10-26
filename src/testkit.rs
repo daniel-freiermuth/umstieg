@@ -57,7 +57,14 @@ impl Builder {
         if let Some(i) = self.stations.iter().position(|s| s.name == name) {
             return i;
         }
-        self.stations.push(Station { name: name.to_owned(), eva: None, db_name: None, tz: None, position: None });
+        self.stations.push(Station {
+            name: name.to_owned(),
+            eva: None,
+            db_name: None,
+            tz: None,
+            position: None,
+            motis_id: None,
+        });
         self.stations.len() - 1
     }
 
@@ -82,6 +89,7 @@ impl Builder {
             class: None,
             headsign: None,
             calls,
+            transitous: false,
         });
         self.trips.len() - 1
     }
@@ -339,7 +347,14 @@ pub fn timetable(spec: &Spec) -> Timetable {
                 from_db: true,
             });
         }
-        b.trips.push(Trip { label: format!("T{k}"), numbers: Vec::new(), class: None, headsign: None, calls });
+        b.trips.push(Trip {
+            label: format!("T{k}"),
+            numbers: Vec::new(),
+            class: None,
+            headsign: None,
+            calls,
+            transitous: false,
+        });
     }
     for &(from, to, minutes) in &spec.walks {
         b.footpaths.push(Footpath { from, to, duration: TimeDelta::minutes(minutes) });

@@ -224,6 +224,34 @@ async fn stop_prefers_stations_in_geocoder_order() {
 }
 
 #[tokio::test]
+async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() {
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    fake.geocode(
+        "Berlin Südkreuz",
+        json!([
+            with_modes("Berlin Südkreuz train station", "coach", &["COACH"]),
+            with_modes("Berlin Südkreuz", "rail", &["LONG_DISTANCE", "BUS"]),
+        ]),
+    )
+    .geocode(
+        "Hamburg Hbf",
+        json!([
+            with_modes("Hamburg Hbf", "bus", &["BUS"]),
+            with_modes("Hamburg Hbf", "s", &["SUBURBAN"]),
+            with_modes("Hamburg Hbf", "ice", &["HIGHSPEED_RAIL"]),
+        ]),
+    );
+    let motis = client(&fake).await;
+    assert_eq!(motis.stop("Berlin Südkreuz").await.unwrap().id, "rail");
+    assert_eq!(motis.stop("Hamburg Hbf").await.unwrap().id, "s", "any trains count, in the geocoder's order");
+}
+
+#[tokio::test]
 async fn stop_tries_bare_place_last_and_reports_all_queries() {
     let fake = Arc::new(Fake::default());
     fake.geocode("Altona", json!([stop("STOP", "Hamburg-Altona", "altona")]));

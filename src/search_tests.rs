@@ -3,6 +3,7 @@ use chrono_tz::Europe::Berlin;
 use clap::Parser;
 
 use super::{Endpoints, Report, SearchArgs, extra_time, parse_time_in};
+use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{Builder, at};
 
 fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
@@ -101,17 +102,31 @@ fn search_args(argv: &[&str]) -> SearchArgs {
 
 /// The report for `tt`, departing 08:00–09:00, changes taking no time at all.
 fn report(tt: crate::timetable::Timetable) -> String {
+    let args = search_args(&["A", "C"]);
+    let limits = Limits {
+        origin: tt.origin,
+        depart_from: at("08:00"),
+        depart_until: at("09:00"),
+        max_changes: args.max_changes,
+        extra_time: TimeDelta::hours(1),
+        min_transfer: TimeDelta::zero(),
+        missed_by: TimeDelta::minutes(5),
+        keep_detours: false,
+        forward_only: false,
+        max_nodes: args.max_nodes,
+    };
+    let enumeration = enumerate::enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
     let report = Report {
-        args: search_args(&["A", "C"]),
+        args,
         built: crate::timetable::Build { timetable: tt, discovered: Vec::new(), warnings: Vec::new() },
+        enumeration,
+        limits,
         hubs: Vec::new(),
         requests: "0 Transitous requests".to_owned(),
         with_db: false,
         time: at("08:00"),
         depart_until: at("09:00"),
         min_transfer: TimeDelta::zero(),
-        missed_by: TimeDelta::minutes(5),
-        extra_time: TimeDelta::hours(1),
         plot: None,
     };
     let (stages, _) = tokio::sync::mpsc::unbounded_channel();

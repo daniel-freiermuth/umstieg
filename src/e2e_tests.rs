@@ -66,6 +66,9 @@ const ZIELHAFEN: Station =
     Station { name: "Zielhafen Hbf", id: "de-DELFI_de:09004:400_G", eva: "8099004", position: (50.5, 9.0) };
 /// Stations Transitous's geocoder knows.
 const STATIONS: [&Station; 4] = [&AMSEL, &BERGSTADT, &KREUZHAUSEN, &ZIELHAFEN];
+/// Only FLX 1236 stops here, and only Transitous' trip shows it.
+const MITTELSTADT: Station =
+    Station { name: "Mittelstadt", id: "de-DELFI_de:09005:500_G", eva: "8099005", position: (50.2, 8.5) };
 
 /// A DB call; times "HH:MM" planned or "HH:MM+N" with a live delay of N minutes.
 struct Call {
@@ -150,6 +153,23 @@ const DB_RUNS: &[Run] = &[
     },
 ];
 
+/// A `FlixTrain` only DB's boards at Bergstadt and Zielhafen list, and no
+/// Transitous answer rides ([`StandIn::with_flix`]): its stops in between come
+/// from Transitous' departures at Bergstadt and the trip.
+const FLX_1236_RUN: Run = Run {
+    id: "-90001236-2611030855",
+    category: "FLX",
+    number: 1236,
+    class: 'F',
+    line: Some("10"),
+    calls: &[
+        call(&BERGSTADT, "", "08:55"),
+        Call { on_board: false, ..call(&MITTELSTADT, "09:20", "09:22") },
+        Call { on_board: false, ..call(&KREUZHAUSEN, "09:50", "09:52") },
+        call(&ZIELHAFEN, "10:40", ""),
+    ],
+};
+
 /// A train as Transitous knows it: planned times, its own idea of the route.
 struct Train {
     name: &'static str,
@@ -201,6 +221,19 @@ const RE_4711: Train = Train {
     mode: "REGIONAL_RAIL",
     trip: "20261103_09:15_re_4711",
     stops: &[(&BERGSTADT, "", "09:15"), (&ZIELHAFEN, "11:10", "")],
+};
+
+const FLX_1236: Train = Train {
+    name: "FlixTrain FLX10",
+    number: "",
+    mode: "LONG_DISTANCE",
+    trip: "20261103_08:55_eu-flixbus_FLX10-1236-0855",
+    stops: &[
+        (&BERGSTADT, "", "08:55"),
+        (&MITTELSTADT, "09:20", "09:22"),
+        (&KREUZHAUSEN, "09:50", "09:52"),
+        (&ZIELHAFEN, "10:40", ""),
+    ],
 };
 
 /// Transitous's answers per (from, to): itineraries as trains ridden end to end.
@@ -396,9 +429,11 @@ fn changed_visit(run: &Run, k: usize) -> Option<String> {
 }
 
 /// Board entries at `eva`: (run, index of the call).
-fn calls_at(eva: &str) -> impl Iterator<Item = (&'static Run, usize)> + '_ {
+fn calls_at(eva: &str, flix: bool) -> impl Iterator<Item = (&'static Run, usize)> + '_ {
+    let extra: &[Run] = if flix { std::slice::from_ref(&FLX_1236_RUN) } else { &[] };
     DB_RUNS
         .iter()
+        .chain(extra)
         .flat_map(|run| (0..run.calls.len()).map(move |k| (run, k)))
         .filter(move |(r, k)| r.calls[*k].at.eva == eva && r.calls[*k].on_board)
 }
@@ -419,6 +454,8 @@ struct World {
     efa: Efa,
     /// Serve RE 4711 too.
     regional: bool,
+    /// Serve FLX 1236 too.
+    flix: bool,
     /// Requests received, as "motis …", "efa …" and "db …" lines.
     log: Mutex<Vec<String>>,
 }
@@ -436,22 +473,29 @@ struct StandIn {
 
 impl StandIn {
     async fn start(efa: Efa) -> Self {
-        Self::launch(efa, false).await
+        Self::launch(efa, false, false).await
     }
 
     /// The corridor plus RE 4711.
     async fn with_regional() -> Self {
-        Self::launch(Efa::Working, true).await
+        Self::launch(Efa::Working, true, false).await
+    }
+
+    /// The corridor plus FLX 1236.
+    async fn with_flix() -> Self {
+        Self::launch(Efa::Working, false, true).await
     }
 
     /// Every stand-in gets its own path prefix: the MOTIS and EFA disk caches
     /// are keyed by URL, and ports get reused.
-    async fn launch(efa: Efa, regional: bool) -> Self {
+    async fn launch(efa: Efa, regional: bool, flix: bool) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let world = Arc::new(World { efa, regional, log: Mutex::new(Vec::new()) });
+        let world = Arc::new(World { efa, regional, flix, log: Mutex::new(Vec::new()) });
         let router = Router::new()
             .route("/{scope}/api/v1/geocode", get(geocode))
             .route("/{scope}/api/v5/plan", get(plan))
+            .route("/{scope}/api/v5/stoptimes", get(stoptimes))
+            .route("/{scope}/api/v5/trip", get(trip))
             .route("/{scope}/XML_TRIP_REQUEST2", get(efa_trips))
             .route("/{scope}/db/station/{pattern}", get(db_station))
             .route("/{scope}/db/plan/{eva}/{date}/{hour}", get(db_plan))
@@ -505,6 +549,30 @@ async fn plan(State(world): State<Arc<World>>, Query(q): Params) -> Response {
     axum::Json(json!({"itineraries": itineraries})).into_response()
 }
 
+/// Departures at a stop: FLX 1236 at Bergstadt, and the ICE 101 next to it.
+async fn stoptimes(State(world): State<Arc<World>>, Query(q): Params) -> Response {
+    world.note(format!("motis stoptimes {} {}", q["stopId"], q["time"]));
+    let at_bergstadt = |train: &Train| {
+        let leg = motis_leg(train);
+        json!({ "place": leg["from"], "mode": train.mode, "tripId": train.trip,
+                "displayName": train.name, "tripShortName": train.number })
+    };
+    let stop_times = if world.flix && q["stopId"] == BERGSTADT.id {
+        vec![at_bergstadt(&FLX_1236), at_bergstadt(&ICE_101)]
+    } else {
+        Vec::new()
+    };
+    axum::Json(json!({ "stopTimes": stop_times })).into_response()
+}
+
+async fn trip(State(world): State<Arc<World>>, Query(q): Params) -> Response {
+    world.note(format!("motis trip {}", q["tripId"]));
+    [&FLX_1236, &ICE_101].into_iter().find(|t| t.trip == q["tripId"]).map_or_else(
+        || StatusCode::NOT_FOUND.into_response(),
+        |train| axum::Json(json!({ "legs": [motis_leg(train)] })).into_response(),
+    )
+}
+
 async fn efa_trips(State(world): State<Arc<World>>, Query(q): Params) -> Response {
     let (from, to) = (&q["name_origin"], &q["name_destination"]);
     world.note(format!("efa {from} {to} {} {}", q["itdDate"], q["itdTime"]));
@@ -538,8 +606,10 @@ async fn db_station(
     if !authorized(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let extra: &[Run] = if world.flix { std::slice::from_ref(&FLX_1236_RUN) } else { &[] };
     let found: String = DB_RUNS
         .iter()
+        .chain(extra)
         .flat_map(|r| r.calls.iter().map(|c| c.at))
         .filter(|s| s.name.to_lowercase().contains(&pattern.to_lowercase()) || s.eva == pattern)
         .map(|s| format!("<station name=\"{}\" eva=\"{}\" ds100=\"X{}\"/>", s.name, s.eva, s.eva))
@@ -564,7 +634,7 @@ async fn db_plan(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let wanted = format!("{date}/{hour}");
-    let visits: String = calls_at(&eva)
+    let visits: String = calls_at(&eva, world.flix)
         .filter(|(run, k)| {
             let c = &run.calls[*k];
             let t = planned_actual(c.departure).or_else(|| planned_actual(c.arrival)).unwrap().0;
@@ -584,7 +654,7 @@ async fn db_changes(
     if !authorized(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let changes: String = calls_at(&eva).filter_map(|(run, k)| changed_visit(run, k)).collect();
+    let changes: String = calls_at(&eva, world.flix).filter_map(|(run, k)| changed_visit(run, k)).collect();
     xml(format!("<?xml version='1.0' encoding='UTF-8'?><timetable station='{eva}'>{changes}</timetable>"))
 }
 
@@ -716,6 +786,42 @@ async fn live_search_lists_every_connection_with_delays_and_markers() {
     ];
     assert_eq!(listing(text), expected, "{text}");
     assert!(text.ends_with("live data where available.\n      Deutsche Bahn Timetables API.\n"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trains_only_db_boards_know_get_their_stops_from_transitous() {
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::with_flix().await;
+    let found = search(&stand_in, &[], true, true).await.unwrap();
+    assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    let flx = "08:55 FLX 1236 → 10:40 Zielhafen Hbf";
+    assert!(found.text.contains(flx), "{}", found.text);
+    // In the plot the ride passes the stops only Transitous' trip has.
+    let data = testkit::embedded_json(found.html.as_deref().unwrap(), "data");
+    let names = data["names"].as_array().unwrap();
+    let ride = data["pieces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["info"].as_str().unwrap().starts_with("FLX 1236"))
+        .unwrap();
+    let stops: Vec<&str> = ride["pts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| names[usize::try_from(p[1].as_u64().unwrap()).unwrap()].as_str().unwrap())
+        .collect();
+    assert_eq!(stops, ["Bergstadt Hbf", "Mittelstadt", "Mittelstadt", "Kreuzhausen", "Kreuzhausen", "Zielhafen Hbf"]);
+    // Two requests: the departures at Bergstadt, then the trip.
+    let asked: Vec<String> = stand_in
+        .requests("motis")
+        .into_iter()
+        .filter(|r| r.starts_with("motis stoptimes") || r.starts_with("motis trip"))
+        .collect();
+    assert_eq!(
+        asked,
+        [format!("motis stoptimes {} {}", BERGSTADT.id, iso(berlin("08:53"))), format!("motis trip {}", FLX_1236.trip)]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

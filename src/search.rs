@@ -7,13 +7,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
-use futures::future::try_join_all;
+use futures::future::{join_all, try_join_all};
 
 use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::fallback::{self, Fallbacks};
 use crate::motis::Motis;
 use crate::text::{buffer, clock, duration, header, route, timed};
-use crate::{checked, db, efa, plot, rough, timetable};
+use crate::{checked, complete, db, efa, plot, rough, timetable};
 
 /// Upper limit of the options in minutes (`--window`, `--min-transfer`,
 /// `--missed-by`): a week, far beyond any search the timetable covers.
@@ -212,6 +212,27 @@ pub async fn run(
     }
 
     events(Event::Stage("Enumerating connections"));
+    let limits = Limits {
+        origin: built.timetable.origin,
+        depart_from: time,
+        depart_until,
+        max_changes: args.max_changes,
+        extra_time,
+        min_transfer,
+        missed_by,
+        keep_detours: args.keep_detours,
+        forward_only: args.forward_only,
+        max_nodes: args.max_nodes,
+    };
+    // CPU-bound: on a blocking thread, keeping the runtime's other tasks (e.g.
+    // a web server) responsive on any runtime.
+    let (mut built, mut enumeration, limits) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let enumeration = enumerate::enumerate(&Network::new(&built.timetable)?, &limits)?;
+        Ok((built, enumeration, limits))
+    })
+    .await
+    .context("the search thread failed")??;
+    complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events).await;
     let requests = format!(
         "{} Transitous requests{}{}",
         motis.request_count(),
@@ -229,14 +250,14 @@ pub async fn run(
     let report = Report {
         args: args.clone(),
         built,
+        enumeration,
+        limits,
         hubs: rough.hubs,
         requests,
         with_db: db.is_some(),
         time,
         depart_until,
         min_transfer,
-        missed_by,
-        extra_time,
         plot,
     };
     // CPU-bound from here on: on a blocking thread, keeping the runtime's other
@@ -249,6 +270,42 @@ pub async fn run(
         events(Event::Stage(s));
     }
     job.await.context("the search thread failed")?
+}
+
+/// Fills in the stops of trains in `chains` known only from DB boards, from
+/// Transitous (see `complete`). Failures only cost those stops.
+async fn complete_stops(
+    motis: &Motis,
+    tt: &mut timetable::Timetable,
+    chains: &mut [Chain],
+    events: &(dyn Fn(Event<'_>) + Sync),
+) {
+    let wanted = complete::wanted(tt, chains);
+    if wanted.is_empty() {
+        return;
+    }
+    events(Event::Stage("Asking Transitous for the stops of trains known only from DB boards"));
+    let found = join_all(wanted.iter().map(|&trip| complete::lookup(motis, tt, trip))).await;
+    for (&trip, found) in wanted.iter().zip(found) {
+        match found {
+            Ok(Some(leg)) => {
+                if let Some(moved) = timetable::add_stops(tt, trip, &leg) {
+                    complete::remap(chains, trip, &moved);
+                    let (before, label) = (moved.len(), tt.trip(trip).map(|t| (t.calls.len(), t.label.as_str())));
+                    if let Ok((after, label)) = label {
+                        tracing::debug!(train = label, before, after, "stops from Transitous");
+                    }
+                } else {
+                    tracing::debug!(trip, "Transitous' copy adds no stops or disagrees");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let label = tt.trip(trip).map(|t| t.label.clone()).unwrap_or_default();
+                events(Event::Warning(&format!("stops of {label} from Transitous: {e:#}")));
+            }
+        }
+    }
 }
 
 /// `--extra-hours` as a duration, negative meaning none.
@@ -265,6 +322,8 @@ fn extra_time(hours: f64) -> Result<TimeDelta> {
 struct Report {
     args: SearchArgs,
     built: timetable::Build,
+    enumeration: enumerate::Enumeration,
+    limits: Limits,
     hubs: Vec<String>,
     /// "12 Transitous requests, 3 EFA requests, …".
     requests: String,
@@ -272,44 +331,29 @@ struct Report {
     time: DateTime<Utc>,
     depart_until: DateTime<Utc>,
     min_transfer: TimeDelta,
-    missed_by: TimeDelta,
-    extra_time: TimeDelta,
     plot: Option<PlotPage>,
 }
 
 impl Report {
-    /// Enumerates the connections and writes the report, sending the stages
-    /// that follow "Enumerating connections" to `stages`.
+    /// Writes the report of the enumerated connections, sending the stages
+    /// that follow to `stages`.
     #[expect(clippy::too_many_lines, reason = "the report, section after section")]
     fn write(self, stages: &tokio::sync::mpsc::UnboundedSender<&'static str>) -> Result<Outcome> {
         let Self {
             args,
             built,
+            enumeration: result,
+            limits,
             hubs,
             requests,
             with_db,
             time,
             depart_until,
             min_transfer,
-            missed_by,
-            extra_time,
             plot,
         } = self;
         let tt = &built.timetable;
         let net = Network::new(tt)?;
-        let limits = Limits {
-            origin: tt.origin,
-            depart_from: time,
-            depart_until,
-            max_changes: args.max_changes,
-            extra_time,
-            min_transfer,
-            missed_by,
-            keep_detours: args.keep_detours,
-            forward_only: args.forward_only,
-            max_nodes: args.max_nodes,
-        };
-        let result = enumerate::enumerate(&net, &limits)?;
         let total = result.chains.len();
         let mut missed = 0_usize;
         for chain in &result.chains {

@@ -133,6 +133,31 @@ struct GeocodeMatch {
     id: String,
     lat: Option<f64>,
     lon: Option<f64>,
+    #[serde(default)]
+    modes: Vec<String>,
+}
+
+impl GeocodeMatch {
+    /// Whether trains call there; a coach stop may be named "… train station".
+    fn has_trains(&self) -> bool {
+        self.modes.iter().any(|m| m.ends_with("RAIL") || m == "LONG_DISTANCE" || m == "SUBURBAN")
+    }
+}
+
+/// A train at a stop, from the departures of a station.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopTime {
+    pub place: Place,
+    pub trip_id: String,
+    pub display_name: Option<String>,
+    pub trip_short_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StopTimesResponse {
+    stop_times: Vec<StopTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +243,7 @@ impl Motis {
     /// Resolve free text to a stop whose name contains every place word of the
     /// text. The geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
     /// "Hauptbahnhof"), so station words are also tried spelled differently,
-    /// and stations are preferred over bus stops.
+    /// and stops with trains are preferred, then stations by name over bus stops.
     pub async fn stop(&self, text: &str) -> Result<Stop> {
         const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
         let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
@@ -238,8 +263,10 @@ impl Motis {
                     place.iter().all(|w| name.split(' ').any(|n| n == *w))
                 })
                 .collect();
-            // Keep the geocoder's order, but stations first.
-            fitting.sort_by_key(|m| !fold(&m.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c"));
+            // Keep the geocoder's order, but stops with trains first, then stations by name.
+            fitting.sort_by_key(|m| {
+                (!m.has_trains(), !fold(&m.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c"))
+            });
             if let Some(m) = fitting.into_iter().next() {
                 return Ok(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name });
             }
@@ -279,6 +306,32 @@ impl Motis {
         let resp: PlanResponse = serde_json::from_str(&text).context("decoding plan")?;
         lock(&self.cache).insert(key, resp.itineraries.clone());
         Ok(resp.itineraries)
+    }
+
+    /// Departures at `stop` (station-level id) from `time` on, at least `n`.
+    pub async fn departures(&self, stop: &str, time: DateTime<Utc>, n: usize) -> Result<Vec<StopTime>> {
+        let query = [
+            ("stopId", stop.to_owned()),
+            ("time", time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            ("n", n.to_string()),
+        ];
+        let text = self
+            .disk
+            .get_or_fetch(&format!("{}stoptimes{query:?}", self.base), self.get_text("/api/v5/stoptimes", &query))
+            .await?;
+        let resp: StopTimesResponse = serde_json::from_str(&text).context("decoding stop times")?;
+        Ok(resp.stop_times)
+    }
+
+    /// A trip with all its stops, as one leg.
+    pub async fn trip(&self, trip_id: &str) -> Result<Leg> {
+        let query = [("tripId", trip_id.to_owned())];
+        let text = self
+            .disk
+            .get_or_fetch(&format!("{}trip{query:?}", self.base), self.get_text("/api/v5/trip", &query))
+            .await?;
+        let itinerary: Itinerary = serde_json::from_str(&text).context("decoding trip")?;
+        itinerary.legs.into_iter().find(Leg::is_transit).with_context(|| format!("trip {trip_id} has no ride"))
     }
 }
 

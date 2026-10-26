@@ -30,7 +30,14 @@ fn minutes(m: i64) -> TimeDelta {
 
 /// A station known to DB under `db_name` (`None`: only MOTIS knows it).
 fn station(name: &str, db_name: Option<&str>) -> Station {
-    Station { name: name.to_owned(), eva: None, db_name: db_name.map(str::to_owned), tz: None, position: None }
+    Station {
+        name: name.to_owned(),
+        eva: None,
+        db_name: db_name.map(str::to_owned),
+        tz: None,
+        position: None,
+        motis_id: None,
+    }
 }
 
 /// A DB event from a testkit time ("09:02+5"); "" is none.
@@ -97,6 +104,7 @@ fn motis_trip(label: &str, class: Option<char>, stops: &[(usize, &str, &str)]) -
         class,
         headsign: None,
         calls: stops.iter().map(|&(s, a, d)| call(s, false, a, d)).collect(),
+        transitous: true,
     }
 }
 
@@ -412,6 +420,7 @@ fn finish_drops_single_calls_and_orders_calls_by_planned_time() {
             call(0, false, "", "06:39"),
             call(3, false, "07:40", "07:41"),
         ],
+        transitous: true,
     };
     let lonely = motis_trip("Bus 1", None, &[(5, "", "08:00")]);
     let trips = finish(vec![lonely, merged]);
@@ -502,6 +511,7 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         db_name: Some("Fulda"),
         tz: Some("Europe/Berlin"),
         position: Some((50.554, 9.684)),
+        motis_id: Some("de-DELFI_de:06631:1234_G"),
     });
     stations.intern(Sighting {
         name: "Fulda",
@@ -509,12 +519,19 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         db_name: Some("Fulda Bf"),
         tz: Some("Europe/Paris"),
         position: Some((1.0, 1.0)),
+        motis_id: Some("other"),
     });
     let s = &stations.list[a];
     assert_eq!(stations.list.len(), 1);
     assert_eq!(
-        (s.eva.as_deref(), s.db_name.as_deref(), s.tz.as_deref(), s.position),
-        (Some("8000115"), Some("Fulda"), Some("Europe/Berlin"), Some((50.554, 9.684)))
+        (s.eva.as_deref(), s.db_name.as_deref(), s.tz.as_deref(), s.position, s.motis_id.as_deref()),
+        (
+            Some("8000115"),
+            Some("Fulda"),
+            Some("Europe/Berlin"),
+            Some((50.554, 9.684)),
+            Some("de-DELFI_de:06631:1234_G")
+        )
     );
 }
 

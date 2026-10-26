@@ -160,6 +160,15 @@ command line logs nothing unless `RUST_LOG` is set.
    If the effort cap (`--max-nodes`) is hit, the output says up to how many
    changes the list is complete.
 
+4. **Stops for the display**: a train only DB boards know (no Transitous
+   answer rode it) has times only where boards were fetched, and looks like a
+   slow nonstop train: FLX 1236 Frankfurt Süd → Hamburg Hbf via Fulda, Erfurt
+   and Berlin. For up to 20 such trains in the listed connections, widest gaps
+   first, Transitous' departures at a known stop and then the trip fill in the
+   stops between (two requests each, cached for 10 minutes). Only where both
+   agree on the times; the search has run already, so changes there aren't
+   offered.
+
 Without DB credentials, the DB part of step 2 is skipped and the timetable consists
 of the MOTIS trains only.
 
