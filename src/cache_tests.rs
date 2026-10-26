@@ -66,6 +66,19 @@ async fn failed_fetches_are_not_cached() {
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn an_unwritable_cache_still_answers() {
+    // A file where the cache directory should be: storing the answer fails.
+    let dir = root().unwrap().join("cache-test-unwritable");
+    std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    std::fs::write(&dir, "").unwrap();
+    let cache = DiskCache::new("cache-test-unwritable", TTL);
+    let runs = AtomicUsize::new(0);
+    assert_eq!(cache.get_or_fetch("key", fetch(&runs, "ok")).await.unwrap(), "ok");
+    assert_eq!(cache.get_or_fetch("key", fetch(&runs, "again")).await.unwrap(), "again", "nothing was stored");
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+}
+
 #[test]
 fn readers_never_see_half_written_files() {
     let dir = root().unwrap().join("cache-test-atomic");
