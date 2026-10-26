@@ -22,9 +22,6 @@ const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
 /// Trip ids of EFA runs start with this; the timetable prefers their times.
 pub const TRIP_PREFIX: &str = "efa:";
-/// Categories of long-distance trains, which EFA may file under the generic
-/// product class "Zug" (ICE 273, NJ 40420).
-const LONG_DISTANCE: [&str; 11] = ["ICE", "IC", "EC", "ECE", "EN", "NJ", "RJ", "RJX", "TGV", "FLX", "ICD"];
 
 #[derive(Deserialize)]
 struct TripResponse {
@@ -221,7 +218,7 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         };
         let transport = transport?;
         let category = category(transport);
-        let mode = if category.is_some_and(|c| LONG_DISTANCE.contains(&c)) { "LONG_DISTANCE" } else { mode };
+        let mode = if category.is_some_and(crate::timetable::is_long_distance) { "LONG_DISTANCE" } else { mode };
         let name = match (category, transport.number.as_deref()) {
             (Some(category), Some(number)) => Some(format!("{category} {number}")),
             _ => transport.number.clone(),

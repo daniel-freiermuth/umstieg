@@ -116,9 +116,25 @@ fn plan_board_parses_trains_times_platforms_and_paths() {
     let starting = labels["S3 (38314)"];
     assert!(starting.arrival.is_none() && starting.departure.is_some());
 
-    // Foreign trains may lack the product class.
+    // Foreign trains may lack the product class: long-distance categories give it.
     let ece = labels["ECE 151"];
-    assert_eq!((ece.class, ece.number), (None, Some(151)));
+    assert_eq!((ece.class, ece.number), (Some('F'), Some(151)));
+}
+
+#[test]
+fn trains_without_class_or_with_a_bare_line_number_get_category_labels() {
+    let board = |tl: &str, line: &str| {
+        let xml = format!(r#"<timetable><s id="7-2610260615-4">{tl}<dp pt="2610260758" l="{line}"/></s></timetable>"#);
+        parse_visits(&xml).unwrap().remove(0).1
+    };
+    // FlixTrain: no class, the line is "10".
+    let flx = board(r#"<tl t="p" o="FLX10" c="FLX" n="1236"/>"#, "10");
+    assert_eq!((flx.label(), flx.class), ("FLX 1236".to_owned(), Some('F')));
+    // A line with letters names the train as before; an unknown category stays without class.
+    let re = board(r#"<tl f="N" t="p" o="800" c="RE" n="17005"/>"#, "RE7");
+    assert_eq!((re.label(), re.class), ("RE7 (17005)".to_owned(), Some('N')));
+    let bus = board(r#"<tl t="p" o="X" c="Bus" n="4711"/>"#, "");
+    assert_eq!((bus.label(), bus.class), ("Bus 4711".to_owned(), None));
 }
 
 #[test]

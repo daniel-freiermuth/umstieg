@@ -160,6 +160,10 @@ impl Visit {
     pub fn label(&self) -> String {
         let number = self.number.map(|n| n.to_string()).unwrap_or_default();
         match (&self.line, &self.category) {
+            // FlixTrain gives its line as "10": "FLX 1236", like "ICE 273".
+            (Some(line), Some(category)) if self.number.is_some() && line.chars().all(|c| c.is_ascii_digit()) => {
+                format!("{category} {number}")
+            }
             (Some(line), _) => format!("{line} ({number})"),
             (None, Some(category)) => format!("{category} {number}"),
             (None, None) => number,
@@ -558,8 +562,11 @@ fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
                 match child.tag_name().name() {
                     "tl" => {
                         visit.number = child.attribute("n").and_then(|n| n.parse().ok());
-                        visit.class = child.attribute("f").and_then(|f| f.chars().next());
                         visit.category = child.attribute("c").map(str::to_owned);
+                        // FlixTrain and some foreign trains come without a class.
+                        visit.class = child.attribute("f").and_then(|f| f.chars().next()).or_else(|| {
+                            visit.category.as_deref().filter(|c| crate::timetable::is_long_distance(c)).map(|_| 'F')
+                        });
                     }
                     "ar" | "dp" => {
                         if visit.line.is_none() {

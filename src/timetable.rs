@@ -27,6 +27,14 @@ const SAME_STATION_METERS: f64 = 300.0;
 const NEARBY_WALK: TimeDelta = TimeDelta::minutes(5);
 /// DB boards cover German stations; elsewhere they are empty.
 const DB_TIME_ZONE: &str = "Europe/Berlin";
+/// Categories of long-distance trains, for feeds that give no product class or
+/// a generic one: EFA files ICE 273 under "Zug", DB gives `FlixTrain` none.
+const LONG_DISTANCE: [&str; 11] = ["ICE", "IC", "EC", "ECE", "EN", "NJ", "RJ", "RJX", "TGV", "FLX", "ICD"];
+
+/// Whether `category` ("ICE", "FLX") is a long-distance train's.
+pub fn is_long_distance(category: &str) -> bool {
+    LONG_DISTANCE.contains(&category)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Time {
