@@ -48,7 +48,7 @@ fn trips(itineraries: &[Itinerary]) -> BTreeSet<String> {
 // ---- answers within the window ----
 
 #[test]
-fn departing_keeps_itineraries_whose_first_train_leaves_in_the_window() {
+fn departing_keeps_itineraries_with_a_train_leaving_in_the_window() {
     let o = ("o", "Origin");
     let d = ("d", "Dest");
     let cases = [
@@ -56,6 +56,22 @@ fn departing_keeps_itineraries_whose_first_train_leaves_in_the_window() {
         ("last minute", vec![leg(Some("t"), o, d, "10:00", "11:00")], true),
         ("padded later", vec![leg(Some("t"), o, d, "10:01", "11:00")], false),
         ("before", vec![leg(Some("t"), o, d, "07:59", "09:00")], false),
+        (
+            "earlier tram, train in the window",
+            vec![
+                leg(Some("tram"), o, ("m", "Mannheim"), "07:13", "08:03"),
+                leg(Some("ice"), ("m", "Mannheim"), d, "08:15", "10:00"),
+            ],
+            true,
+        ),
+        (
+            "both trains before",
+            vec![
+                leg(Some("tram"), o, ("m", "Mannheim"), "07:13", "07:40"),
+                leg(Some("ice"), ("m", "Mannheim"), d, "07:50", "10:00"),
+            ],
+            false,
+        ),
         (
             "walk before the train",
             vec![leg(None, o, o, "07:50", "08:00"), leg(Some("t"), o, d, "08:00", "09:00")],

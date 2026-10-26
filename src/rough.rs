@@ -175,12 +175,14 @@ fn starts(time: DateTime<Utc>, window: TimeDelta, step: TimeDelta) -> Vec<DateTi
 }
 
 /// MOTIS pads short answers with later departures, up to days later when
-/// nothing runs; keep the asked-for window.
+/// nothing runs; keep the asked-for window. An itinerary counts if any of
+/// its trains leaves in it: EFA also answers an earlier journey (RNV 4 at
+/// 04:13 for 05:00), whose ICE 273 from Mannheim at 06:15 is in the window.
 fn departing(itineraries: Vec<Itinerary>, time: DateTime<Utc>, window: TimeDelta) -> Vec<Itinerary> {
     let span = time..=checked::later_or_max(time, window);
     itineraries
         .into_iter()
-        .filter(|i| i.legs.iter().find(|l| l.is_transit()).is_some_and(|l| span.contains(&l.start_time)))
+        .filter(|i| i.legs.iter().filter(|l| l.is_transit()).any(|l| span.contains(&l.start_time)))
         .collect()
 }
 
