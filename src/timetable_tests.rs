@@ -1071,6 +1071,75 @@ fn motis_trains_with_the_same_times_from_two_feeds_become_one() {
     assert_eq!(trips[0].calls.len(), 2);
 }
 
+#[test]
+fn copies_of_a_train_from_two_feeds_become_one_with_efa_times() {
+    // ICE 273 without DB data, EFA's times are right: Transitous has it 10
+    // minutes later at Karlsruhe (and 22 at Mannheim), one at Freiburg. The
+    // feeds also disagree on its class.
+    let stations: Vec<Station> =
+        ["Mannheim", "Karlsruhe", "Offenburg", "Freiburg", "Basel"].iter().map(|&n| station(n, Some(n))).collect();
+    let efa = motis_trip("ICE 273", Some('N'), &[(1, "06:49", "06:51"), (3, "08:00", "")]);
+    let transitous = |karlsruhe: (&'static str, &'static str), mannheim: &'static str| {
+        motis_trip(
+            "ICE 273",
+            Some('F'),
+            &[
+                (0, "", mannheim),
+                (1, karlsruhe.0, karlsruhe.1),
+                (2, "07:29", "07:30"),
+                (3, "08:01", "08:03"),
+                (4, "08:45", ""),
+            ],
+        )
+    };
+    let cases = [
+        // Stops are taken only where the copies agree around them: Basel after
+        // Freiburg, but not Mannheim and Offenburg next to Karlsruhe.
+        (
+            "disagreeing at Karlsruhe",
+            transitous(("06:59", "07:01"), "06:37"),
+            vec![(1, "06:49"), (3, "08:00"), (4, "08:45")],
+        ),
+        (
+            "agreeing everywhere",
+            transitous(("06:49", "06:51"), "06:15"),
+            vec![(0, "06:15"), (1, "06:49"), (2, "07:29"), (3, "08:00"), (4, "08:45")],
+        ),
+    ];
+    for (what, transitous, expected) in cases {
+        // Either key order: EFA's copy is the base.
+        for (efa_id, transitous_id) in [("efa:z:1:20261025", "0-delfi"), ("efa:a:1:20261025", "zz-delfi")] {
+            let trips =
+                merge(&stations, &Boards::new(), raw(vec![(transitous_id, transitous.clone()), (efa_id, efa.clone())]));
+            assert_eq!(trips.len(), 1, "{what}, {efa_id}");
+            let mut times: Vec<_> = trips[0].calls.iter().map(|c| (c.station, c.planned())).collect();
+            times.sort_unstable();
+            let expected: Vec<_> = expected.iter().map(|&(s, t)| (s, Some(at(t)))).collect();
+            assert_eq!(times, expected, "{what}, {efa_id}");
+        }
+    }
+}
+
+#[test]
+fn feed_trains_sharing_a_number_but_no_time_stay_apart() {
+    // An hour apart: two runs whose feeds give the line's number ("RE7" → 7).
+    let stations: Vec<Station> = ["A", "B"].iter().map(|&n| station(n, Some(n))).collect();
+    let early = motis_trip("RE7", Some('N'), &[(0, "", "08:00"), (1, "08:30", "")]);
+    let late = motis_trip("RE7", Some('N'), &[(0, "", "09:00"), (1, "09:30", "")]);
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", early), ("b", late)]));
+    assert_eq!(trips.len(), 2);
+    // Two minutes apart at one station is the same train, whatever the class.
+    let a = motis_trip("ICE 5", Some('F'), &[(0, "", "08:00"), (1, "08:30", "")]);
+    let b = motis_trip("5", Some('N'), &[(0, "", "08:02"), (1, "08:45", "")]);
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]));
+    assert_eq!(labels(&trips), ["ICE 5"]);
+    // Trams and buses: line numbers, so no merging by number.
+    let a = motis_trip("4", None, &[(0, "", "08:00"), (1, "08:30", "")]);
+    let b = motis_trip("4", None, &[(0, "", "08:01"), (1, "08:45", "")]);
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]));
+    assert_eq!(trips.len(), 2);
+}
+
 // ---------------------------------------------------------------- DB boards
 
 #[tokio::test]

@@ -130,8 +130,12 @@ command line logs nothing unless `RUST_LOG` is set.
    `--planned` ignores delays (planned times only); DB's latest schedule —
    cancellations, diversions, extra trains — still applies.
    MOTIS trains are merged in by number or identical times; DB wins where it
-   has data, MOTIS fills the rest (abroad, buses). Stations from different
-   feeds are unified by EVA number, name or distance (< 300 m).
+   has data, MOTIS fills the rest (abroad, buses). Without DB (past days,
+   abroad), copies of a train from Transitous and EFA become one by number;
+   EFA's times win, and the other copy only adds stops where both agree on the
+   stops around them (Transitous had ICE 273 22 minutes late at Mannheim).
+   Stations from different feeds are unified by EVA number, name or distance
+   (< 300 m).
 3. **Enumeration**: depth-first over that timetable, deepening by number of
    changes, within these limits:
    - departure inside `--window`, travel time ≤ fastest + `--extra-hours`,

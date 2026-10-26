@@ -33,4 +33,8 @@ exclude_re = [
   'replace < with <= in DiskCache::get_or_fetch',
   # On equal times, clamping to the previous time assigns the same value.
   'replace < with <= in propagate_delays',
+  # A stop missing from one copy at the very time of a stop both have: a train
+  # isn't at two stations at once, so the anchors around it don't change.
+  'replace < with <= in merge$',
+  'replace > with >= in merge$',
 ]

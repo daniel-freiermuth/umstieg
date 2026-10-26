@@ -604,6 +604,7 @@ type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 /// DB trains from the boards, MOTIS trains merged into them by number. DB wins
 /// where it has data: a MOTIS stop is dropped if the DB train's route omits the
 /// station, or the station's board lists other trains of that class for the hour.
+/// Without DB, copies of one train from several feeds become one, EFA's times winning.
 #[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
 fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> Vec<Trip> {
     let mut runs: HashMap<&str, Vec<(usize, &Visit)>> = HashMap::new();
@@ -711,8 +712,17 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
         index(&mut at_station, i, &t.calls);
     }
 
+    // Trains DB doesn't know (past days, abroad) can come from several feeds
+    // with differing times (ICE 273: Transitous 22 minutes off at Mannheim).
+    // EFA's go first, so that their times win and the others only add stops.
     let mut raw: Vec<(String, Trip)> = raw.into_iter().collect();
-    raw.sort_by(|a, b| a.0.cmp(&b.0));
+    raw.sort_by(|a, b| {
+        let not_efa = |id: &str| !id.starts_with(crate::efa::TRIP_PREFIX);
+        not_efa(&a.0).cmp(&not_efa(&b.0)).then_with(|| a.0.cmp(&b.0))
+    });
+    // Trains from those feeds by number: the same number at the same time at
+    // one station is one train, whatever class the feeds gave it.
+    let mut feed_by_number: HashMap<u32, Vec<usize>> = HashMap::new();
     for (_, motis) in raw {
         let by_number = motis.numbers.iter().find_map(|n| {
             by_number.get(n)?.iter().copied().find(|&i| {
@@ -724,7 +734,19 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
                 })
             })
         });
-        let twin = by_number.or_else(|| {
+        let same_run = || {
+            motis.numbers.iter().find_map(|n| {
+                feed_by_number.get(n)?.iter().copied().find(|&i| {
+                    motis.calls.iter().any(|c| {
+                        trips.get(i).and_then(|t| t.call_at(c.station)).is_some_and(|d| {
+                            close(c.arrival.map(|t| t.planned), d.arrival.map(|t| t.planned))
+                                || close(c.departure.map(|t| t.planned), d.departure.map(|t| t.planned))
+                        })
+                    })
+                })
+            })
+        };
+        let twin = by_number.or_else(same_run).or_else(|| {
             let mut shared: HashMap<usize, usize> = HashMap::new();
             for c in &motis.calls {
                 let (arr, dep) = (c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned));
@@ -750,6 +772,27 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             // can't be at two stations at once.
             let db_times = trip.calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
             let span = db_times.clone().min().zip(db_times.max());
+            // Into another feed's copy, a stop is only taken where the copies
+            // agree on the stops around it: Transitous' ICE 273 is 10 minutes
+            // off at Karlsruhe, so its Mannheim time would be too.
+            let from_feed = !trip.calls.iter().any(|c| c.from_db);
+            let anchors: Vec<(DateTime<Utc>, bool)> = motis
+                .calls
+                .iter()
+                .filter_map(|c| {
+                    let base = trip.call_at(c.station)?;
+                    let agree = close(c.arrival.map(|t| t.planned), base.arrival.map(|t| t.planned))
+                        || close(c.departure.map(|t| t.planned), base.departure.map(|t| t.planned));
+                    Some((c.planned()?, agree))
+                })
+                .collect();
+            let anchored = |t: Option<DateTime<Utc>>| {
+                t.is_some_and(|t| {
+                    let before = anchors.iter().filter(|a| a.0 < t).max_by_key(|a| a.0);
+                    let after = anchors.iter().filter(|a| a.0 > t).min_by_key(|a| a.0);
+                    (before.is_some() || after.is_some()) && before.is_none_or(|a| a.1) && after.is_none_or(|a| a.1)
+                })
+            };
             let mut added = Vec::new();
             for call in motis.calls {
                 let name = stations.get(call.station).and_then(|s| s.db_name.as_ref());
@@ -757,7 +800,12 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
                 let unknown_inside = name.is_none()
                     && !route.is_empty()
                     && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
-                if trip.call_at(call.station).is_none() && !off_route && !unknown_inside && !covered(&call, motis.class)
+                let unanchored = from_feed && !anchored(call.planned());
+                if trip.call_at(call.station).is_none()
+                    && !off_route
+                    && !unknown_inside
+                    && !unanchored
+                    && !covered(&call, motis.class)
                 {
                     added.push(call.clone());
                     trip.calls.push(call);
@@ -767,6 +815,12 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
         } else {
             let class = motis.class;
             let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();
+            // Only trains: buses and trams carry line numbers, shared by many runs.
+            if class.is_some() {
+                for &n in &motis.numbers {
+                    feed_by_number.entry(n).or_default().push(trips.len());
+                }
+            }
             index(&mut at_station, trips.len(), &calls);
             trips.push(Trip { calls, ..motis });
             routes.push(HashSet::new());
