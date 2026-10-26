@@ -82,7 +82,7 @@ distance ones, goal unreachable) are left out of it:
 
 | Metric | Height | Equidistant lines |
 |---|---|---|
-| `remaining-time` (default) | fastest possible remaining ride time, ignoring waits: fastest planned ride per stretch, from any train at any time | network-based; riding is never flat, at most 45°, exactly 45° on the fastest train; no single connection explains a height |
+| `remaining-time` (default) | fastest possible remaining ride time, ignoring waits: fastest ride per stretch (planned or live, whichever is shorter) from any train at any time, every stretch counted both ways | network-based; no ride or walk rises or falls more than it lasts (at most 45°, exactly 45° down on the fastest train), so a detour climbs gently instead of jumping where the timetable lacks the trains back; no single connection explains a height |
 | `fastest-real` | duration of the fastest real journey from there, waits included, at any departure in the timetable | each height is a connection one can look up; riding can run flat or rise where connections are poor |
 | `hyperbolic` | (d_goal − d_start + D) / 2 | hyperbolas, start and goal as foci |
 | `axis` | distance left along the start–goal axis (from d_start² − d_goal²) | straight lines perpendicular to the axis |

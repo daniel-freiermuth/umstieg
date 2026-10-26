@@ -15,6 +15,7 @@ exclude_re = [
   'replace < with <= in lower_bounds',
   # At pop time d >= best, so this only stops skipping stale heap entries, which can't improve anything.
   'replace > with < in lower_bounds',
+  'replace > with < in remaining_ride_minutes',
   # Stores the value already there, or loops re-scanning zero-time rides.
   'replace < with <= in fastest_journeys',
   # Pushes a second entry with the same departure instead of overwriting; lookups take the last one.

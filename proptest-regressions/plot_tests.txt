@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d538908e2a25277c1a787b5983e1f25374b3aa4fdb392805cfae9c58c74182ae # shrinks to spec = Spec { stations: 3, trips: [(0, [StopSpec { station: 0, run: 1, dwell: 0, delay: 3, cancelled: false, missing: 0 }, StopSpec { station: 2, run: 0, dwell: 0, delay: 0, cancelled: false, missing: 0 }])], walks: [] }

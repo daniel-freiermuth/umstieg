@@ -62,11 +62,10 @@ fn time_heights_are_remaining_minutes_with_and_without_waits() {
     let (a, b, c, d) = (station(&tt, "A"), station(&tt, "B"), station(&tt, "C"), station(&tt, "D"));
 
     let remaining = heights(&net, Metric::RemainingTime).unwrap();
-    // Fastest ride per stretch, waits ignored: 60 + 20.
+    // Fastest ride per stretch, waits ignored: 60 + 20. D only has the bus from
+    // A, ridden back for its height: 30 + 80.
     assert!(close(remaining[a], 80.0) && close(remaining[b], 20.0) && close(remaining[c], 0.0), "{remaining:?}");
-    assert_eq!(remaining[d], None, "the goal can't be reached from D");
-    let lower: Vec<Option<f64>> = net.lower_bound.iter().map(|l| l.map(|l| l.as_seconds_f64() / 60.0)).collect();
-    assert_eq!(remaining, lower);
+    assert!(close(remaining[d], 110.0), "{remaining:?}");
 
     let real = heights(&net, Metric::FastestReal).unwrap();
     // 08:00 → 10:30 including the hour at B; from B the 20-minute ICE.
@@ -399,6 +398,33 @@ fn time_heights_are_rounded_to_hundredths() {
     let arrival = tt.trips[0].calls[1].arrival.as_mut().unwrap();
     arrival.actual += TimeDelta::seconds(20);
     arrival.planned += TimeDelta::seconds(20);
-    let data = render_data(&tt, Metric::RemainingTime).unwrap();
-    assert_eq!(data["metrics"][0]["heights"][tt.origin], 10.33);
+    let data = render_data(&tt, Metric::FastestReal).unwrap();
+    assert_eq!(data["metrics"][1]["heights"][tt.origin], 10.33);
+    // Remaining ride time counts whole minutes, as the plot draws them.
+    assert_eq!(data["metrics"][0]["heights"][tt.origin], 10.0);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(300))]
+
+    /// No drawn ride or walk changes height by more than it lasts (at most
+    /// 45°), whatever delays, cancelled stops, missing times or walks: in the
+    /// data the page draws, connections and fallbacks alike. Every drawn
+    /// station has a height.
+    #[test]
+    fn remaining_time_never_rises_or_falls_faster_than_the_clock(spec in testkit::spec(true, true)) {
+        let tt = testkit::timetable(&spec);
+        let data = render_data(&tt, Metric::RemainingTime).unwrap();
+        let heights = &data["metrics"][0]["heights"];
+        for piece in data["pieces"].as_array().unwrap().iter().filter(|p| p["kind"] != "wait") {
+            for pair in piece["pts"].as_array().unwrap().windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                let height = |p: &Value| heights[idx(&p[1])].as_f64().unwrap_or_else(|| panic!("no height for {p}"));
+                let minutes = b[0].as_i64().unwrap().saturating_sub(a[0].as_i64().unwrap()).max(0);
+                let minutes = f64::from(i32::try_from(minutes).unwrap());
+                let rise = (height(b) - height(a)).abs();
+                proptest::prop_assert!(rise <= minutes, "{} {a} → {b}: {rise} in {minutes} min", piece["info"]);
+            }
+        }
+    }
 }

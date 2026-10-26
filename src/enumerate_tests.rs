@@ -6,8 +6,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
 use super::*;
-use crate::testkit::{Builder, at, ride, show};
-use crate::timetable::{Footpath, Trip};
+use crate::testkit::{Builder, Spec, at, ride, show, spec, timetable};
 
 const fn min(m: i64) -> TimeDelta {
     TimeDelta::minutes(m)
@@ -702,105 +701,6 @@ fn fastest_journeys_settle_rides_taking_no_time() {
     let fastest = fastest_journeys(&tt).unwrap();
     let at_station = |name| fastest[station(&tt, name)];
     assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
-}
-
-// Random small timetables against brute force.
-
-#[derive(Debug, Clone)]
-struct StopSpec {
-    station: usize,
-    /// Minutes to the next stop.
-    run: i64,
-    dwell: i64,
-    delay: i64,
-    cancelled: bool,
-    /// 0: no arrival time, 1: no departure time (stops in the middle only).
-    missing: u8,
-}
-
-#[derive(Debug, Clone)]
-struct Spec {
-    stations: usize,
-    trips: Vec<(i64, Vec<StopSpec>)>,
-    walks: Vec<(usize, usize, i64)>,
-}
-
-/// 3–5 stations, origin `S0`, destination the last; 2–10 trains of 2–5 stops
-/// with delays (catching up too, but never running backwards) and up to 4
-/// walks. `gaps`: stops may be cancelled or lack a time; `origin_mid_trip`:
-/// trains may call at the origin after their first stop.
-fn spec(gaps: bool, origin_mid_trip: bool) -> impl Strategy<Value = Spec> {
-    (3usize..=5)
-        .prop_flat_map(move |n| {
-            let stop = (0..n, 0i64..=30, 0i64..=4, -5i64..=15, prop::bool::weighted(0.12), 0u8..10).prop_map(
-                move |(station, run, dwell, delay, cancelled, missing)| StopSpec {
-                    station,
-                    run,
-                    dwell,
-                    delay,
-                    cancelled: cancelled && gaps,
-                    missing: if gaps { missing } else { u8::MAX },
-                },
-            );
-            let trip = (0i64..=90, prop::collection::vec(stop, 2..=5));
-            (Just(n), prop::collection::vec(trip, 2..=10), prop::collection::vec((0..n, 0..n, 1i64..=15), 0..=4))
-        })
-        .prop_map(move |(stations, trips, walks)| {
-            let trips = trips
-                .into_iter()
-                .map(|(start, stops)| {
-                    let mut seen = HashSet::new();
-                    let stops: Vec<StopSpec> = stops
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, s)| origin_mid_trip || *i == 0 || s.station != 0)
-                        .map(|(_, s)| s)
-                        .filter(|s| seen.insert(s.station))
-                        .collect();
-                    (start, stops)
-                })
-                .filter(|(_, stops)| stops.len() >= 2)
-                .collect();
-            Spec { stations, trips, walks: walks.into_iter().filter(|&(a, b, _)| a != b).collect() }
-        })
-}
-
-fn timetable(spec: &Spec) -> Timetable {
-    let mut b = Builder::new();
-    for s in 0..spec.stations {
-        b.station(&format!("S{s}"));
-    }
-    for (k, (start, stops)) in spec.trips.iter().enumerate() {
-        let mut planned = at("08:00") + min(*start);
-        let mut live = planned;
-        let last = stops.len() - 1;
-        let mut calls = Vec::new();
-        for (i, stop) in stops.iter().enumerate() {
-            let mut time = |planned: DateTime<Utc>| {
-                live = live.max(planned + min(stop.delay));
-                Time { planned, actual: live }
-            };
-            let arrival = (i > 0).then(|| time(planned));
-            planned += min(stop.dwell);
-            let departure = (i < last).then(|| time(planned));
-            planned += min(stop.run);
-            let middle = i > 0 && i < last;
-            calls.push(Call {
-                station: stop.station,
-                arrival: arrival.filter(|_| !(middle && stop.missing == 0)),
-                departure: departure.filter(|_| !(middle && stop.missing == 1)),
-                platform: None,
-                cancelled: stop.cancelled,
-                from_db: true,
-            });
-        }
-        b.trips.push(Trip { label: format!("T{k}"), numbers: Vec::new(), class: None, headsign: None, calls });
-    }
-    for &(from, to, minutes) in &spec.walks {
-        b.footpaths.push(Footpath { from, to, duration: min(minutes) });
-    }
-    let destination = format!("S{}", spec.stations - 1);
-    b.build("S0", &destination)
 }
 
 /// Every connection the rules allow, by plain depth-first search without

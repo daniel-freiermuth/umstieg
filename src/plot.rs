@@ -21,8 +21,9 @@ use crate::timetable::{Timetable, meters};
 /// How a station's height is computed; all are "remaining", goal = 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Metric {
-    /// Fastest possible remaining ride time, ignoring waits (minutes). Stations
-    /// keep one height, riding never runs flat unless moving away from the goal.
+    /// Fastest possible remaining ride time, ignoring waits, every stretch
+    /// ridden either way (minutes). No ride or walk changes height by more
+    /// than its duration: at most 45°, the fastest way down at exactly 45°.
     RemainingTime,
     /// Duration of the fastest real journey from there, waits included, at any
     /// departure time in the timetable (minutes). Each height is a connection
@@ -49,7 +50,7 @@ impl Metric {
 
     const fn description(self) -> &'static str {
         match self {
-            Self::RemainingTime => "fastest possible remaining ride time",
+            Self::RemainingTime => "fastest possible remaining ride time, either direction",
             Self::FastestReal => "fastest real remaining journey, any departure",
             Self::Hyperbolic => "(distance to goal − distance from start + D) / 2",
             Self::Axis => "distance left along the start–goal axis",
@@ -64,7 +65,9 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
     let tt = net.tt;
     let minutes = |d: &Option<TimeDelta>| d.map(|d| d.as_seconds_f64() / 60.0);
     let geometric: fn(f64, f64, f64) -> f64 = match metric {
-        Metric::RemainingTime => return Ok(net.lower_bound.iter().map(minutes).collect()),
+        Metric::RemainingTime => {
+            return Ok(remaining_ride_minutes(tt)?.into_iter().map(|m| m.map(f64::from)).collect());
+        }
         Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt)?.iter().map(minutes).collect()),
         Metric::Hyperbolic => |a, b, total| f64::midpoint(b - a, total),
         Metric::Axis => |a, b, total| total - f64::mul_add(b, -b, f64::mul_add(a, a, total * total)) / (2.0 * total),
@@ -83,6 +86,60 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
             Some(geometric(km(p, start), km(p, goal), total))
         })
         .collect())
+}
+
+/// Shortest ride and walk time to the goal with every stretch usable both
+/// ways, in whole minutes. The search's lower bound counts stretches only in
+/// the direction the train runs, and the timetable mostly holds trains towards
+/// the goal: a station on a detour got the whole loop as its height, a step up
+/// far steeper than the ride to it. Trains back almost always exist.
+///
+/// Edges are what the plot draws, so that no drawn piece rises or falls more
+/// than it lasts: minutes as drawn (whole minutes of the timestamps), the
+/// shorter of planned and live time, cancelled stops included, walks rounded
+/// down. Heights are i32 minutes: a lower bound beyond ~4000 years saturates.
+fn remaining_ride_minutes(tt: &Timetable) -> Result<Vec<Option<i32>>> {
+    let minute = |t: DateTime<Utc>| t.timestamp().div_euclid(60);
+    let mut edges: Vec<Vec<(usize, i64)>> = vec![Vec::new(); tt.stations.len()];
+    let mut connect = |a: usize, b: usize, w: i64| -> Result<()> {
+        if a != b {
+            edges.get_mut(a).with_context(|| format!("no station {a} in the timetable"))?.push((b, w));
+            edges.get_mut(b).with_context(|| format!("no station {b} in the timetable"))?.push((a, w));
+        }
+        Ok(())
+    };
+    for trip in &tt.trips {
+        let mut previous: Option<(usize, i64, i64)> = None;
+        for call in &trip.calls {
+            let at = |t: crate::timetable::Time| (minute(t.planned), minute(t.actual));
+            if let (Some((from, planned, live)), Some((p, l))) = (previous, call.arrival.or(call.departure).map(at)) {
+                connect(from, call.station, p.saturating_sub(planned).min(l.saturating_sub(live)).max(0))?;
+            }
+            if let Some((p, l)) = call.departure.or(call.arrival).map(at) {
+                previous = Some((call.station, p, l));
+            }
+        }
+    }
+    for fp in &tt.footpaths {
+        connect(fp.from, fp.to, fp.duration.num_minutes().max(0))?;
+    }
+    let mut best: Vec<Option<i64>> = vec![None; tt.stations.len()];
+    let mut heap = std::collections::BinaryHeap::new();
+    *best.get_mut(tt.destination).context("no destination station")? = Some(0);
+    heap.push(std::cmp::Reverse((0_i64, tt.destination)));
+    while let Some(std::cmp::Reverse((d, s))) = heap.pop() {
+        if best.get(s).copied().flatten().is_some_and(|b| d > b) {
+            continue;
+        }
+        for &(next, w) in edges.get(s).into_iter().flatten() {
+            let nd = d.saturating_add(w);
+            if let Some(slot) = best.get_mut(next).filter(|b| b.is_none_or(|b| nd < b)) {
+                *slot = Some(nd);
+                heap.push(std::cmp::Reverse((nd, next)));
+            }
+        }
+    }
+    Ok(best.into_iter().map(|b| b.map(|m| i32::try_from(m).unwrap_or(i32::MAX))).collect())
 }
 
 #[derive(Serialize)]
