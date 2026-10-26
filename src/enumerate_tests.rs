@@ -444,8 +444,7 @@ fn detour_to_a_later_stop_of_the_same_train_is_pruned() {
 #[test]
 fn detour_worst_buffer_counts_every_change_since_the_earlier_stop() {
     let direct = "ICE 1 Frankfurt-Hamburg / RJ 384 Hamburg-København";
-    let detour =
-        "ICE 1 Frankfurt-Hamburg / S 3 Hamburg-Harburg / RB 31 Harburg-Lüneburg / RJ 384 Lüneburg-København";
+    let detour = "ICE 1 Frankfurt-Hamburg / S 3 Hamburg-Harburg / RB 31 Harburg-Lüneburg / RJ 384 Lüneburg-København";
     // (RB 31 leaves Harburg, detour kept)
     let cases = [
         // 2 min at Harburg: the 10 min direct change is better, pruned.
