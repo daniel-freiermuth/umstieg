@@ -114,7 +114,7 @@ fn router(app: Arc<App>) -> Router {
 struct Field {
     name: String,
     help: String,
-    /// "text", "number", "flag", "choice", "time", "station", "stations".
+    /// "text", "number", "flag", "choice", "time", "zone", "station", "stations".
     kind: &'static str,
     default: String,
     choices: Vec<String>,
@@ -138,6 +138,7 @@ fn fields_of(command: &clap::Command) -> Vec<Field> {
                 "from" | "to" => "station",
                 "via" => "stations",
                 "at" => "time",
+                "time_zone" => "zone",
                 _ if matches!(a.get_action(), ArgAction::SetTrue) => "flag",
                 _ if !choices.is_empty() => "choice",
                 _ if default.parse::<f64>().is_ok() => "number",

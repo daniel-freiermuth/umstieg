@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
+use chrono_tz::Tz;
 use clap::ValueEnum;
 use serde::Serialize;
 
@@ -148,6 +149,7 @@ struct Data {
     subtitle: String,
     /// Link back to the search form, if any.
     back: Option<String>,
+    /// The time zone every time is shown in: "Europe/Berlin".
     tz: String,
     /// Every metric computable here; the page switches between them.
     metrics: Vec<MetricOut>,
@@ -218,6 +220,7 @@ struct Piece {
 struct Builder<'a> {
     tt: &'a Timetable,
     min_transfer: TimeDelta,
+    zone: Tz,
     used: HashSet<usize>,
     pieces: Vec<Piece>,
     index: HashMap<Piece, usize>,
@@ -303,9 +306,9 @@ impl Builder<'_> {
                         "{}{} · {} {} → {} {}",
                         t.label,
                         t.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default(),
-                        text::timed(b.departure, bs.tz.as_deref()),
+                        text::timed(b.departure, self.zone),
                         bs.name,
-                        text::timed(a.arrival.or(a.departure), as_.tz.as_deref()),
+                        text::timed(a.arrival.or(a.departure), self.zone),
                         as_.name,
                     );
                     out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts }));
@@ -327,6 +330,8 @@ pub struct Plot<'a> {
     pub groups: &'a [Group],
     pub metric: Metric,
     pub min_transfer: TimeDelta,
+    /// Where every time is shown in.
+    pub zone: Tz,
     /// Link back to the search form that produced the plot (`umstieg serve`).
     pub back: Option<String>,
 }
@@ -354,11 +359,11 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     let mut builder = Builder {
         tt,
         min_transfer: plot.min_transfer,
+        zone: plot.zone,
         used: HashSet::from([tt.origin, tt.destination]),
         pieces: Vec::new(),
         index: HashMap::new(),
     };
-    let destination_tz = tt.station(tt.destination)?.tz.as_deref();
 
     let mut fallback_out: Vec<FallbackOut> = Vec::new();
     let mut fallback_index: HashMap<(usize, DateTime<Utc>, String), usize> = HashMap::new();
@@ -387,14 +392,14 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
                         i
                     };
                     let late = fallback.lands.signed_duration_since(arrival).max(TimeDelta::zero());
-                    let arrive = format!("{} (+{})", text::clock(fallback.lands, destination_tz), text::duration(late));
+                    let arrive = format!("{} (+{})", text::clock(fallback.lands, plot.zone), text::duration(late));
                     refs.push((i, arrive));
                 }
             }
             chains.push(ChainOut {
                 group: g,
-                header: text::header(tt, chain, plot.min_transfer)?,
-                route: text::route(tt, chain, plot.min_transfer, &HashSet::new())?,
+                header: text::header(tt, chain, plot.min_transfer, plot.zone)?,
+                route: text::route(tt, chain, plot.min_transfer, &HashSet::new(), plot.zone)?,
                 pieces: builder.pieces(chain, None, None)?,
                 fallbacks: refs,
             });
@@ -408,7 +413,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         title: plot.title.clone(),
         subtitle: plot.subtitle.clone(),
         back: plot.back.clone(),
-        tz: tt.station(tt.origin)?.tz.clone().unwrap_or_else(|| "Europe/Berlin".to_owned()),
+        tz: plot.zone.name().to_owned(),
         metrics,
         metric: shown,
         stations,

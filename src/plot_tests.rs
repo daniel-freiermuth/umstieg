@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::TimeDelta;
+use chrono_tz::Europe::Berlin;
+use chrono_tz::UTC;
 use serde_json::Value;
 
 use super::{Builder, Metric, Plot, heights, render};
@@ -13,13 +15,6 @@ const MIN: TimeDelta = TimeDelta::minutes(5);
 
 fn ride(trip: usize, board: usize, alight: usize) -> Step {
     Step::Ride { trip, board, alight }
-}
-
-fn in_utc(mut tt: Timetable) -> Timetable {
-    for s in &mut tt.stations {
-        s.tz = Some("UTC".to_owned());
-    }
-    tt
 }
 
 fn station(tt: &Timetable, name: &str) -> usize {
@@ -35,6 +30,7 @@ fn builder(tt: &Timetable) -> Builder<'_> {
     Builder {
         tt,
         min_transfer: MIN,
+        zone: UTC,
         used: HashSet::from([tt.origin, tt.destination]),
         pieces: Vec::new(),
         index: HashMap::new(),
@@ -127,7 +123,7 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
     let ice = b
         .trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "09:02+5"), ("C", "10:00+4", "10:05"), ("D", "11:00", "")]);
     b.trip("RE 9", &[("B", "", "09:30"), ("D", "10:00", "")]);
-    let mut tt = in_utc(b.build("A", "D"));
+    let mut tt = b.build("A", "D");
     tt.trips[ice].headsign = Some("D".to_owned());
     let mut plot = builder(&tt);
     let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None).unwrap();
@@ -136,7 +132,7 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
     assert_eq!((piece.kind, piece.trip, piece.warn), ("ride", Some(ice), false));
     // Actual times; nothing beyond the alighting stop.
     assert_eq!(piece.pts, [pt(&tt, "08:00", "A"), pt(&tt, "09:00", "B"), pt(&tt, "09:07", "B"), pt(&tt, "10:04", "C")]);
-    assert_eq!(piece.info, "ICE 1 → D · 08:00 A → 10:04 (+4) C");
+    assert_eq!(piece.info, "ICE 1 → D · 08:00 UTC A → 10:04 UTC (+4) C");
     // Rows for where one boards and alights, not for stops passed.
     let used: HashSet<usize> = ["A", "C", "D"].iter().map(|n| station(&tt, n)).collect();
     assert_eq!(plot.used, used);
@@ -156,7 +152,7 @@ fn waits_carry_the_buffer_and_warn_below_the_minimum_transfer() {
         let mut b = testkit::Builder::new();
         let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
         let re = b.trip("RE 2", &[("B", "", departure), ("C", "10:00", "")]);
-        let tt = in_utc(b.build("A", "C"));
+        let tt = b.build("A", "C");
         let mut plot = builder(&tt);
         let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None).unwrap();
         let kinds: Vec<&str> = pieces.iter().map(|&i| plot.pieces[i].kind).collect();
@@ -172,7 +168,7 @@ fn a_fallback_starts_waiting_at_the_missed_departure_without_warning() {
     let mut b = testkit::Builder::new();
     let x = b.trip("RE 5", &[("B", "", "09:10"), ("C", "10:00", "")]);
     let y = b.trip("S 6", &[("C", "", "10:02"), ("D", "10:30", "")]);
-    let tt = in_utc(b.build("A", "D"));
+    let tt = b.build("A", "D");
     let mut plot = builder(&tt);
     let chain = Chain { steps: vec![ride(x, 0, 1), ride(y, 0, 1)] };
     let pieces = plot.pieces(&chain, None, Some((station(&tt, "B"), at("09:08")))).unwrap();
@@ -193,7 +189,7 @@ fn walks_are_drawn_from_the_arrival_and_the_wait_after_them_counts_from_the_walk
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
     let s = b.trip("S 2", &[("B2", "", "09:10"), ("C", "09:30", "")]);
     b.walk("B", "B2", 4);
-    let tt = in_utc(b.build("A", "C"));
+    let tt = b.build("A", "C");
     let mut plot = builder(&tt);
     let pieces = plot
         .pieces(&Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] }, None, None)
@@ -211,7 +207,7 @@ fn until_cuts_before_the_rejoining_ride_but_keeps_the_wait_for_it() {
     let mut b = testkit::Builder::new();
     let s1 = b.trip("S1", &[("B", "", "12:42"), ("Altona", "12:54", "")]);
     let rj = b.trip("RJ 384", &[("Altona", "", "13:08"), ("Flensburg", "15:00", "")]);
-    let tt = in_utc(b.build("A", "K"));
+    let tt = b.build("A", "K");
     let chain = Chain { steps: vec![ride(s1, 0, 1), ride(rj, 0, 1)] };
     let start = Some((station(&tt, "B"), at("12:30")));
 
@@ -222,7 +218,7 @@ fn until_cuts_before_the_rejoining_ride_but_keeps_the_wait_for_it() {
         got,
         [
             ("wait", "12m at B after the missed train"),
-            ("ride", "S1 · 12:42 B → 12:54 Altona"),
+            ("ride", "S1 · 12:42 UTC B → 12:54 UTC Altona"),
             ("wait", "14m at Altona")
         ]
     );
@@ -240,7 +236,7 @@ fn identical_stretches_are_stored_once() {
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "09:02"), ("C", "10:00", "")]);
     let re = b.trip("RE 2", &[("B", "", "09:10"), ("C", "10:10", "")]);
     let s = b.trip("S 3", &[("B", "", "09:20"), ("C", "10:20", "")]);
-    let tt = in_utc(b.build("A", "C"));
+    let tt = b.build("A", "C");
     let mut plot = builder(&tt);
     let first = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }, None, None).unwrap();
     let second = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), ride(s, 0, 1)] }, None, None).unwrap();
@@ -265,7 +261,7 @@ fn located() -> Timetable {
     b.trip("RE 2", &[("B", "", "09:10"), ("C", "10:00", "")]);
     b.trip("RE 4", &[("B", "", "09:40"), ("C", "10:30", "")]);
     b.trip("Bus 3", &[("A", "", "08:30"), ("X", "09:30", "09:31"), ("C", "11:00", "")]);
-    let mut tt = in_utc(b.build("A", "C"));
+    let mut tt = b.build("A", "C");
     for (s, p) in tt.stations.iter_mut().zip([(49.48, 8.47), (50.1, 8.66), (53.55, 10.0), (51.0, 9.0)]) {
         s.position = Some(p);
     }
@@ -291,13 +287,15 @@ fn chains(net: &Network<'_>) -> Vec<enumerate::Group> {
 fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
     let net = Network::new(tt)?;
     let groups = chains(&net);
-    let mut fallbacks = Fallbacks::new(&net, MIN);
+    // Shown in Berlin, whatever the stations' zones (here none).
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
         title: "A → C".to_owned(),
         subtitle: "sub".to_owned(),
         groups: &groups,
         metric,
         min_transfer: MIN,
+        zone: Berlin,
         back: Some("/?from=A&to=C".to_owned()),
     };
     Ok(embedded_json(&render(&net, &mut fallbacks, &plot)?, "data"))
@@ -317,6 +315,7 @@ fn rendered_data_is_consistent() {
     let data = render_data(&tt, Metric::Axis).unwrap();
     assert_eq!(data["back"], "/?from=A&to=C");
     assert_eq!(data["title"], "A → C");
+    assert_eq!(data["tz"], "Europe/Berlin", "the zone of the plot's time axis");
 
     let ids: Vec<&str> = data["metrics"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["remaining-time", "fastest-real", "hyperbolic", "axis", "ratio"]);
@@ -366,9 +365,10 @@ fn rendered_data_is_consistent() {
 
     // Missing RE 2 at B: RE 4 at 09:40, half an hour late, waited for from 09:10.
     let change = chains.iter().find(|c| c["route"].as_str().unwrap().contains("RE 2")).unwrap();
+    assert_eq!(change["header"], "10:00 CEST → 12:00 CEST  2h00  1×  min 10m");
     let refs = change["fallbacks"].as_array().unwrap();
     assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0][1], "10:30 (+30m)");
+    assert_eq!(refs[0][1], "12:30 CEST (+30m)");
     let fallback = &fallbacks[idx(&refs[0][0])];
     assert_eq!(fallback["at"], "B");
     let first = &pieces[indexes(&fallback["pieces"])[0]];
@@ -393,7 +393,7 @@ fn only_the_requested_metric_must_be_computable() {
 fn time_heights_are_rounded_to_hundredths() {
     let mut b = testkit::Builder::new();
     b.trip("ICE 1", &[("A", "", "08:00"), ("C", "08:10", "")]);
-    let mut tt = in_utc(b.build("A", "C"));
+    let mut tt = b.build("A", "C");
     // 10 min 20 s.
     let arrival = tt.trips[0].calls[1].arrival.as_mut().unwrap();
     arrival.actual += TimeDelta::seconds(20);

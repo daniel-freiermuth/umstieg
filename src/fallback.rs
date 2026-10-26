@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
+use chrono_tz::Tz;
 
 use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network};
@@ -33,12 +34,14 @@ pub struct Fallback {
 pub struct Fallbacks<'n> {
     net: &'n Network<'n>,
     min_transfer: TimeDelta,
+    /// Where the fallbacks' times are shown in.
+    zone: Tz,
     cache: HashMap<(usize, DateTime<Utc>), Vec<Chain>>,
 }
 
 impl<'n> Fallbacks<'n> {
-    pub fn new(net: &'n Network<'n>, min_transfer: TimeDelta) -> Self {
-        Self { net, min_transfer, cache: HashMap::new() }
+    pub fn new(net: &'n Network<'n>, min_transfer: TimeDelta, zone: Tz) -> Self {
+        Self { net, min_transfer, zone, cache: HashMap::new() }
     }
 
     fn candidates(&mut self, station: usize, missed: DateTime<Utc>) -> Result<&[Chain]> {
@@ -107,7 +110,7 @@ impl<'n> Fallbacks<'n> {
                 let lands = if back.is_some() { arrival } else { fallback.arrival(tt)? };
                 let marked: HashSet<usize> =
                     back.and_then(|i| rides.get(i)).map(|&(trip, _, _)| trip).into_iter().collect();
-                let line = text::route(tt, fallback, min_transfer, &marked)?;
+                let line = text::route(tt, fallback, min_transfer, &marked, self.zone)?;
                 Ok((lands, changes, Reverse(slack), line, back, fallback))
             })
             .collect::<Result<Vec<_>>>()?;

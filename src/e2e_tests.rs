@@ -29,7 +29,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
 use clap::Parser;
 use serde_json::{Value, json};
@@ -268,12 +268,6 @@ fn planned_actual(s: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     let (planned, delay) = s.split_once('+').map_or((s, 0), |(p, d)| (p, d.parse().unwrap()));
     let planned = berlin(planned);
     Some((planned, planned + TimeDelta::minutes(delay)))
-}
-
-/// Berlin "HH:MM" as the report prints it for stations without a time zone
-/// (EFA-only stops): in the machine's local time.
-fn local(hhmm: &str) -> String {
-    berlin(hhmm).with_timezone(&Local).format("%H:%M").to_string()
 }
 
 fn iso(t: DateTime<Utc>) -> String {
@@ -672,17 +666,21 @@ fn start_at() -> String {
     at("08:00")
 }
 
-/// "--at" for `hhmm` Berlin, written in the machine's local time as the command line takes it.
+/// "--at" for `hhmm` Berlin, the searches' --time-zone.
 fn at(hhmm: &str) -> String {
-    berlin(hhmm).with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
+    format!("{} {hhmm}", day())
 }
 
 /// Amsel → Zielhafen Hbf from 08:00 for an hour, every connection listed,
 /// unless `extra` says otherwise.
+/// Amsel → Zielhafen Hbf from 08:00 Berlin time for an hour, every connection
+/// listed, unless `extra` says otherwise.
 fn args(extra: &[&str]) -> SearchArgs {
     let start = start_at();
     let mut argv = vec!["umstieg", "Amsel", "Zielhafen Hbf"];
-    for (option, default) in [("--at", start.as_str()), ("--window", "60"), ("--per-group", "0")] {
+    let defaults =
+        [("--at", start.as_str()), ("--time-zone", "Europe/Berlin"), ("--window", "60"), ("--per-group", "0")];
+    for (option, default) in defaults {
         if !extra.contains(&option) {
             argv.extend([option, default]);
         }
@@ -733,7 +731,7 @@ fn summary(text: &str) -> &str {
     text.lines().find(|l| l.starts_with("fastest ")).unwrap_or_else(|| panic!("no summary in\n{text}"))
 }
 
-/// "  08:10 → 10:30 …", not the indented data credits.
+/// "  08:10 CET → 10:30 CET …", not the indented data credits.
 fn is_connection(line: &str) -> bool {
     line.strip_prefix("  ").is_some_and(|l| l.starts_with(|c: char| c.is_ascii_digit()))
 }
@@ -763,26 +761,21 @@ async fn live_search_lists_every_connection_with_delays_and_markers() {
         ),
         "{text}"
     );
-    let zentrum = local("08:41");
     let expected = [
         "■ S1 (31101) … ICE 101  (1)",
-        "  08:10 → 10:30  2h20  1×  min 30m   08:10 S1 (31101) → 08:40 Bergstadt Hbf ‖30m‖ 09:10 ICE 101 → 10:30 Zielhafen Hbf",
+        "  08:10 CET → 10:30 CET  2h20  1×  min 30m   08:10 CET S1 (31101) → 08:40 CET Bergstadt Hbf ‖30m‖ 09:10 CET ICE 101 → 10:30 CET Zielhafen Hbf",
         "■ STR 4 … ICE 101  (1)",
-        &format!(
-            "  08:05 → 10:30  2h25  1×  min 21m   08:05 STR 4 → {zentrum} Bergstadt Zentrum ‖21m walk 8m‖ \
-             09:10 Bergstadt Hbf ICE 101 → 10:30 Zielhafen Hbf"
-        ),
+        "  08:05 CET → 10:30 CET  2h25  1×  min 21m   08:05 CET STR 4 → 08:41 CET Bergstadt Zentrum ‖21m walk 8m‖ \
+         09:10 CET Bergstadt Hbf ICE 101 → 10:30 CET Zielhafen Hbf",
         "■ S1 (31101) … ICE 203  (1)",
-        "  08:10 → 10:49  2h39  1×  min 50m   08:10 S1 (31101) → 08:40 Bergstadt Hbf ‖50m‖ 09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf",
+        "  08:10 CET → 10:49 CET  2h39  1×  min 50m   08:10 CET S1 (31101) → 08:40 CET Bergstadt Hbf ‖50m‖ 09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf",
         "■ STR 4 … ICE 203  (1)",
-        &format!(
-            "  08:05 → 10:49  2h44  1×  min 41m   08:05 STR 4 → {zentrum} Bergstadt Zentrum ‖41m walk 8m‖ \
-             09:30 Bergstadt Hbf ICE 203 → 10:49 (+4) Zielhafen Hbf"
-        ),
+        "  08:05 CET → 10:49 CET  2h44  1×  min 41m   08:05 CET STR 4 → 08:41 CET Bergstadt Zentrum ‖41m walk 8m‖ \
+         09:30 CET Bergstadt Hbf ICE 203 → 10:49 CET (+4) Zielhafen Hbf",
         "■ S1 (31103) … ICE 203  (1)",
-        "  08:48 → 10:49  2h01  1×  min 18m   08:48 (+8) S1 (31103) → 09:12 (+6) Bergstadt Hbf ‖18m‖ 09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf",
+        "  08:48 CET → 10:49 CET  2h01  1×  min 18m   08:48 CET (+8) S1 (31103) → 09:12 CET (+6) Bergstadt Hbf ‖18m‖ 09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf",
         "■ S1 (31103) … ICE 101  (1)",
-        "  08:48 → 10:30  1h42  1×  min missed 2m✗   08:48 (+8) S1 (31103) → 09:12 (+6) Bergstadt Hbf ‖missed 2m✗‖ 09:10 ICE 101 → 10:30 Zielhafen Hbf",
+        "  08:48 CET → 10:30 CET  1h42  1×  min missed 2m✗   08:48 CET (+8) S1 (31103) → 09:12 CET (+6) Bergstadt Hbf ‖missed 2m✗‖ 09:10 CET ICE 101 → 10:30 CET Zielhafen Hbf",
     ];
     assert_eq!(listing(text), expected, "{text}");
     assert!(text.ends_with("live data where available.\n      Deutsche Bahn Timetables API.\n"), "{text}");
@@ -794,7 +787,7 @@ async fn trains_only_db_boards_know_get_their_stops_from_transitous() {
     let stand_in = StandIn::with_flix().await;
     let found = search(&stand_in, &[], true, true).await.unwrap();
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
-    let flx = "08:55 FLX 1236 → 10:40 Zielhafen Hbf";
+    let flx = "08:55 CET FLX 1236 → 10:40 CET Zielhafen Hbf";
     assert!(found.text.contains(flx), "{}", found.text);
     // In the plot the ride passes the stops only Transitous' trip has.
     let data = testkit::embedded_json(found.html.as_deref().unwrap(), "data");
@@ -828,10 +821,10 @@ async fn trains_only_db_boards_know_get_their_stops_from_transitous() {
 async fn detours_are_pruned_unless_kept() {
     let _serial = SERIAL.lock().await;
     let stand_in = StandIn::start(Efa::Working).await;
-    let detour = "  08:10 → 10:49  2h39  2×  min 24m   08:10 S1 (31101) → 08:40 Bergstadt Hbf ‖30m‖ 09:10 ICE 101 \
-                  → 09:40 Kreuzhausen ‖24m‖ 10:04 (+4) ICE 203 → 10:49 (+4) Zielhafen Hbf";
+    let detour = "  08:10 CET → 10:49 CET  2h39  2×  min 24m   08:10 CET S1 (31101) → 08:40 CET Bergstadt Hbf ‖30m‖ 09:10 CET ICE 101 \
+                  → 09:40 CET Kreuzhausen ‖24m‖ 10:04 CET (+4) ICE 203 → 10:49 CET (+4) Zielhafen Hbf";
     let pruned = search(&stand_in, &[], true, false).await.unwrap();
-    assert!(!pruned.text.contains("09:40 Kreuzhausen"), "{}", pruned.text);
+    assert!(!pruned.text.contains("09:40 CET Kreuzhausen"), "{}", pruned.text);
 
     let kept = search(&stand_in, &["--keep-detours"], true, false).await.unwrap();
     let text = &kept.text;
@@ -840,12 +833,12 @@ async fn detours_are_pruned_unless_kept() {
     // Same arrival, one change more: after the direct connection of its group.
     let lines = listing(text);
     let group = lines.iter().position(|l| *l == "■ S1 (31101) … ICE 203  (2)").unwrap_or_else(|| panic!("{text}"));
-    assert!(lines[group + 1].ends_with("‖50m‖ 09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf"), "{text}");
+    assert!(lines[group + 1].ends_with("‖50m‖ 09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf"), "{text}");
     assert_eq!(lines[group + 2], detour);
     // A detour after a missed change is listed with it, sorted after the feasible one.
     let group = lines.iter().position(|l| *l == "■ S1 (31103) … ICE 203  (2)").unwrap_or_else(|| panic!("{text}"));
     assert!(lines[group + 1].contains("‖18m‖"), "{text}");
-    assert!(lines[group + 2].contains("‖missed 2m✗‖ 09:10 ICE 101 → 09:40 Kreuzhausen ‖24m‖"), "{text}");
+    assert!(lines[group + 2].contains("‖missed 2m✗‖ 09:10 CET ICE 101 → 09:40 CET Kreuzhausen ‖24m‖"), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -856,7 +849,7 @@ async fn missed_by_bounds_the_listed_missed_changes() {
     for (missed_by, listed) in [("0", false), ("1", false), ("2", true), ("5", true)] {
         let found = search(&stand_in, &["--missed-by", missed_by], true, false).await.unwrap();
         let text = &found.text;
-        assert_eq!(text.contains("‖missed 2m✗‖ 09:10 ICE 101"), listed, "--missed-by {missed_by}:\n{text}");
+        assert_eq!(text.contains("‖missed 2m✗‖ 09:10 CET ICE 101"), listed, "--missed-by {missed_by}:\n{text}");
         let counts = if listed {
             format!("6 connections in 6 groups, 1 with a change missed by ≤ {missed_by}m (")
         } else {
@@ -880,8 +873,8 @@ async fn planned_ignores_delays_but_keeps_cancellations() {
         assert!(
             lines.contains(
                 &format!(
-                    "  08:40 → 10:30  1h50  1×  min {buffer}   08:40 S1 (31103) → 09:06 Bergstadt Hbf ‖{buffer}‖ \
-                 09:10 ICE 101 → 10:30 Zielhafen Hbf"
+                    "  08:40 CET → 10:30 CET  1h50  1×  min {buffer}   08:40 CET S1 (31103) → 09:06 CET Bergstadt Hbf ‖{buffer}‖ \
+                 09:10 CET ICE 101 → 10:30 CET Zielhafen Hbf"
                 )
                 .as_str()
             ),
@@ -889,8 +882,8 @@ async fn planned_ignores_delays_but_keeps_cancellations() {
         );
         assert!(
             lines.contains(
-                &"  08:40 → 10:45  2h05  1×  min 24m   08:40 S1 (31103) → 09:06 Bergstadt Hbf ‖24m‖ 09:30 ICE 203 \
-                  → 10:45 Zielhafen Hbf"
+                &"  08:40 CET → 10:45 CET  2h05  1×  min 24m   08:40 CET S1 (31103) → 09:06 CET Bergstadt Hbf ‖24m‖ 09:30 CET ICE 203 \
+                  → 10:45 CET Zielhafen Hbf"
             ),
             "{text}"
         );
@@ -919,8 +912,8 @@ async fn without_db_only_transitous_and_efa_trains_count() {
     // Transitous doesn't know the cancellation, the delays or the Kreuzhausen stop.
     assert!(
         connection_lines(text).contains(
-            &"  08:40 → 10:50  2h10  1×  min 14m   08:40 S1 (31103) → 09:06 Bergstadt Hbf ‖14m‖ 09:20 IC 305 \
-              → 10:50 Zielhafen Hbf"
+            &"  08:40 CET → 10:50 CET  2h10  1×  min 14m   08:40 CET S1 (31103) → 09:06 CET Bergstadt Hbf ‖14m‖ 09:20 CET IC 305 \
+              → 10:50 CET Zielhafen Hbf"
         ),
         "{text}"
     );
@@ -1078,7 +1071,7 @@ async fn plot_embeds_every_connection_of_the_report() {
     let point = |p: &Value| (p[0].clone(), names[usize::try_from(p[1].as_u64().unwrap()).unwrap()]);
 
     // Tram, walk, wait, ICE: the walk runs from the tram stop to the station in 8 minutes.
-    let tram = chain_pieces("08:05 STR 4", "ICE 101");
+    let tram = chain_pieces("08:05 CET STR 4", "ICE 101");
     let kinds: Vec<&str> = tram.iter().map(|p| p["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["ride", "walk", "wait", "ride"]);
     let walk: Vec<_> = tram[1]["pts"].as_array().unwrap().iter().map(point).collect();
@@ -1089,7 +1082,7 @@ async fn plot_embeds_every_connection_of_the_report() {
     }
 
     // The missed change: a red wait drawn forward from the departure to the late arrival.
-    let missed = chain_pieces("08:48 (+8) S1 (31103)", "ICE 101");
+    let missed = chain_pieces("08:48 CET (+8) S1 (31103)", "ICE 101");
     let wait = missed.iter().find(|p| p["kind"] == "wait").unwrap();
     assert_eq!(wait["warn"], true);
     assert_eq!(wait["info"], "missed 2m✗ at Bergstadt Hbf");
@@ -1097,7 +1090,7 @@ async fn plot_embeds_every_connection_of_the_report() {
     assert_eq!(pts, [(minute("09:10"), "Bergstadt Hbf"), (minute("09:12"), "Bergstadt Hbf")]);
 
     // Live times in the drawing: ICE 203 reaches Zielhafen at 10:49, not 10:45.
-    let late = chain_pieces("08:10 S1 (31101)", "ICE 203");
+    let late = chain_pieces("08:10 CET S1 (31101)", "ICE 203");
     let ice = late.last().unwrap()["pts"].as_array().unwrap().iter().map(point).collect::<Vec<_>>();
     assert_eq!(ice.first(), Some(&(minute("09:30"), "Bergstadt Hbf")));
     assert_eq!(ice.last(), Some(&(minute("10:49"), "Zielhafen Hbf")));
@@ -1147,9 +1140,19 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     let form = http.get(format!("{site}/")).send().await.unwrap().text().await.unwrap();
     let spec = testkit::embedded_json(&form, "spec");
     assert_eq!(spec["error"], Value::Null);
-    let at = start_at();
-    let (job, query) =
-        start_search(&http, &site, &[("from", "Amsel"), ("to", "Zielhafen Hbf"), ("at", &at), ("window", "60")]).await;
+    // The user's zone, not the server's or the stations': 08:00 in Berlin is 02:00 in New York.
+    let (job, query) = start_search(
+        &http,
+        &site,
+        &[
+            ("from", "Amsel"),
+            ("to", "Zielhafen Hbf"),
+            ("at", &format!("{}T02:00", day())),
+            ("time_zone", "America/New_York"),
+            ("window", "60"),
+        ],
+    )
+    .await;
 
     let progress = http.get(&job).send().await.unwrap();
     assert_eq!(progress.status(), StatusCode::OK);
@@ -1168,12 +1171,16 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     assert_eq!(plot.status(), StatusCode::OK);
     let data = testkit::embedded_json(&plot.text().await.unwrap(), "data");
     assert_eq!(data["back"], back.as_str());
+    assert_eq!(data["tz"], "America/New_York", "the plot's time axis");
     assert_eq!(data["chains"].as_array().unwrap().len(), 6);
-    assert!(data["chains"].as_array().unwrap().iter().any(|c| c["route"].as_str().unwrap().contains("10:49 (+4)")));
+    // ICE 203 at 10:49 in Berlin.
+    assert!(data["chains"].as_array().unwrap().iter().any(|c| c["route"].as_str().unwrap().contains("04:49 EST (+4)")));
+    assert!(data["subtitle"].as_str().unwrap().starts_with("departing 02:00 EST–03:00 EST · "), "{data}");
     // The back link brings the form up with the same values.
     let again = http.get(format!("{site}{back}")).send().await.unwrap().text().await.unwrap();
     let values = &testkit::embedded_json(&again, "spec")["values"];
     assert_eq!((values["from"].as_str(), values["to"].as_str()), (Some("Amsel"), Some("Zielhafen Hbf")));
+    assert_eq!(values["time_zone"], "America/New_York");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1196,7 +1203,12 @@ async fn web_front_end_reports_bad_input() {
 
     // An unknown station fails the search; the status says why and there is no plot.
     let start = start_at();
-    let (job, _) = start_search(&http, &site, &[("from", "Atlantis"), ("to", "Zielhafen Hbf"), ("at", &start)]).await;
+    let (job, _) = start_search(
+        &http,
+        &site,
+        &[("from", "Atlantis"), ("to", "Zielhafen Hbf"), ("at", &start), ("time_zone", "Europe/Berlin")],
+    )
+    .await;
     let status = wait_until_done(&http, &format!("{job}/status")).await;
     let error = status["error"].as_str().unwrap_or_else(|| panic!("no error in {status}"));
     assert!(error.starts_with("no stop named like \"Atlantis\""), "{error}");
@@ -1206,7 +1218,12 @@ async fn web_front_end_reports_bad_input() {
 
     // Nothing runs: no plot, and the status carries the report saying so.
     let afternoon = at("14:00");
-    let (job, _) = start_search(&http, &site, &[("from", "Amsel"), ("to", "Zielhafen Hbf"), ("at", &afternoon)]).await;
+    let (job, _) = start_search(
+        &http,
+        &site,
+        &[("from", "Amsel"), ("to", "Zielhafen Hbf"), ("at", &afternoon), ("time_zone", "Europe/Berlin")],
+    )
+    .await;
     let status = wait_until_done(&http, &format!("{job}/status")).await;
     let error = status["error"].as_str().unwrap_or_else(|| panic!("no error in {status}"));
     assert!(error.ends_with("\nNo connection found.\n"), "{error}");
@@ -1240,41 +1257,40 @@ async fn detail_shows_platforms_sources_and_fallbacks() {
     // Fallbacks for a missed ICE 101: later trains from the change station,
     // earliest arrival first, the lateness against the plan.
     assert_eq!(
-        block(text, "  08:10 → 10:30  2h20  1×  min 30m"),
+        block(text, "  08:10 CET → 10:30 CET  2h20  1×  min 30m"),
         [
-            "  08:10 → 10:30  2h20  1×  min 30m",
-            "    08:10 Amsel [1] → 08:40 Bergstadt Hbf [1]   S1 (31101) → Bergstadt Hbf  (DB)",
+            "  08:10 CET → 10:30 CET  2h20  1×  min 30m",
+            "    08:10 CET Amsel [1] → 08:40 CET Bergstadt Hbf [1]   S1 (31101) → Bergstadt Hbf  (DB)",
             "      ↳ 30m buffer · if missed:",
-            "          09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf · arrive 10:49 (+19m)",
-            "          09:15 RE 4711 → 11:10 Zielhafen Hbf · arrive 11:10 (+40m)",
-            "    09:10 Bergstadt Hbf [1] → 10:30 Zielhafen Hbf [1]   ICE 101 → Zielhafen Hbf  (DB)",
+            "          09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf · arrive 10:49 CET (+19m)",
+            "          09:15 CET RE 4711 → 11:10 CET Zielhafen Hbf · arrive 11:10 CET (+40m)",
+            "    09:10 CET Bergstadt Hbf [1] → 10:30 CET Zielhafen Hbf [1]   ICE 101 → Zielhafen Hbf  (DB)",
         ],
         "{text}"
     );
     // RE 4711's arrival comes from Transitous (no platform); a fallback arriving
     // earlier than the plan is no delay; a short change is flagged.
     assert_eq!(
-        block(text, "  08:48 → 11:10  2h22  1×  min 3m⚠"),
+        block(text, "  08:48 CET → 11:10 CET  2h22  1×  min 3m⚠"),
         [
-            "  08:48 → 11:10  2h22  1×  min 3m⚠",
-            "    08:48 (+8) Amsel [1] → 09:12 (+6) Bergstadt Hbf [1]   S1 (31103) → Bergstadt Hbf  (DB)",
+            "  08:48 CET → 11:10 CET  2h22  1×  min 3m⚠",
+            "    08:48 CET (+8) Amsel [1] → 09:12 CET (+6) Bergstadt Hbf [1]   S1 (31103) → Bergstadt Hbf  (DB)",
             "      ↳ 3m⚠ buffer · if missed:",
-            "          09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf · arrive 10:49 (+0m)",
-            "    09:15 Bergstadt Hbf [1] → 11:10 Zielhafen Hbf   RE 4711 → Zielhafen Hbf  (DB/T)",
+            "          09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf · arrive 10:49 CET (+0m)",
+            "    09:15 CET Bergstadt Hbf [1] → 11:10 CET Zielhafen Hbf   RE 4711 → Zielhafen Hbf  (DB/T)",
         ],
         "{text}"
     );
     // Nothing leaves Bergstadt after ICE 203 (IC 305 is earlier, and cancelled).
     assert_eq!(
-        block(text, "  08:10 → 10:49  2h39  1×  min 50m")[2..4],
+        block(text, "  08:10 CET → 10:49 CET  2h39  1×  min 50m")[2..4],
         ["      ↳ 50m buffer · if missed:", "          nothing within 2h00"],
         "{text}"
     );
     // EFA's tram is Transitous-side ("T"); the walk gets its own line before the next train.
-    let tram = block(text, "  08:05 → 10:30  2h25  1×  min 21m");
+    let tram = block(text, "  08:05 CET → 10:30 CET  2h25  1×  min 21m");
     assert_eq!(
-        tram[1],
-        format!("    08:05 Amsel [1] → {} Bergstadt Zentrum [1]   STR 4 → Bergstadt Zentrum  (T)", local("08:41")),
+        tram[1], "    08:05 CET Amsel [1] → 08:41 CET Bergstadt Zentrum [1]   STR 4 → Bergstadt Zentrum  (T)",
         "{text}"
     );
     assert_eq!(tram[2], "      ↳ 21m buffer · if missed:", "{text}");
@@ -1282,7 +1298,7 @@ async fn detail_shows_platforms_sources_and_fallbacks() {
         tram[tram.len() - 2..],
         [
             "      walk 8m to Bergstadt Hbf",
-            "    09:10 Bergstadt Hbf [1] → 10:30 Zielhafen Hbf [1]   ICE 101 → Zielhafen Hbf  (DB)",
+            "    09:10 CET Bergstadt Hbf [1] → 10:30 CET Zielhafen Hbf [1]   ICE 101 → Zielhafen Hbf  (DB)",
         ],
         "{text}"
     );
@@ -1297,17 +1313,17 @@ async fn detail_fallbacks_end_back_on_plan() {
     // Missing ICE 101 on the detour via Kreuzhausen: ICE 203 from Bergstadt is the
     // plan's last train, so the trip continues as planned; RE 4711 is 21 min later.
     assert_eq!(
-        block(text, "  08:10 → 10:49  2h39  2×  min 24m"),
+        block(text, "  08:10 CET → 10:49 CET  2h39  2×  min 24m"),
         [
-            "  08:10 → 10:49  2h39  2×  min 24m",
-            "    08:10 Amsel [1] → 08:40 Bergstadt Hbf [1]   S1 (31101) → Bergstadt Hbf  (DB)",
+            "  08:10 CET → 10:49 CET  2h39  2×  min 24m",
+            "    08:10 CET Amsel [1] → 08:40 CET Bergstadt Hbf [1]   S1 (31101) → Bergstadt Hbf  (DB)",
             "      ↳ 30m buffer · if missed:",
-            "          09:30 ICE 203 (back on plan) · arrive 10:49 (+0m)",
-            "          09:15 RE 4711 → 11:10 Zielhafen Hbf · arrive 11:10 (+21m)",
-            "    09:10 Bergstadt Hbf [1] → 09:40 Kreuzhausen [1]   ICE 101 → Zielhafen Hbf  (DB)",
+            "          09:30 CET ICE 203 (back on plan) · arrive 10:49 CET (+0m)",
+            "          09:15 CET RE 4711 → 11:10 CET Zielhafen Hbf · arrive 11:10 CET (+21m)",
+            "    09:10 CET Bergstadt Hbf [1] → 09:40 CET Kreuzhausen [1]   ICE 101 → Zielhafen Hbf  (DB)",
             "      ↳ 24m buffer · if missed:",
             "          nothing within 2h00",
-            "    10:04 (+4) Kreuzhausen [1] → 10:49 (+4) Zielhafen Hbf [1]   ICE 203 → Zielhafen Hbf  (DB)",
+            "    10:04 CET (+4) Kreuzhausen [1] → 10:49 CET (+4) Zielhafen Hbf [1]   ICE 203 → Zielhafen Hbf  (DB)",
         ],
         "{text}"
     );
@@ -1321,9 +1337,8 @@ async fn nothing_running_is_reported_without_a_plot() {
     let found = search(&stand_in, &["--at", &afternoon], true, true).await.unwrap();
     let text = &found.text;
     assert!(found.html.is_none(), "plot of nothing");
-    // The window is printed in the machine's time zone.
-    let title = format!("Amsel → Zielhafen Hbf, departing {}–{}\n", local("14:00"), local("15:00"));
-    assert!(text.starts_with(&title), "{text}");
+    // The window is printed in --time-zone.
+    assert!(text.starts_with("Amsel → Zielhafen Hbf, departing 14:00 CET–15:00 CET\n"), "{text}");
     assert!(text.ends_with("\n\nNo connection found.\n"), "{text}");
     assert!(!text.contains("fastest") && !text.contains("Data:"), "{text}");
 }
@@ -1359,7 +1374,7 @@ async fn effort_cap_and_group_size_are_reported() {
     assert_eq!(suffix(text), ")");
     let lines: Vec<&str> = text.lines().collect();
     let group = lines.iter().position(|l| *l == "■ S1 (31101) … ICE 203  (2)").unwrap_or_else(|| panic!("{text}"));
-    assert!(lines[group + 1].ends_with("‖50m‖ 09:30 ICE 203 → 10:49 (+4) Zielhafen Hbf"), "{text}");
+    assert!(lines[group + 1].ends_with("‖50m‖ 09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf"), "{text}");
     assert_eq!(lines[group + 2], "    … 1 more", "{text}");
     assert_eq!(connection_lines(text).len(), 6, "{text}");
 }
