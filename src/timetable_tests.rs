@@ -974,6 +974,24 @@ fn motis_merges_into_the_train_sharing_most_stations() {
 }
 
 #[test]
+fn motis_merges_into_the_first_of_equally_matching_trains() {
+    // IC 1 and IC 2 share A and B at the same times, so MOTIS matches both at
+    // two stations; the first run by id takes it, however the candidates hash.
+    let stations: Vec<Station> =
+        ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).chain([station("E", None)]).collect();
+    for _ in 0..32 {
+        let visits = run("1", "IC 1", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")])
+            .into_iter()
+            .chain(run("2", "IC 2", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")]));
+        let motis = motis_trip("Train", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (4, "12:00", "")]);
+        let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]));
+        assert_eq!(labels(&trips), ["IC 1", "IC 2"]);
+        assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
+        assert_eq!(calls_of(&trips[1]), [(0, true), (1, true), (3, true)]);
+    }
+}
+
+#[test]
 fn motis_stops_merged_into_a_db_train_only_where_db_lacks_them() {
     const MANNHEIM: usize = 0;
     const SUED: usize = 1;
