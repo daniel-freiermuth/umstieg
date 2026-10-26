@@ -13,6 +13,7 @@
         --panel: #f8fafc;
         --accent: #d97706;
         --warn: #dc2626;
+        --ok: #15803d;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -23,6 +24,7 @@
           --panel: #181c22;
           --accent: #f59e0b;
           --warn: #f87171;
+          --ok: #4ade80;
         }
       }
       * {
@@ -114,6 +116,40 @@
         background: var(--accent);
         color: #fff;
         cursor: pointer;
+      }
+      .station .status {
+        color: var(--ok);
+        font-size: 12px;
+        min-height: 1.45em;
+      }
+      .station .status.todo {
+        color: var(--warn);
+      }
+      input.picked {
+        border-color: var(--ok);
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .chips:not(:empty) {
+        margin-bottom: 4px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 4px 2px 8px;
+        border: 1px solid var(--ok);
+        border-radius: 12px;
+        background: var(--bg);
+      }
+      .chip button {
+        padding: 0 5px;
+        background: none;
+        color: var(--muted);
+        font-weight: normal;
       }
       .note {
         color: var(--muted);

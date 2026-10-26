@@ -265,19 +265,41 @@ async fn stop_tries_bare_place_last_and_reports_all_queries() {
 }
 
 #[tokio::test]
-async fn suggestions_are_unique_stop_names_at_most_eight() {
+async fn suggestions_are_unique_stop_names_at_most_eight_stops_with_trains_first() {
     let fake = Arc::new(Fake::default());
     let mut matches = vec![stop("ADDRESS", "Hamburg Straße", "a"), stop("STOP", "Hamburg Hbf", "1")];
     matches.push(stop("STOP", "Hamburg Hbf", "2"));
-    matches.extend((0..10).map(|i| stop("STOP", &format!("Hamburg {i}"), "x")));
+    matches.extend((0..10).map(|i| stop("STOP", &format!("Hamburg {i}"), &format!("x{i}"))));
+    matches[5]["modes"] = json!(["REGIONAL_RAIL"]); // "Hamburg 2"
     fake.geocode("Hamb", Value::Array(matches));
     let motis = client(&fake).await;
-    let names = motis.suggest("Hamb").await.unwrap();
-    assert_eq!(
-        names,
-        ["Hamburg Hbf", "Hamburg 0", "Hamburg 1", "Hamburg 2", "Hamburg 3", "Hamburg 4", "Hamburg 5", "Hamburg 6"]
-    );
-    assert_eq!(motis.suggest("nothing").await.unwrap(), Vec::<String>::new());
+    let found: Vec<(String, String)> =
+        motis.suggest("Hamb").await.unwrap().into_iter().map(|s| (s.name, s.id)).collect();
+    let expected = [
+        ("Hamburg 2", "x2"),
+        ("Hamburg Hbf", "1"),
+        ("Hamburg 0", "x0"),
+        ("Hamburg 1", "x1"),
+        ("Hamburg 3", "x3"),
+        ("Hamburg 4", "x4"),
+        ("Hamburg 5", "x5"),
+        ("Hamburg 6", "x6"),
+    ];
+    assert_eq!(found, expected.map(|(n, i)| (n.to_owned(), i.to_owned())));
+    assert_eq!(motis.suggest("nothing").await.unwrap(), Vec::<Suggestion>::new());
+}
+
+#[tokio::test]
+async fn a_picked_stop_is_found_by_its_id_among_those_of_its_name() {
+    let fake = Arc::new(Fake::default());
+    let mut second = stop("STOP", "Hamburg Hbf", "s");
+    second["lat"] = json!(53.55);
+    fake.geocode("Hamburg Hbf", json!([stop("STOP", "Hamburg Hbf", "bus"), second]));
+    let motis = client(&fake).await;
+    let found = motis.stop_by_id("Hamburg Hbf", "s").await.unwrap();
+    assert_eq!((found.id.as_str(), found.position), ("s", Some((53.55, 8.17))));
+    let error = motis.stop_by_id("Hamburg Hbf", "gone").await.unwrap_err().to_string();
+    assert!(error.contains("no longer knows the station \"Hamburg Hbf\" (gone)"), "{error}");
 }
 
 #[tokio::test]
@@ -321,7 +343,7 @@ async fn too_many_requests_are_retried_honouring_retry_after() {
     fake.on("/api/v1/geocode", 429, Some("1"), "").on("/api/v1/geocode", 200, None, "[]");
     let motis = client(&fake).await;
     let started = Instant::now();
-    assert_eq!(motis.suggest("x").await.unwrap(), Vec::<String>::new());
+    assert_eq!(motis.suggest("x").await.unwrap(), Vec::<Suggestion>::new());
     assert!(started.elapsed() >= std::time::Duration::from_secs(1), "waited as told");
     assert_eq!(fake.requests(), 2);
 
@@ -331,7 +353,7 @@ async fn too_many_requests_are_retried_honouring_retry_after() {
     }
     fake.on("/api/v1/geocode", 200, None, "[]");
     let motis = client(&fake).await;
-    assert_eq!(motis.suggest("x").await.unwrap(), Vec::<String>::new());
+    assert_eq!(motis.suggest("x").await.unwrap(), Vec::<Suggestion>::new());
     assert_eq!(fake.requests(), MAX_ATTEMPTS as usize, "every attempt but the last may be a 429");
 
     let fake = Arc::new(Fake::default());
@@ -358,7 +380,7 @@ async fn server_errors_are_not_retried() {
 async fn transport_errors_are_retried() {
     let (base, accepted) = testkit::serve_dropping(2, "200 OK", r#"[{"type":"STOP","name":"Fulda","id":"f"}]"#).await;
     let motis = Motis::new(&base, "umstieg-test").unwrap();
-    assert_eq!(motis.suggest("Fulda").await.unwrap(), ["Fulda"]);
+    assert_eq!(motis.suggest("Fulda").await.unwrap()[0].name, "Fulda");
     assert_eq!(accepted.load(Ordering::SeqCst), 3);
 
     let (base, _) = testkit::serve_dropping(usize::MAX, "200 OK", "").await;
@@ -373,7 +395,7 @@ async fn bodies_cut_short_are_retried() {
     let body = r#"[{"type":"STOP","name":"Fulda","id":"f"}]"#;
     let (base, accepted) = testkit::serve_faulty(testkit::Fault::Truncate, 2, "200 OK", body).await;
     let motis = Motis::new(&base, "umstieg-test").unwrap();
-    assert_eq!(motis.suggest("Fulda").await.unwrap(), ["Fulda"]);
+    assert_eq!(motis.suggest("Fulda").await.unwrap()[0].name, "Fulda");
     assert_eq!(accepted.load(Ordering::SeqCst), 3);
 
     let (base, _) = testkit::serve_faulty(testkit::Fault::Truncate, usize::MAX, "200 OK", body).await;

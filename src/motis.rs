@@ -144,6 +144,13 @@ impl GeocodeMatch {
     }
 }
 
+/// A stop to pick in the form: its name and Transitous id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Suggestion {
+    pub name: String,
+    pub id: String,
+}
+
 /// A train at a stop, from the departures of a station.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,18 +281,33 @@ impl Motis {
         bail!("no stop named like {text:?} found (tried: {})", queries.join(", "))
     }
 
-    /// Stop names starting like `text`, best first, for autocompletion.
-    pub async fn suggest(&self, text: &str) -> Result<Vec<String>> {
-        let matches: Vec<GeocodeMatch> =
+    /// Stops matching `text` for the form to pick from: stops with trains
+    /// first, otherwise in the geocoder's order, one per name, at most eight.
+    pub async fn suggest(&self, text: &str) -> Result<Vec<Suggestion>> {
+        let mut matches: Vec<GeocodeMatch> =
             self.get("/api/v1/geocode", &[("text", text.to_owned()), ("type", "STOP".to_owned())]).await?;
-        let mut names: Vec<String> = Vec::new();
-        for m in matches.into_iter().filter(|m| m.kind == "STOP") {
-            if !names.contains(&m.name) {
-                names.push(m.name);
+        matches.retain(|m| m.kind == "STOP");
+        matches.sort_by_key(|m| !m.has_trains());
+        let mut found: Vec<Suggestion> = Vec::new();
+        for m in matches {
+            if found.iter().all(|s| s.name != m.name) {
+                found.push(Suggestion { name: m.name, id: m.id });
             }
         }
-        names.truncate(8);
-        Ok(names)
+        found.truncate(8);
+        Ok(found)
+    }
+
+    /// The stop `id` named `name`, as picked from [`Motis::suggest`]: the
+    /// geocoder's answer for the name gives its position.
+    pub async fn stop_by_id(&self, name: &str, id: &str) -> Result<Stop> {
+        let matches: Vec<GeocodeMatch> =
+            self.get("/api/v1/geocode", &[("text", name.to_owned()), ("type", "STOP".to_owned())]).await?;
+        let m = matches
+            .into_iter()
+            .find(|m| m.id == id)
+            .with_context(|| format!("Transitous no longer knows the station {name:?} ({id}); choose it again"))?;
+        Ok(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name })
     }
 
     /// Pareto-optimal itineraries departing within `[time, time + window]`

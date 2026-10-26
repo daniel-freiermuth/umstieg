@@ -11,7 +11,7 @@ use futures::future::{join_all, try_join_all};
 
 use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::fallback::{self, Fallbacks};
-use crate::motis::Motis;
+use crate::motis::{Motis, Stop};
 use crate::text::{buffer, clock, duration, header, route, timed};
 use crate::{checked, complete, db, efa, plot, rough, timetable};
 
@@ -44,9 +44,9 @@ fn max_changes(s: &str) -> Result<usize, String> {
 #[derive(clap::Args, Clone)]
 #[expect(clippy::struct_excessive_bools, reason = "command-line switches, one field each")]
 pub struct SearchArgs {
-    /// Origin station (free text).
+    /// Origin station: its name; the best-matching stop is taken.
     pub from: String,
-    /// Destination station (free text).
+    /// Destination station: its name; the best-matching stop is taken.
     pub to: String,
     /// Earliest departure, local time: "HH:MM" (today) or "YYYY-MM-DD HH:MM". Default: now.
     #[arg(long)]
@@ -82,6 +82,16 @@ pub struct SearchArgs {
     /// Station to route the rough search through; repeatable.
     #[arg(long)]
     pub via: Vec<String>,
+    /// Transitous stop id of FROM: the station exactly, as the web form picks
+    /// it, instead of the best match for the name.
+    #[arg(long, hide = true)]
+    pub from_id: Option<String>,
+    /// Transitous stop id of TO.
+    #[arg(long, hide = true)]
+    pub to_id: Option<String>,
+    /// Transitous stop ids of the --via stations, in the same order.
+    #[arg(long, hide = true)]
+    pub via_id: Vec<String>,
     /// Transfer stations of the planner's answers used to widen the rough search.
     #[arg(long, default_value_t = 6)]
     pub hubs: usize,
@@ -194,8 +204,7 @@ pub async fn run(
     let missed_by = checked::minutes(args.missed_by.max(0), "--missed-by")?;
     let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
-    let (origin, destination) = tokio::try_join!(motis.stop(&args.from), motis.stop(&args.to))?;
-    let vias = try_join_all(args.via.iter().map(|v| motis.stop(v))).await?;
+    let (origin, destination, vias) = stations(&motis, args).await?;
 
     events(Event::Stage("Asking Transitous and EFA for rough routes"));
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: args.hubs };
@@ -270,6 +279,34 @@ pub async fn run(
         events(Event::Stage(s));
     }
     job.await.context("the search thread failed")?
+}
+
+/// Origin, destination and vias: as picked in the form, or the best match for the names.
+async fn stations(motis: &Motis, args: &SearchArgs) -> Result<(Stop, Stop, Vec<Stop>)> {
+    check_via_ids(args)?;
+    let (origin, destination) = tokio::try_join!(
+        station(motis, &args.from, args.from_id.as_deref()),
+        station(motis, &args.to, args.to_id.as_deref())
+    )?;
+    let via_ids = args.via_id.iter().map(|id| Some(id.as_str())).chain(std::iter::repeat(None));
+    let vias = try_join_all(args.via.iter().zip(via_ids).map(|(name, id)| station(motis, name, id))).await?;
+    Ok((origin, destination, vias))
+}
+
+/// Via ids, if given, pair up with the vias.
+fn check_via_ids(args: &SearchArgs) -> Result<()> {
+    if !args.via_id.is_empty() && args.via_id.len() != args.via.len() {
+        bail!("--via-id: one per --via ({} for {})", args.via_id.len(), args.via.len());
+    }
+    Ok(())
+}
+
+/// The station picked in the form (`id`), or the best match for `name`.
+async fn station(motis: &Motis, name: &str, id: Option<&str>) -> Result<Stop> {
+    match id {
+        Some(id) => motis.stop_by_id(name, id).await,
+        None => motis.stop(name).await,
+    }
 }
 
 /// Fills in the stops of trains in `chains` known only from DB boards, from

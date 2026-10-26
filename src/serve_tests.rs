@@ -124,6 +124,23 @@ fn parse_builds_the_search_from_form_values() {
 }
 
 #[test]
+fn picked_stations_carry_their_transitous_ids() {
+    let args = parse(&params(&[
+        ("from", "Mannheim Hbf"),
+        ("from_id", "de-DELFI_de:08222:2417_G"),
+        ("to", "København H"),
+        ("via", "Hamburg Hbf;Fulda"),
+        ("via_id", "hh; fd ;"),
+    ]))
+    .unwrap();
+    assert_eq!((args.from_id.as_deref(), args.to_id.as_deref()), (Some("de-DELFI_de:08222:2417_G"), None));
+    assert_eq!(args.via_id, ["hh", "fd"]);
+    // Ids look like nothing else in the form, and don't become fields.
+    let names: Vec<String> = fields().into_iter().map(|f| f.name).collect();
+    assert!(!names.iter().any(|n| n.ends_with("_id")), "{names:?}");
+}
+
+#[test]
 fn parse_takes_values_literally_even_if_they_look_like_options() {
     let args =
         parse(&params(&[("from", "-Nord"), ("to", "--html=/tmp/x"), ("via", "--detail;-x"), ("at", "--html=/tmp/y")]))
@@ -394,7 +411,10 @@ async fn stops_completes_from_transitous_after_three_characters() {
 
     let (code, _, body) = get_page(&app, "/stops?q=%20Man%20").await;
     assert_eq!(code, StatusCode::OK);
-    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!(["Mannheim Hbf", "Mannheim-Neckarau"]));
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!([{"name": "Mannheim Hbf", "id": "a"}, {"name": "Mannheim-Neckarau", "id": "d"}])
+    );
     assert_eq!(*lock(&transitous.asked), ["Man"]);
 
     let (api, _) = stand_in(Value::Null).await;

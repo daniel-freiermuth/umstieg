@@ -53,6 +53,22 @@ function byId(id, type) {
   return element;
 }
 
+// util.ts
+function item(xs, i) {
+  const x = xs[i];
+  if (x === undefined)
+    throw new Error(`index ${String(i)} out of range`);
+  return x;
+}
+function entry(m, k, make) {
+  let v = m.get(k);
+  if (v === undefined) {
+    v = make();
+    m.set(k, v);
+  }
+  return v;
+}
+
 // fields.ts
 var kinds = ["text", "number", "flag", "choice", "time", "station", "stations"];
 var decodeField = (v, path) => {
@@ -96,11 +112,25 @@ function sections(fields) {
 }
 var advancedOpen = (fields, values) => fields.some((f) => f.advanced && given(values, f.name) !== undefined && given(values, f.name) !== f.default);
 var omitted = (f, value) => f.kind !== "flag" && f.kind !== "station" && value === f.default;
-function stationQuery(value, several) {
-  const parts = value.split(";");
-  const q = (several ? parts.at(-1) ?? "" : value).trim();
-  const prefix = several ? parts.slice(0, -1).map((s) => s.trim()).filter(Boolean).map((s) => `${s}; `).join("") : "";
-  return q.length < 3 ? null : { q, prefix };
+var decodeStop = (v, path) => {
+  const o = object(v, path);
+  return { name: field(o, "name", string, path), id: field(o, "id", string, path) };
+};
+var decodeStops = array(decodeStop);
+function stationSearch(text) {
+  const q = text.trim();
+  return q.length < 3 ? null : q;
+}
+var split = (list) => list.split(";").map((s) => s.trim()).filter(Boolean);
+function picked(values, name) {
+  const names = split(given(values, name) ?? "");
+  const ids = split(given(values, `${name}_id`) ?? "");
+  if (names.length !== ids.length)
+    return [];
+  return names.map((n, i) => ({ name: n, id: item(ids, i) }));
+}
+function unpicked(values, name) {
+  return picked(values, name).length > 0 ? [] : split(given(values, name) ?? "");
 }
 
 // form.ts
@@ -108,60 +138,148 @@ var SPEC = decodeSpec(parseJson(byId("spec", HTMLScriptElement).text), "spec");
 var form = byId("form", HTMLFormElement);
 if (SPEC.error !== null)
   Object.assign(byId("error", HTMLDivElement), { textContent: SPEC.error, hidden: false });
+var NOT_PICKED = "Choose a station from the suggestions";
+var known = new Map;
+async function lookup(q) {
+  const response = await fetch(`/stops?q=${encodeURIComponent(q)}`);
+  if (!response.ok)
+    return [];
+  const stops = decodeStops(parseJson(await response.text()), "stops");
+  for (const s of stops)
+    if (!known.has(s.name))
+      known.set(s.name, s.id);
+  return stops;
+}
+var pickedNow = (text) => {
+  const id = known.get(text);
+  return id === undefined ? null : { name: text, id };
+};
+var lists = 0;
+function stationText(id, typed) {
+  const input = Object.assign(document.createElement("input"), { type: "text", id, autocomplete: "off" });
+  const list = Object.assign(document.createElement("datalist"), { id: `stops-${String(lists++)}` });
+  input.setAttribute("list", list.id);
+  document.body.append(list);
+  let timer;
+  input.addEventListener("input", () => {
+    typed(pickedNow(input.value));
+    clearTimeout(timer);
+    const q = stationSearch(input.value);
+    if (q === null || pickedNow(input.value) !== null)
+      return;
+    timer = setTimeout(() => {
+      lookup(q).then((stops) => {
+        list.replaceChildren(...stops.map((s) => new Option(s.name)));
+        typed(pickedNow(input.value));
+      });
+    }, 250);
+  });
+  return input;
+}
+var hidden = (name) => Object.assign(document.createElement("input"), { type: "hidden", name });
+function stationField(f, id) {
+  const box = Object.assign(document.createElement("div"), { className: "station" });
+  const stationId = hidden(`${f.name}_id`);
+  const status = Object.assign(document.createElement("div"), { className: "status" });
+  const show = (stop) => {
+    stationId.value = stop?.id ?? "";
+    input.classList.toggle("picked", stop !== null);
+    const blank = input.value.trim() === "";
+    input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
+    status.textContent = stop !== null ? "✓ found" : blank ? "" : NOT_PICKED;
+    status.classList.toggle("todo", stop === null && !blank);
+  };
+  const input = stationText(id, show);
+  Object.assign(input, { name: f.name, required: true });
+  box.append(input, stationId, status);
+  const [given2] = picked(SPEC.values, f.name);
+  if (given2 !== undefined)
+    known.set(given2.name, given2.id);
+  input.value = given2?.name ?? unpicked(SPEC.values, f.name).join("; ");
+  show(given2 ?? null);
+  const q = given2 === undefined ? stationSearch(input.value) : null;
+  if (q !== null)
+    lookup(q).then(() => {
+      show(pickedNow(input.value));
+    });
+  return box;
+}
+function viaField(f, id) {
+  const box = Object.assign(document.createElement("div"), { className: "station" });
+  const chips = Object.assign(document.createElement("div"), { className: "chips" });
+  const names = hidden(f.name);
+  const ids = hidden(`${f.name}_id`);
+  const stops = [...picked(SPEC.values, f.name)];
+  const render = () => {
+    names.value = stops.map((s) => s.name).join(";");
+    ids.value = stops.map((s) => s.id).join(";");
+    chips.replaceChildren(...stops.map((s, i) => {
+      const chip = Object.assign(document.createElement("span"), { className: "chip", textContent: s.name });
+      const remove = Object.assign(document.createElement("button"), {
+        type: "button",
+        textContent: "×",
+        title: `Remove ${s.name}`
+      });
+      remove.addEventListener("click", () => {
+        stops.splice(i, 1);
+        render();
+      });
+      chip.append(remove);
+      return chip;
+    }));
+  };
+  const input = stationText(id, (stop) => {
+    if (stop !== null) {
+      stops.push(stop);
+      input.value = "";
+      render();
+    }
+    input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
+  });
+  input.placeholder = "Add a station";
+  box.append(chips, input, names, ids);
+  render();
+  for (const name of unpicked(SPEC.values, f.name)) {
+    const q = stationSearch(name);
+    if (q !== null)
+      lookup(q).then(() => {
+        const stop = pickedNow(name);
+        if (stop !== null) {
+          stops.push(stop);
+          render();
+        }
+      });
+  }
+  return box;
+}
 function fieldRow(f) {
   const row = document.createElement("div");
   row.className = "field";
   const id = `f-${f.name}`;
   const value = initial(f, SPEC.values, new Date);
-  let input;
-  if (typeof value === "boolean") {
-    input = Object.assign(document.createElement("input"), { type: "checkbox", checked: value });
+  let control;
+  if (f.kind === "station") {
+    control = stationField(f, id);
+  } else if (f.kind === "stations") {
+    control = viaField(f, id);
+  } else if (typeof value === "boolean") {
+    control = Object.assign(document.createElement("input"), { type: "checkbox", checked: value, id, name: f.name });
   } else if (f.kind === "choice") {
-    input = document.createElement("select");
+    const select = Object.assign(document.createElement("select"), { id, name: f.name });
     for (const c of f.choices)
-      input.append(new Option(c, c, false, c === value));
+      select.append(new Option(c, c, false, c === value));
+    control = select;
   } else {
-    const text = document.createElement("input");
+    const text = Object.assign(document.createElement("input"), { id, name: f.name, value });
     text.type = f.kind === "number" ? "number" : f.kind === "time" ? "datetime-local" : "text";
     if (f.kind === "number")
       text.step = "any";
-    text.value = value;
-    if (f.kind === "station" || f.kind === "stations")
-      stationInput(text, f.kind === "stations");
-    if (f.kind === "station")
-      text.required = true;
-    if (f.kind === "stations")
-      text.placeholder = "Several separated by ;";
-    input = text;
+    control = text;
   }
-  Object.assign(input, { id, name: f.name });
   const l = Object.assign(document.createElement("label"), { htmlFor: id, textContent: label(f.name) });
   const help = Object.assign(document.createElement("div"), { className: "help", textContent: f.help });
-  row.append(l, input, help);
+  row.append(l, control, help);
   return row;
-}
-var lists = 0;
-function stationInput(input, several) {
-  const list = Object.assign(document.createElement("datalist"), { id: `stops-${String(lists++)}` });
-  input.setAttribute("list", list.id);
-  input.autocomplete = "off";
-  document.body.append(list);
-  let timer;
-  input.addEventListener("input", () => {
-    clearTimeout(timer);
-    const query = stationQuery(input.value, several);
-    if (query === null)
-      return;
-    timer = setTimeout(() => {
-      (async () => {
-        const response = await fetch(`/stops?q=${encodeURIComponent(query.q)}`);
-        if (!response.ok)
-          return;
-        const names = array(string)(parseJson(await response.text()), "stops");
-        list.replaceChildren(...names.map((n) => new Option(query.prefix + n)));
-      })();
-    }, 250);
-  });
 }
 var trip = document.createElement("fieldset");
 trip.append(Object.assign(document.createElement("legend"), { textContent: "Trip" }));
@@ -184,6 +302,11 @@ form.addEventListener("submit", () => {
   for (const f of SPEC.fields) {
     const element = form.elements.namedItem(f.name);
     if ((element instanceof HTMLInputElement || element instanceof HTMLSelectElement) && omitted(f, element.value)) {
+      element.disabled = true;
+    }
+  }
+  for (const element of form.elements) {
+    if (element instanceof HTMLInputElement && element.name.endsWith("_id") && element.value === "") {
       element.disabled = true;
     }
   }

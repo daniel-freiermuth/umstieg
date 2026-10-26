@@ -102,7 +102,12 @@ A form with every search option of the command line (generated from them, so
 new options appear by themselves). Left out: text-only ones like `--detail`,
 `--metric` (the plot page switches it), and the services and contact
 (`--api`, `--efa`, `--contact`), which `umstieg serve` takes and uses for every
-search; the page can't change them. Station names complete from Transitous.
+search; the page can't change them. Stations are chosen from Transitous's
+suggestions as one types: a field shows "✓ found" once its text names one
+exactly, and the search can't start before every station is chosen (vias become
+removable chips). The chosen stop's id goes with the search, so it runs from
+exactly that stop, not from the best match for the name; the command line
+still takes names.
 Submitting shows the search's
 progress, then the plot, whose "← Change search" link returns to the form with
 the same settings. Searches beyond `--parallel` wait their turn: each loads

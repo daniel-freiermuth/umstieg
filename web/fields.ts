@@ -2,6 +2,7 @@
 // server, where they go, what they start with and what is sent.
 
 import { type Decoder, array, boolean, field, nullable, object, oneOf, record, string } from "./decode";
+import { item } from "./util";
 
 const kinds = ["text", "number", "flag", "choice", "time", "station", "stations"] as const;
 export type Kind = (typeof kinds)[number];
@@ -90,22 +91,45 @@ export const advancedOpen = (fields: readonly Field[], values: Record<string, st
 export const omitted = (f: Field, value: string): boolean =>
   f.kind !== "flag" && f.kind !== "station" && value === f.default;
 
+/** A station picked from the suggestions: its name and Transitous id. */
+export interface Stop {
+  name: string;
+  id: string;
+}
+
+const decodeStop: Decoder<Stop> = (v, path) => {
+  const o = object(v, path);
+  return { name: field(o, "name", string, path), id: field(o, "id", string, path) };
+};
+
+/** The server's suggestions for a station input. */
+export const decodeStops: Decoder<Stop[]> = array(decodeStop);
+
+/** What to look up for a station input: the trimmed text, null below 3 characters. */
+export function stationSearch(text: string): string | null {
+  const q = text.trim();
+  return q.length < 3 ? null : q;
+}
+
+const split = (list: string): string[] =>
+  list
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 /**
- * What to complete in a station input: the whole value, or for lists the
- * part after the last ";" with the earlier names kept as prefix of every
- * suggestion. Null below 3 characters.
+ * Stations already picked, from the URL (a repeated or changed search): the
+ * names of `name` with their ids from `name_id`, ";"-separated for lists.
+ * Names without matching ids aren't picked yet.
  */
-export function stationQuery(value: string, several: boolean): { q: string; prefix: string } | null {
-  const parts = value.split(";");
-  // Stryker disable next-line StringLiteral: split always returns at least one part, so the fallback is never used.
-  const q = (several ? (parts.at(-1) ?? "") : value).trim();
-  const prefix = several
-    ? parts
-        .slice(0, -1)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((s) => `${s}; `)
-        .join("")
-    : "";
-  return q.length < 3 ? null : { q, prefix };
+export function picked(values: Record<string, string>, name: string): Stop[] {
+  const names = split(given(values, name) ?? "");
+  const ids = split(given(values, `${name}_id`) ?? "");
+  if (names.length !== ids.length) return [];
+  return names.map((n, i) => ({ name: n, id: item(ids, i) }));
+}
+
+/** Names given in the URL without ids: to look up and pick if the name matches exactly. */
+export function unpicked(values: Record<string, string>, name: string): string[] {
+  return picked(values, name).length > 0 ? [] : split(given(values, name) ?? "");
 }

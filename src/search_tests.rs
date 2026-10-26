@@ -2,7 +2,7 @@ use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Europe::Berlin;
 use clap::Parser;
 
-use super::{Endpoints, Report, SearchArgs, extra_time, parse_time_in};
+use super::{Endpoints, Report, SearchArgs, check_via_ids, extra_time, parse_time_in};
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{Builder, at};
 
@@ -149,4 +149,17 @@ fn a_change_without_slack_is_made_not_missed() {
     let text = report(b.build("A", "C"));
     let summary = text.lines().find(|l| l.starts_with("fastest ")).unwrap();
     assert!(summary.contains(" · 1 connections in 1 groups, 1 with a change missed by ≤ 5m ("), "{text}");
+}
+
+#[test]
+fn via_ids_pair_up_with_the_vias_if_given() {
+    let check = |argv: &[&str]| check_via_ids(&search_args(argv)).map_err(|e| e.to_string());
+    assert_eq!(check(&["A", "B"]), Ok(()));
+    assert_eq!(check(&["A", "B", "--via", "C"]), Ok(()), "names only");
+    assert_eq!(check(&["A", "B", "--via", "C", "--via-id", "c"]), Ok(()));
+    assert_eq!(
+        check(&["A", "B", "--via", "C", "--via", "D", "--via-id", "c"]),
+        Err("--via-id: one per --via (1 for 2)".to_owned())
+    );
+    assert_eq!(check(&["A", "B", "--via-id", "c"]), Err("--via-id: one per --via (1 for 0)".to_owned()));
 }

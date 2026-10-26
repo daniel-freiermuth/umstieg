@@ -28,7 +28,8 @@ use crate::sync::lock;
 const KEEP_JOBS: usize = 20;
 /// Options not in the form: text output only, or chosen on the plot page itself
 /// (metric). The services (`Endpoints`) aren't search options at all.
-const NOT_IN_FORM: [&str; 6] = ["html", "detail", "per_group", "metric", "help", "version"];
+const NOT_IN_FORM: [&str; 9] =
+    ["html", "detail", "per_group", "metric", "help", "version", "from_id", "to_id", "via_id"];
 /// Options shown folded under "Advanced".
 const ADVANCED: [&str; 4] = ["hubs", "max_nodes", "no_db", "all_stops"];
 
@@ -181,6 +182,15 @@ fn parse(params: &[(String, String)]) -> Result<SearchArgs, String> {
                 }
             }
         }
+    }
+    // Stations as picked in the form: exactly those, not the best match for the name.
+    for (name, option) in [("from_id", "--from-id"), ("to_id", "--to-id")] {
+        if let Some(id) = get(name) {
+            argv.push(format!("{option}={id}"));
+        }
+    }
+    for id in get("via_id").unwrap_or_default().split(';').map(str::trim).filter(|v| !v.is_empty()) {
+        argv.push(format!("--via-id={id}"));
     }
     argv.push("--".to_owned());
     argv.extend(stations);

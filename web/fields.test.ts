@@ -10,8 +10,11 @@ import {
   label,
   localDateTime,
   omitted,
+  picked,
   sections,
-  stationQuery,
+  stationSearch,
+  decodeStops,
+  unpicked,
 } from "./fields";
 
 const f = (name: string, kind: Kind, def = "", advanced = false): Field => ({
@@ -156,19 +159,52 @@ describe("omitted", () => {
     });
 });
 
-describe("stationQuery", () => {
-  const cases: [string, boolean, { q: string; prefix: string } | null][] = [
-    ["  Mannheim Hbf ", false, { q: "Mannheim Hbf", prefix: "" }],
-    ["Ma", false, null],
-    // A single station keeps ";" as part of the name.
-    ["Fulda; Kas", false, { q: "Fulda; Kas", prefix: "" }],
-    ["Fulda; Kas", true, { q: "Kas", prefix: "Fulda; " }],
-    [" Fulda ;; Erfurt;  Kas", true, { q: "Kas", prefix: "Fulda; Erfurt; " }],
-    ["Fulda; Ka", true, null],
-    ["Fulda;", true, null],
+describe("stationSearch", () => {
+  const cases: [string, string | null][] = [
+    ["  Mannheim Hbf ", "Mannheim Hbf"],
+    ["Ma", null],
+    [" Ma ", null],
+    ["Man", "Man"],
   ];
-  for (const [value, several, expected] of cases)
-    test(`${JSON.stringify(value)}${several ? " (several)" : ""}`, () => {
-      expect(stationQuery(value, several)).toEqual(expected);
+  for (const [text, expected] of cases)
+    test(JSON.stringify(text), () => {
+      expect(stationSearch(text)).toEqual(expected);
+    });
+});
+
+describe("decodeStops", () => {
+  test("names with their ids", () => {
+    expect(decodeStops(parseJson('[{"name": "Fulda", "id": "de:1"}]'), "stops")).toEqual([
+      { name: "Fulda", id: "de:1" },
+    ]);
+  });
+  test("an id is required", () => {
+    expect(() => decodeStops(parseJson('[{"name": "Fulda"}]'), "stops")).toThrow("stops[0].id");
+  });
+});
+
+describe("picked and unpicked stations", () => {
+  const cases: [Record<string, string>, { name: string; id: string }[], string[]][] = [
+    [{ from: "Fulda", from_id: "f" }, [{ name: "Fulda", id: "f" }], []],
+    // An older link: the name only, to look up.
+    [{ from: " Fulda " }, [], ["Fulda"]],
+    [{}, [], []],
+    // Lists pair names and ids in order, blanks left out.
+    [
+      { from: "Fulda; Kassel-Wilhelmshöhe ;", from_id: " f;k" },
+      [
+        { name: "Fulda", id: "f" },
+        { name: "Kassel-Wilhelmshöhe", id: "k" },
+      ],
+      [],
+    ],
+    // Ids that don't pair up pick nothing.
+    [{ from: "Fulda;Kassel", from_id: "f" }, [], ["Fulda", "Kassel"]],
+    [{ from_id: "f" }, [], []],
+  ];
+  for (const [values, stops, names] of cases)
+    test(JSON.stringify(values), () => {
+      expect(picked(values, "from")).toEqual(stops);
+      expect(unpicked(values, "from")).toEqual(names);
     });
 });
