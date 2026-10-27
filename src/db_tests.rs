@@ -133,6 +133,9 @@ fn trains_without_class_or_with_a_bare_line_number_get_category_labels() {
     // A line with letters names the train as before; an unknown category stays without class.
     let re = board(r#"<tl f="N" t="p" o="800" c="RE" n="17005"/>"#, "RE7");
     assert_eq!((re.label(), re.class), ("RE7 (17005)".to_owned(), Some('N')));
+    // S-Bahn lines also come as bare numbers: S1 keeps its line, not just its run number.
+    let s1 = board(r#"<tl f="S" t="p" o="800244" c="S" n="34459"/>"#, "1");
+    assert_eq!((s1.label(), s1.class), ("1 (34459)".to_owned(), Some('S')));
     let bus = board(r#"<tl t="p" o="X" c="Bus" n="4711"/>"#, "");
     assert_eq!((bus.label(), bus.class), ("Bus 4711".to_owned(), None));
 }
