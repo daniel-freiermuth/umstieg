@@ -100,6 +100,12 @@ fn windows_reaching_past_representable_time_end_there() {
     assert_eq!(starts(end - TimeDelta::minutes(90), TimeDelta::MAX, SLICE).len(), 2);
 }
 
+#[test]
+fn a_zero_window_still_asks_at_its_time() {
+    assert_eq!(starts(at("08:00"), TimeDelta::zero(), SLICE), vec![at("08:00")]);
+    assert_eq!(starts(at("08:00"), TimeDelta::zero(), EFA_STEP), vec![at("08:00")]);
+}
+
 // ---- hubs ----
 
 fn fixture() -> Vec<Itinerary> {
