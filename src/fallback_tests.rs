@@ -227,3 +227,22 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
     assert_eq!(found, [("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
 }
+
+/// A change listed although missed (`--missed-by`): the fallbacks leave
+/// once the traveller is there, not right after the missed train.
+#[test]
+fn fallbacks_of_a_missed_change_leave_after_the_arrival() {
+    let mut b = Builder::new();
+    b.trip("ICE 2", &[("Frankfurt", "", "08:00"), ("Hamburg", "11:51+13", "")]);
+    b.trip("RJ 384", &[("Hamburg", "", "12:00"), ("Schleswig", "13:30", "13:32"), ("København", "17:00", "")]);
+    b.trip("RE 7", &[("Hamburg", "", "12:01"), ("Schleswig", "13:00", "")]);
+    b.trip("S 1", &[("Hamburg", "", "12:05"), ("Schleswig", "13:20", "")]);
+    let tt = b.build("Frankfurt", "København");
+    let net = Network::new(&tt).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let p = plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
+    assert_eq!(
+        summaries(&tt, &fallbacks.for_change(&p, 0).unwrap()),
+        expect(&[("S 1 Hamburg-Schleswig / RJ 384 from Schleswig (back on plan)", "17:00")])
+    );
+}
