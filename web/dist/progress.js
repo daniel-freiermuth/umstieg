@@ -80,13 +80,19 @@ var title = byId("title", HTMLHeadingElement);
 var back = byId("back", HTMLAnchorElement);
 var { status: statusUrl } = decodeProgress(parseJson(byId("data", HTMLScriptElement).text), "data");
 async function poll() {
-  const response = await fetch(statusUrl);
-  if (!response.ok) {
-    document.body.classList.add("over");
-    title.textContent = "Search not found";
+  let status;
+  try {
+    const response = await fetch(statusUrl);
+    if (!response.ok) {
+      document.body.classList.add("over");
+      title.textContent = "Search not found";
+      return;
+    }
+    status = decodeStatus(parseJson(await response.text()), "status");
+  } catch {
+    setTimeout(() => void poll(), 1000);
     return;
   }
-  const status = decodeStatus(parseJson(await response.text()), "status");
   back.href = status.back;
   log.textContent = status.log.join(`
 `);

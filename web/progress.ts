@@ -4,7 +4,7 @@
 
 import { parseJson } from "./decode";
 import { byId } from "./dom";
-import { decodeProgress, decodeStatus, next } from "./status";
+import { type Status, decodeProgress, decodeStatus, next } from "./status";
 
 const log = byId("log", HTMLPreElement);
 const now = byId("now", HTMLPreElement);
@@ -13,13 +13,21 @@ const back = byId("back", HTMLAnchorElement);
 const { status: statusUrl } = decodeProgress(parseJson(byId("data", HTMLScriptElement).text), "data");
 
 async function poll(): Promise<void> {
-  const response = await fetch(statusUrl);
-  if (!response.ok) {
-    document.body.classList.add("over");
-    title.textContent = "Search not found";
+  let status: Status;
+  try {
+    const response = await fetch(statusUrl);
+    if (!response.ok) {
+      document.body.classList.add("over");
+      title.textContent = "Search not found";
+      return;
+    }
+    status = decodeStatus(parseJson(await response.text()), "status");
+  } catch {
+    // No status this time (a network blip, the laptop asleep, a proxy's page
+    // instead): the search runs on, so ask again.
+    setTimeout(() => void poll(), 1000);
     return;
   }
-  const status = decodeStatus(parseJson(await response.text()), "status");
   back.href = status.back;
   log.textContent = status.log.join("\n");
   // The current stage's progress, under the log, replaced as it comes.
