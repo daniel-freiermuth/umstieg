@@ -23,6 +23,11 @@ export const decodeStatus: Decoder<Status> = (v, path) => {
   };
 };
 
+/** What the progress page is given: where to poll the search's status. */
+export const decodeProgress: Decoder<{ status: string }> = (v, path) => ({
+  status: field(object(v, path), "status", string, path),
+});
+
 /** What the page does next: poll again, open the plot, or show why there is none. */
 export type Next = { poll: true } | { plot: true } | { error: string };
 export function next(status: Status): Next {

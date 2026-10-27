@@ -64,6 +64,9 @@ var decodeStatus = (v, path) => {
     back: field(o, "back", string, path)
   };
 };
+var decodeProgress = (v, path) => ({
+  status: field(object(v, path), "status", string, path)
+});
 function next(status) {
   if (!status.done)
     return { poll: true };
@@ -75,9 +78,9 @@ var log = byId("log", HTMLPreElement);
 var now = byId("now", HTMLPreElement);
 var title = byId("title", HTMLHeadingElement);
 var back = byId("back", HTMLAnchorElement);
-var job = location.pathname.replace(/\/+$/, "");
+var { status: statusUrl } = decodeProgress(parseJson(byId("data", HTMLScriptElement).text), "data");
 async function poll() {
-  const response = await fetch(`${job}/status`);
+  const response = await fetch(statusUrl);
   if (!response.ok) {
     title.textContent = "Search not found";
     return;
@@ -93,7 +96,7 @@ async function poll() {
     return;
   }
   if ("plot" in then) {
-    location.replace(`${job}/plot`);
+    location.reload();
     return;
   }
   title.textContent = "No plot";

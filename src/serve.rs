@@ -12,7 +12,7 @@ use anyhow::Result;
 use axum::Router;
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use clap::{ArgAction, CommandFactory, Parser};
 use serde::Serialize;
@@ -44,6 +44,8 @@ struct Form {
 struct Job {
     /// The form's query string, for the link back to it.
     query: String,
+    /// The search, whatever the order of its values: the same link finds the job again.
+    key: String,
     started: Instant,
     log: Vec<String>,
     /// How the current stage is getting on, as the last progress said.
@@ -125,10 +127,8 @@ fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(form))
         .route("/stops", get(stops))
-        .route("/search", get(start))
-        .route("/job/{id}", get(progress))
+        .route("/search", get(search))
         .route("/job/{id}/status", get(status))
-        .route("/job/{id}/plot", get(plot))
         .route("/job/{id}/chains", get(chains))
         .with_state(app)
         // Every request at debug: the progress page polls its status each second.
@@ -253,7 +253,17 @@ async fn stops(State(app): State<Arc<App>>, Query(params): Query<HashMap<String,
     }
 }
 
-async fn start(
+/// What the progress page is told.
+#[derive(Serialize)]
+struct Progress {
+    /// Where the page polls the search's status.
+    status: String,
+}
+
+/// The search's own page, so its link is a permalink: its progress while it
+/// runs, then its plot. A finished search is kept for a while; after that, or
+/// if it failed, the link runs it again (cached answers make that quick).
+async fn search(
     State(app): State<Arc<App>>,
     RawQuery(raw): RawQuery,
     Query(params): Query<Vec<(String, String)>>,
@@ -262,11 +272,34 @@ async fn start(
         Ok(args) => args,
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
-    let id = app.next.fetch_add(1, Ordering::Relaxed);
-    let job = Job { query: raw.unwrap_or_default(), started: Instant::now(), log: Vec::new(), now: None, result: None };
-    admit(&mut lock(&app.jobs), id, job);
-    tokio::spawn(run(app, id, args));
-    Redirect::to(&format!("/job/{id}")).into_response()
+    let key = search_key(&params);
+    let mut jobs = lock(&app.jobs);
+    let found = jobs.iter().filter(|(_, j)| j.key == key && !matches!(j.result, Some(Err(_)))).map(|(&id, _)| id).max();
+    let id = found.unwrap_or_else(|| {
+        let id = app.next.fetch_add(1, Ordering::Relaxed);
+        let query = raw.unwrap_or_default();
+        let job = Job { query, key, started: Instant::now(), log: Vec::new(), now: None, result: None };
+        admit(&mut jobs, id, job);
+        tokio::spawn(run(app.clone(), id, args));
+        id
+    });
+    let page = if let Some(Ok(plot)) = jobs.get(&id).and_then(|j| j.result.as_ref()) {
+        plot.html.clone()
+    } else {
+        let progress = Progress { status: format!("/job/{id}/status") };
+        page::PROGRESS.render(Some(&progress)).unwrap_or_else(|e| format!("{e:#}"))
+    };
+    drop(jobs);
+    // The same link shows progress first, the plot later.
+    ([(header::CACHE_CONTROL, "no-cache")], Html(page)).into_response()
+}
+
+/// The search's values without blanks, in a fixed order.
+fn search_key(params: &[(String, String)]) -> String {
+    let mut kept: Vec<(&str, &str)> =
+        params.iter().map(|(k, v)| (k.as_str(), v.trim())).filter(|(_, v)| !v.is_empty()).collect();
+    kept.sort_unstable();
+    format!("{kept:?}")
 }
 
 /// Adds a job, forgetting the oldest finished ones beyond `KEEP_JOBS`.
@@ -303,8 +336,14 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     // The server's services and credentials, whatever the URL says.
     let result = match (app.credentials)() {
         Ok(credentials) => {
-            search::run(&args, &app.endpoints, credentials, Some(PlotPage { back, embed_details: false }), &events)
-                .await
+            search::run(
+                &args,
+                &app.endpoints,
+                credentials,
+                Some(PlotPage { back, details_url: Some(format!("/job/{id}/chains")) }),
+                &events,
+            )
+            .await
         }
         Err(e) => Err(e),
     };
@@ -323,14 +362,6 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     if let Some(job) = lock(&app.jobs).get_mut(&id) {
         job.result = Some(result);
     }
-}
-
-async fn progress(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
-    if !lock(&app.jobs).contains_key(&id) {
-        return (StatusCode::NOT_FOUND, "No such search (finished searches are kept for a while only).")
-            .into_response();
-    }
-    Html(page::PROGRESS.render(None::<&()>).unwrap_or_else(|e| format!("{e:#}"))).into_response()
 }
 
 async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
@@ -359,14 +390,6 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
     let response = axum::Json(status).into_response();
     drop(jobs);
     response
-}
-
-async fn plot(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
-    let jobs = lock(&app.jobs);
-    match jobs.get(&id).and_then(|j| j.result.as_ref()) {
-        Some(Ok(plot)) => ([(header::CACHE_CONTROL, "private, max-age=3600")], Html(plot.html.clone())).into_response(),
-        _ => (StatusCode::NOT_FOUND, "No plot for this search.").into_response(),
-    }
 }
 
 /// Connections the plot page asks about at once, at most.

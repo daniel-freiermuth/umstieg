@@ -123,7 +123,8 @@ var decodeData = (v, path) => {
         pieces: field(oc, "pieces", array(number), p)
       };
     }), path),
-    details: field(o, "details", nullable(decodeDetails), path)
+    details: field(o, "details", nullable(decodeDetails), path),
+    details_url: field(o, "details_url", nullable(string), path)
   };
 };
 function load(data) {
@@ -567,8 +568,8 @@ function want(chains) {
     for (const i of ids)
       asked.add(i);
     (async () => {
-      const response = await fetch(`chains?ids=${ids.join(",")}`);
-      if (response.ok) {
+      const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
+      if (response?.ok) {
         const got = decodeDetails(parseJson(await response.text()), "details");
         addDetails(D, got.map((d, k) => [item(ids, k), d]));
       } else

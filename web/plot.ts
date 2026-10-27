@@ -98,9 +98,9 @@ function want(chains: readonly number[]): void {
     const ids = missing.slice(at, at + DETAILS_AT_ONCE);
     for (const i of ids) asked.add(i);
     void (async () => {
-      const response = await fetch(`chains?ids=${ids.join(",")}`);
+      const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
       // Asked once only: a plot whose search is gone has no details left to give.
-      if (response.ok) {
+      if (response?.ok) {
         const got = decodeDetails(parseJson(await response.text()), "details");
         addDetails(
           D,

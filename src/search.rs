@@ -190,8 +190,9 @@ pub struct Outcome {
 pub struct PlotPage {
     /// Link back to the search form that started the search.
     pub back: Option<String>,
-    /// Details in the page (a file), or fetched by it from `umstieg serve`.
-    pub embed_details: bool,
+    /// Where the page fetches its connections' details (`umstieg serve`);
+    /// `None` puts them into the page (a file).
+    pub details_url: Option<String>,
 }
 
 /// Runs a search; with `plot`, also renders the plot page. Without
@@ -569,7 +570,7 @@ impl Report {
         }
 
         let rendered = match plot {
-            Some(PlotPage { back, embed_details }) => {
+            Some(PlotPage { back, details_url }) => {
                 // Only fails once `run` has stopped listening.
                 updates.send(Update::Stage("Drawing the plot")).ok();
                 let progress = |done: usize, total: usize| {
@@ -583,7 +584,7 @@ impl Report {
                     min_transfer,
                     zone,
                     back,
-                    embed_details,
+                    details_url,
                     progress: &progress,
                 };
                 Some(plot::render(&net, &mut fallbacks, &plot)?)

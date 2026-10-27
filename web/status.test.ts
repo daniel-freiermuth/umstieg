@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseJson } from "./decode";
-import { type Status, decodeStatus, next } from "./status";
+import { type Status, decodeProgress, decodeStatus, next } from "./status";
 
 const status = (text: string): Status => decodeStatus(parseJson(text), "status");
 
@@ -41,4 +41,9 @@ describe("next", () => {
     });
     expect(next({ log: [], now: null, done: true, error: "", back: "" })).toEqual({ error: "" });
   });
+});
+
+test("the progress page is told where to poll", () => {
+  expect(decodeProgress(parseJson('{"status": "/job/7/status"}'), "data")).toEqual({ status: "/job/7/status" });
+  expect(() => decodeProgress(parseJson("{}"), "data")).toThrow("data.status");
 });

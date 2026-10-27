@@ -297,7 +297,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
         min_transfer: MIN,
         zone: Berlin,
         back: Some("/?from=A&to=C".to_owned()),
-        embed_details: true,
+        details_url: None,
         progress: &|_, _| {},
     };
     Ok(embedded_json(&render(&net, &mut fallbacks, &plot)?.html, "data"))
@@ -449,7 +449,7 @@ fn drawing_reports_the_connections_done() {
         metric: Metric::Axis,
         min_transfer: MIN,
         back: None,
-        embed_details: false,
+        details_url: Some("/job/1/chains".to_owned()),
         zone: Berlin,
         progress: &progress,
     };

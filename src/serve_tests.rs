@@ -32,7 +32,7 @@ fn job(result: Option<Result<&str, &str>>) -> Job {
         })
         .map_err(str::to_owned)
     });
-    Job { query: String::new(), started: Instant::now(), log: Vec::new(), now: None, result }
+    Job { query: String::new(), key: String::new(), started: Instant::now(), log: Vec::new(), now: None, result }
 }
 
 #[test]
@@ -332,13 +332,11 @@ async fn search_runs_as_a_job_reporting_progress_and_failure() {
     // No stop matches: the search fails right after asking for the stations.
     let (api, transitous) = stand_in(json!([])).await;
     let app = app(&api);
-    let (status, headers, _) = get_page(&app, "/search?from=Nowhere&to=B").await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(headers["location"], "/job/1");
-
-    let (status, _, page) = get_page(&app, "/job/1").await;
+    // The search's link is its page: progress first, told where to poll.
+    let (status, headers, page) = get_page(&app, "/search?from=Nowhere&to=B").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("<script"));
+    assert_eq!(headers[header::CACHE_CONTROL.as_str()], "no-cache");
+    assert_eq!(embedded_json(&page, "data"), json!({"status": "/job/1/status"}));
 
     let status = finished(&app, 1).await;
     // Both stations are looked up at once; whichever fails first is reported.
@@ -355,8 +353,10 @@ async fn search_runs_as_a_job_reporting_progress_and_failure() {
     assert!(log.last().unwrap().ends_with("Failed"), "{log:?}");
     assert!(lock(&transitous.asked).contains(&"Nowhere".to_owned()));
 
-    let (code, _, _) = get_page(&app, "/job/1/plot").await;
-    assert_eq!(code, StatusCode::NOT_FOUND);
+    // A failed search runs again when its link is opened again.
+    let (_, _, page) = get_page(&app, "/search?from=Nowhere&to=B").await;
+    assert_eq!(embedded_json(&page, "data"), json!({"status": "/job/2/status"}));
+    finished(&app, 2).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -364,8 +364,8 @@ async fn searches_beyond_the_parallel_limit_wait_their_turn() {
     let (api, _) = stand_in(json!([])).await;
     let app = app(&api);
     let running = app.permits.acquire().await.unwrap();
-    let (status, headers, _) = get_page(&app, "/search?from=Nowhere&to=B").await;
-    assert_eq!((status, headers["location"].as_str()), (StatusCode::SEE_OTHER, "/job/1"));
+    let (status, _, _) = get_page(&app, "/search?from=Nowhere&to=B").await;
+    assert_eq!(status, StatusCode::OK);
     let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
     let waiting = loop {
         let (_, _, body) = get_page(&app, "/job/1/status").await;
@@ -386,24 +386,35 @@ async fn searches_beyond_the_parallel_limit_wait_their_turn() {
 }
 
 #[tokio::test]
-async fn job_pages_404_for_unknown_ids_and_plot_only_when_there_is_one() {
+async fn a_search_link_finds_its_search_again_and_shows_its_plot_once_done() {
     let app = app("http://127.0.0.1:9");
-    for uri in ["/job/7", "/job/7/status", "/job/7/plot"] {
-        assert_eq!(get_page(&app, uri).await.0, StatusCode::NOT_FOUND, "{uri}");
-    }
-    lock(&app.jobs).insert(1, job(None));
-    lock(&app.jobs).insert(2, job(Some(Err("No connection found."))));
-    lock(&app.jobs).insert(3, job(Some(Ok("<html>plot</html>"))));
-    assert_eq!(get_page(&app, "/job/1/plot").await.0, StatusCode::NOT_FOUND);
-    assert_eq!(get_page(&app, "/job/2/plot").await.0, StatusCode::NOT_FOUND);
-    let (code, headers, body) = get_page(&app, "/job/3/plot").await;
-    assert_eq!((code, body.as_str()), (StatusCode::OK, "<html>plot</html>"));
-    assert_eq!(headers[header::CACHE_CONTROL.as_str()], "private, max-age=3600");
+    assert_eq!(get_page(&app, "/job/7/status").await.0, StatusCode::NOT_FOUND);
+    let key = |query: &str| {
+        super::search_key(&params(&query.split('&').map(|kv| kv.split_once('=').unwrap()).collect::<Vec<_>>()))
+    };
+    // Order and blank values don't make another search; other values do.
+    assert_eq!(key("from=A&to=B&window=60"), key("window=60&to=B&hubs=&from=A"));
+    assert_ne!(key("from=A&to=B&window=60"), key("from=A&to=B&window=61"));
+    let mut running = job(None);
+    running.key = key("from=A&to=B");
+    let mut done = job(Some(Ok("<html>plot</html>")));
+    done.key = key("from=A&to=C");
+    let mut failed = job(Some(Err("No connection found.")));
+    failed.key = key("from=A&to=C");
+    lock(&app.jobs).insert(1, running);
+    lock(&app.jobs).insert(2, done);
+    lock(&app.jobs).insert(3, failed);
+    let (_, _, page) = get_page(&app, "/search?to=B&from=A").await;
+    assert_eq!(embedded_json(&page, "data"), json!({"status": "/job/1/status"}), "still running: its progress");
+    let (code, headers, page) = get_page(&app, "/search?from=A&to=C").await;
+    assert_eq!((code, page.as_str()), (StatusCode::OK, "<html>plot</html>"), "done: its plot, not the later failure");
+    assert_eq!(headers[header::CACHE_CONTROL.as_str()], "no-cache");
+    assert_eq!(lock(&app.jobs).len(), 3, "nothing started");
 
     let (_, _, body) = get_page(&app, "/job/1/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
     assert_eq!((&status["done"], &status["error"]), (&json!(false), &Value::Null));
-    let (_, _, body) = get_page(&app, "/job/2/status").await;
+    let (_, _, body) = get_page(&app, "/job/3/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
     assert_eq!((&status["done"], &status["error"]), (&json!(true), &json!("No connection found.")));
 }

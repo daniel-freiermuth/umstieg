@@ -170,6 +170,8 @@ struct Data {
     /// The connections' details in the page itself (a file has no server to
     /// ask); `null` when the page fetches them.
     details: Option<Vec<Detail>>,
+    /// Where to ask for details (`?ids=` comma-separated), when not in the page.
+    details_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -351,8 +353,8 @@ pub struct Plot<'a> {
     pub zone: Tz,
     /// Link back to the search form that produced the plot (`umstieg serve`).
     pub back: Option<String>,
-    /// Put the connections' details into the page, or leave them to be fetched.
-    pub embed_details: bool,
+    /// Where the page fetches its connections' details; `None` puts them into the page.
+    pub details_url: Option<String>,
     /// Told (connections drawn, of how many) about every `REPORT_EVERY`.
     pub progress: &'a dyn Fn(usize, usize),
 }
@@ -467,7 +469,8 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         pieces: builder.pieces,
         fallbacks: fallback_out,
         chains,
-        details: plot.embed_details.then(|| details.clone()),
+        details: plot.details_url.is_none().then(|| details.clone()),
+        details_url: plot.details_url.clone(),
     };
     Ok(Rendered { html: page::PLOT.render(Some(&data))?, details })
 }

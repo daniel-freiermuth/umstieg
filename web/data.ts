@@ -20,6 +20,8 @@ export interface Data {
   chains: { group: number; header: string; pieces: number[] }[];
   /** The connections' details, if in the page; otherwise fetched by connection. */
   details: DetailData[] | null;
+  /** Where to fetch details (`?ids=`), when not in the page. */
+  details_url: string | null;
 }
 /** What a connection's selection shows: its route and fallbacks (index, arrival). */
 export interface DetailData {
@@ -120,6 +122,7 @@ export const decodeData: Decoder<Data> = (v, path) => {
       path,
     ),
     details: field(o, "details", nullable(decodeDetails), path),
+    details_url: field(o, "details_url", nullable(string), path),
   };
 };
 

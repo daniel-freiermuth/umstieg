@@ -1,19 +1,19 @@
-// Progress page of a running search (`umstieg serve`): polls the job's status
-// and opens the plot when it is done.
+// Progress page of a running search (`umstieg serve`), shown at the search's
+// own link: polls the job's status and loads the link again when the plot is
+// ready, which then shows it.
 
 import { parseJson } from "./decode";
 import { byId } from "./dom";
-import { decodeStatus, next } from "./status";
+import { decodeProgress, decodeStatus, next } from "./status";
 
 const log = byId("log", HTMLPreElement);
 const now = byId("now", HTMLPreElement);
 const title = byId("title", HTMLHeadingElement);
 const back = byId("back", HTMLAnchorElement);
-// The page lives at /job/{id}.
-const job = location.pathname.replace(/\/+$/, "");
+const { status: statusUrl } = decodeProgress(parseJson(byId("data", HTMLScriptElement).text), "data");
 
 async function poll(): Promise<void> {
-  const response = await fetch(`${job}/status`);
+  const response = await fetch(statusUrl);
   if (!response.ok) {
     title.textContent = "Search not found";
     return;
@@ -29,7 +29,7 @@ async function poll(): Promise<void> {
     return;
   }
   if ("plot" in then) {
-    location.replace(`${job}/plot`);
+    location.reload();
     return;
   }
   title.textContent = "No plot";

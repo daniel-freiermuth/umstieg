@@ -715,7 +715,7 @@ async fn search(stand_in: &StandIn, extra: &[&str], with_credentials: bool, plot
         &args(extra),
         &stand_in.endpoints(),
         with_credentials.then(credentials),
-        plot.then_some(PlotPage { back: None, embed_details: true }),
+        plot.then_some(PlotPage { back: None, details_url: None }),
         &events,
     )
     .await?;
@@ -993,7 +993,7 @@ async fn search_runs_on_a_current_thread_runtime() {
             stages.lock().unwrap().push(s.to_owned());
         }
     };
-    let plot = Some(PlotPage { back: None, embed_details: true });
+    let plot = Some(PlotPage { back: None, details_url: None });
     let outcome = search::run(&args(&[]), &stand_in.endpoints(), Some(credentials()), plot, &events).await.unwrap();
     assert!(summary(&outcome.text).starts_with("fastest 2h01 "), "{}", outcome.text);
     assert!(outcome.plot.is_some());
@@ -1119,16 +1119,24 @@ async fn wait_until_done(http: &reqwest::Client, status_url: &str) -> Value {
         .unwrap_or_else(|_| panic!("search behind {status_url} didn't finish"))
 }
 
-/// Starts a search from form values; returns its job URL and the raw query.
-async fn start_search(http: &reqwest::Client, site: &str, form: &[(&str, &str)]) -> (String, String) {
+/// A search started from form values: its link (the page showing it), where
+/// its status is polled, and the raw query.
+struct Started {
+    link: String,
+    status: String,
+    query: String,
+}
+
+/// Starts a search from form values by opening its link, which shows its progress.
+async fn start_search(http: &reqwest::Client, site: &str, form: &[(&str, &str)]) -> Started {
     let mut url = reqwest::Url::parse(&format!("{site}/search")).unwrap();
     url.query_pairs_mut().extend_pairs(form);
     let query = url.query().unwrap().to_owned();
-    let response = http.get(url).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER, "{form:?}");
-    let job = response.headers()[header::LOCATION].to_str().unwrap().to_owned();
-    assert!(job.starts_with("/job/"), "{job}");
-    (format!("{site}{job}"), query)
+    let response = http.get(url.clone()).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{form:?}");
+    let data = testkit::embedded_json(&response.text().await.unwrap(), "data");
+    let status = data["status"].as_str().unwrap_or_else(|| panic!("no progress page: {data}"));
+    Started { link: url.to_string(), status: format!("{site}{status}"), query }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1143,7 +1151,7 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     let spec = testkit::embedded_json(&form, "spec");
     assert_eq!(spec["error"], Value::Null);
     // The user's zone, not the server's or the stations': 08:00 in Berlin is 02:00 in New York.
-    let (job, query) = start_search(
+    let Started { link, status: status_url, query } = start_search(
         &http,
         &site,
         &[
@@ -1156,9 +1164,7 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     )
     .await;
 
-    let progress = http.get(&job).send().await.unwrap();
-    assert_eq!(progress.status(), StatusCode::OK);
-    let status = wait_until_done(&http, &format!("{job}/status")).await;
+    let status = wait_until_done(&http, &status_url).await;
     assert_eq!(status["error"], Value::Null, "{status}");
     let back = format!("/?{query}");
     assert_eq!(status["back"], back.as_str());
@@ -1169,7 +1175,8 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     // The server's credentials were used: DB's live data is in the plot.
     assert!(!log.iter().any(|l| l.contains("warning")), "{log:#?}");
 
-    let plot = http.get(format!("{job}/plot")).send().await.unwrap();
+    // The same link, now that the search is done: its plot.
+    let plot = http.get(&link).send().await.unwrap();
     assert_eq!(plot.status(), StatusCode::OK);
     let data = testkit::embedded_json(&plot.text().await.unwrap(), "data");
     assert_eq!(data["back"], back.as_str());
@@ -1178,7 +1185,8 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     assert!(data["subtitle"].as_str().unwrap().starts_with("departing 02:00 EST–03:00 EST · "), "{data}");
     // Details aren't in the page: it asks for them by connection. ICE 203 at 10:49 in Berlin.
     assert_eq!(data["details"], Value::Null);
-    let details: Value = http.get(format!("{job}/chains?ids=0,1,2,3,4,5")).send().await.unwrap().json().await.unwrap();
+    let details_url = format!("{site}{}?ids=0,1,2,3,4,5", data["details_url"].as_str().unwrap());
+    let details: Value = http.get(details_url).send().await.unwrap().json().await.unwrap();
     assert!(details.as_array().unwrap().iter().any(|d| d["route"].as_str().unwrap().contains("04:49 EST (+4)")));
     // The back link brings the form up with the same values.
     let again = http.get(format!("{site}{back}")).send().await.unwrap().text().await.unwrap();
@@ -1207,32 +1215,31 @@ async fn web_front_end_reports_bad_input() {
 
     // An unknown station fails the search; the status says why and there is no plot.
     let start = start_at();
-    let (job, _) = start_search(
+    let started = start_search(
         &http,
         &site,
         &[("from", "Atlantis"), ("to", "Zielhafen Hbf"), ("at", &start), ("time_zone", "Europe/Berlin")],
     )
     .await;
-    let status = wait_until_done(&http, &format!("{job}/status")).await;
+    let status = wait_until_done(&http, &started.status).await;
     let error = status["error"].as_str().unwrap_or_else(|| panic!("no error in {status}"));
     assert!(error.starts_with("no stop named like \"Atlantis\""), "{error}");
     assert!(status["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().ends_with("Failed")), "{status}");
-    let plot = http.get(format!("{job}/plot")).send().await.unwrap();
-    assert_eq!(plot.status(), StatusCode::NOT_FOUND);
+    let again = testkit::embedded_json(&http.get(&started.link).send().await.unwrap().text().await.unwrap(), "data");
+    assert!(again["status"].is_string(), "the failed search runs again: {again}");
+    wait_until_done(&http, &format!("{site}{}", again["status"].as_str().unwrap())).await;
 
     // Nothing runs: no plot, and the status carries the report saying so.
     let afternoon = at("14:00");
-    let (job, _) = start_search(
+    let started = start_search(
         &http,
         &site,
         &[("from", "Amsel"), ("to", "Zielhafen Hbf"), ("at", &afternoon), ("time_zone", "Europe/Berlin")],
     )
     .await;
-    let status = wait_until_done(&http, &format!("{job}/status")).await;
+    let status = wait_until_done(&http, &started.status).await;
     let error = status["error"].as_str().unwrap_or_else(|| panic!("no error in {status}"));
     assert!(error.ends_with("\nNo connection found.\n"), "{error}");
-    let plot = http.get(format!("{job}/plot")).send().await.unwrap();
-    assert_eq!(plot.status(), StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
