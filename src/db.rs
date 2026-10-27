@@ -120,8 +120,13 @@ impl Visit {
     pub fn label(&self) -> String {
         let number = self.number.map(|n| n.to_string()).unwrap_or_default();
         match (&self.line, &self.category) {
-            // FlixTrain gives its line as "10": "FLX 1236", like "ICE 273".
-            (Some(line), Some(category)) if self.number.is_some() && line.chars().all(|c| c.is_ascii_digit()) => {
+            // FlixTrain gives its line as "10": "FLX 1236", like "ICE 273". S-Bahn lines
+            // come as bare numbers too ("1" for S1) and keep them.
+            (Some(line), Some(category))
+                if self.number.is_some()
+                    && line.chars().all(|c| c.is_ascii_digit())
+                    && crate::timetable::is_long_distance(category) =>
+            {
                 format!("{category} {number}")
             }
             (Some(line), _) => format!("{line} ({number})"),
