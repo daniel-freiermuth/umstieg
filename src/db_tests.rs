@@ -736,6 +736,26 @@ async fn plans_are_cached_on_disk_changes_fetched_once_per_client() {
     assert_eq!(by_label(&visits)["ICE 591"].arrival.as_ref().unwrap().changed, Some(at("06:42")));
 }
 
+#[tokio::test]
+async fn an_unwritable_cache_still_answers() {
+    // A file where the cache directory should be: storing answers fails.
+    let dir = tempfile::tempdir().unwrap();
+    let blocked = dir.path().join("not-a-dir");
+    std::fs::write(&blocked, "").unwrap();
+    let fake = Arc::new(Fake::default());
+    fake.on("/station/Schreibschutz", 200, &stations_xml(&[("Schreibschutz", "8000913")]))
+        .on("/plan/8000913/261024/08", 200, PLAN)
+        .on("/fchg/8000913", 200, "<timetable/>");
+    let mut db = client(&fake).await;
+    db.cache_dir = Some(blocked);
+    let station = db.resolve("Schreibschutz", None).await.unwrap().unwrap();
+    assert_eq!(station.eva, "8000913");
+    let (visits, _) = db.visits("8000913", &[at("06:00")]).await.unwrap();
+    assert_eq!(visits.len(), 6);
+    db.visits("8000913", &[at("06:00")]).await.unwrap();
+    assert_eq!(fake.count("/plan/8000913/261024/08"), 1, "the board is still kept in memory");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_lookups_leave_one_intact_cache_line_each() {
     let fake = Arc::new(Fake::default());
