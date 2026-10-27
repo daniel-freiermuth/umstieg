@@ -224,6 +224,20 @@ async fn stop_prefers_stations_in_geocoder_order() {
 }
 
 #[tokio::test]
+async fn stop_matches_place_words_typed_without_accents() {
+    let fake = Arc::new(Fake::default());
+    fake.geocode("Koln Hbf", json!([stop("STOP", "Kiel Hbf", "kiel"), stop("STOP", "Köln Hbf", "koeln")]))
+        .geocode("Zurich HB", json!([stop("STOP", "Zürich HB", "zh")]))
+        .geocode("Geneve", json!([stop("STOP", "Genève", "ge")]))
+        .geocode("Koln Sued", json!([stop("STOP", "Köln Süd", "sued")]));
+    let motis = client(&fake).await;
+    let cases = [("Koln Hbf", "koeln"), ("Zurich HB", "zh"), ("Geneve", "ge"), ("Koln Sued", "sued")];
+    for (text, id) in cases {
+        assert_eq!(motis.stop(text).await.unwrap().id, id, "{text}");
+    }
+}
+
+#[tokio::test]
 async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() {
     let fake = Arc::new(Fake::default());
     let with_modes = |name: &str, id: &str, modes: &[&str]| {
