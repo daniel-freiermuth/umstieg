@@ -295,8 +295,10 @@ async fn windows_are_asked_in_hour_slices() {
     assert_eq!(asked, expected);
     assert_eq!(found.len(), 2, "unfiltered: the 08:00 and 09:00 slices both see the 09:30 train");
 
-    assert!(sliced(&motis, "o", "d", at("08:00"), TimeDelta::zero()).await.unwrap().is_empty());
-    assert_eq!(fake.asked().len(), 3, "an empty window asks nothing");
+    sliced(&motis, "o", "d", at("08:30"), TimeDelta::zero()).await.unwrap();
+    let asked: Vec<(String, String)> = fake.asked().into_iter().map(|(_, _, t, w)| (t, w)).collect();
+    assert_eq!(asked.len(), 4, "an empty window asks one slice");
+    assert!(asked.contains(&("08:30".to_owned(), "3600".to_owned())), "{asked:?}");
 }
 
 const O: (&str, &str) = ("o", "Origin");
