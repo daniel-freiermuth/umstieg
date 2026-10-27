@@ -161,13 +161,14 @@ async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window
     Ok(slices.into_iter().flatten().collect())
 }
 
-/// Request times `step` apart across the window. Its end saturates: a
-/// window reaching past representable time just ends there.
+/// Request times `step` apart across the window, the first at its start even
+/// when it is empty. Its end saturates: a window reaching past representable
+/// time just ends there.
 fn starts(time: DateTime<Utc>, window: TimeDelta, step: TimeDelta) -> Vec<DateTime<Utc>> {
     let end = checked::later_or_max(time, window);
     let mut starts = Vec::new();
     let mut t = Some(time);
-    while let Some(at) = t.filter(|&at| at < end) {
+    while let Some(at) = t.filter(|&at| at == time || at < end) {
         starts.push(at);
         t = at.checked_add_signed(step);
     }
