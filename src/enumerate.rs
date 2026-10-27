@@ -461,7 +461,7 @@ pub struct Progress {
 }
 
 /// How often a running search reports, about (tests: at every chance).
-pub const REPORT_EVERY: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
+pub const REPORT_EVERY: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(1) };
 /// The clock is read every this many states (tests: every state).
 const REPORT_STRIDE: usize = if cfg!(test) { 1 } else { 1 << 16 };
 
