@@ -8,7 +8,7 @@ export interface Data {
   title: string;
   subtitle: string;
   back: string | null;
-  tz: string;
+  tz: string; // the user's zone every time is shown in: "Europe/Berlin"
   metrics: Metric[];
   metric: number; // index into metrics shown first
   stations: number[]; // station ids with a row

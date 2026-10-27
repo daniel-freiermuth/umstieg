@@ -8,13 +8,14 @@ import {
   given,
   initial,
   label,
-  localDateTime,
+  wallTime,
   omitted,
   picked,
   sections,
   stationSearch,
   decodeStops,
   unpicked,
+  zoneOf,
 } from "./fields";
 
 const f = (name: string, kind: Kind, def = "", advanced = false): Field => ({
@@ -59,7 +60,7 @@ describe("decodeSpec", () => {
       spec(`[{"name": "a", "help": "", "kind": "text", "default": "", "choices": [], "advanced": false},
              {"name": "b", "help": "", "kind": ${kind}, "default": "", "choices": [], "advanced": false}]`);
     expect(() => decodeSpec(parseJson(field('"date"')), "spec")).toThrow(
-      "spec.fields[1].kind: expected one of text, number, flag, choice, time, station, stations",
+      "spec.fields[1].kind: expected one of text, number, flag, choice, time, zone, station, stations",
     );
     expect(() => decodeSpec(parseJson('{"fields": [], "values": {"max_changes": 3}, "error": null}'), "spec")).toThrow(
       "spec.values.max_changes: expected a string",
@@ -82,25 +83,40 @@ test("given: only the URL's own values", () => {
 });
 
 describe("initial", () => {
-  const now = new Date(2026, 0, 2, 3, 4);
+  // 2026-01-02 03:04 UTC: 04:04 in Berlin, 22:04 the day before in New York.
+  const now = new Date(Date.UTC(2026, 0, 2, 3, 4));
+  const zone = f("time_zone", "zone");
   const cases: [string, Field, Record<string, string>, string | boolean][] = [
     ["a flag is off unless given", f("all_stops", "flag", "true"), {}, false],
     ["a given flag is on", f("all_stops", "flag"), { all_stops: "" }, true],
-    ["a time not given is now", f("at", "time", "2026-10-25T08:00"), {}, "2026-01-02T03:04"],
-    ["a given time", f("at", "time"), { at: "2026-10-25T08:00" }, "2026-10-25T08:00"],
+    ["the zone is the user's", zone, {}, "Europe/Berlin"],
+    ["a given zone over the user's", zone, { time_zone: "America/New_York" }, "America/New_York"],
+    ["a time not given is now in the user's zone", f("at", "time", "2026-10-25T08:00"), {}, "2026-01-02T04:04"],
+    ["or in the given zone", f("at", "time"), { time_zone: "America/New_York" }, "2026-01-01T22:04"],
+    ["a given time", f("at", "time"), { at: "2026-10-25T08:00", time_zone: "Asia/Kolkata" }, "2026-10-25T08:00"],
     ["the default", f("max_changes", "number", "3"), {}, "3"],
     ["a given value over the default", f("max_changes", "number", "3"), { max_changes: "5" }, "5"],
     ["an empty given value over the default", f("via", "stations", "Fulda"), { via: "" }, ""],
   ];
   for (const [name, field, values, expected] of cases)
     test(name, () => {
-      expect(initial(field, values, now)).toBe(expected);
+      expect(initial(field, values, now, "Europe/Berlin")).toBe(expected);
     });
 });
 
-test("localDateTime pads every part", () => {
-  expect(localDateTime(new Date(2026, 8, 5, 7, 3))).toBe("2026-09-05T07:03");
-  expect(localDateTime(new Date(2026, 11, 31, 23, 59))).toBe("2026-12-31T23:59");
+test("zoneOf: the URL's zone, else the user's", () => {
+  expect(zoneOf({}, "Europe/Berlin")).toBe("Europe/Berlin");
+  expect(zoneOf({ time_zone: "Asia/Kolkata" }, "Europe/Berlin")).toBe("Asia/Kolkata");
+});
+
+test("wallTime: the time in the zone, padded, midnight as 00", () => {
+  const t = new Date(Date.UTC(2026, 8, 5, 7, 3));
+  expect(wallTime(t, "UTC")).toBe("2026-09-05T07:03");
+  expect(wallTime(t, "Europe/Berlin")).toBe("2026-09-05T09:03"); // CEST
+  expect(wallTime(t, "Asia/Kolkata")).toBe("2026-09-05T12:33");
+  expect(wallTime(t, "America/New_York")).toBe("2026-09-05T03:03");
+  expect(wallTime(new Date(Date.UTC(2026, 11, 31, 23, 0)), "Europe/Berlin")).toBe("2027-01-01T00:00");
+  expect(wallTime(new Date(Date.UTC(2026, 11, 31, 23, 59)), "UTC")).toBe("2026-12-31T23:59");
 });
 
 test("sections: the trip in its own order, then limits and advanced in spec order", () => {
@@ -114,10 +130,11 @@ test("sections: the trip in its own order, then limits and advanced in spec orde
     f("at", "time"),
     f("metric", "choice"),
     f("verbose", "flag", "", true),
+    f("time_zone", "zone"),
   ];
   const s = sections(fields);
   const names = (xs: Field[]): string[] => xs.map((x) => x.name);
-  expect(names(s.trip)).toEqual(["from", "to", "at", "window", "via"]);
+  expect(names(s.trip)).toEqual(["from", "to", "at", "time_zone", "window", "via"]);
   expect(names(s.limits)).toEqual(["max_changes", "metric"]);
   expect(names(s.advanced)).toEqual(["parallel", "verbose"]);
 });

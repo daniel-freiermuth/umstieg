@@ -69,11 +69,19 @@ const tip = byId("tip", HTMLDivElement);
 const details = byId("details", HTMLDivElement);
 const panelTitle = byId("panel-title", HTMLHeadingElement);
 const picksEl = byId("picks", HTMLDivElement);
+// Axis ticks: the legend names the zone. Times in texts carry it themselves ("08:10 CET").
+const tickFmt = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: D.tz,
+});
 const timeFmt = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
   timeZone: D.tz,
+  timeZoneName: "short",
 });
 // One colour per train, so a train can be followed across all connections.
 const trainColor = (t: number): string => `hsl(${String((t * 137.508) % 360)}, 70%, 45%)`;
@@ -357,7 +365,7 @@ function render(): void {
   const step = tickStep(dom.t1 - dom.t0);
   for (let t = Math.ceil(dom.t0 / step) * step; t <= dom.t1; t += step) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
-    el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = timeFmt.format(t);
+    el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = tickFmt.format(t);
   }
 
   const pts = (p: { pts: readonly XY[] }): string =>

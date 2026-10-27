@@ -4,7 +4,7 @@
 import { type Decoder, array, boolean, field, nullable, object, oneOf, record, string } from "./decode";
 import { item } from "./util";
 
-const kinds = ["text", "number", "flag", "choice", "time", "station", "stations"] as const;
+const kinds = ["text", "number", "flag", "choice", "time", "zone", "station", "stations"] as const;
 export type Kind = (typeof kinds)[number];
 
 export interface Field {
@@ -52,26 +52,40 @@ export const label = (name: string): string => name.replace(/_/g, " ").replace(/
 export const given = (values: Record<string, string>, name: string): string | undefined =>
   Object.hasOwn(values, name) ? values[name] : undefined;
 
-const pad = (n: number): string => String(n).padStart(2, "0");
-/** A local time as a datetime-local input value: "2026-10-25T08:05". */
-export function localDateTime(d: Date): string {
-  return `${String(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+/** `d`'s wall time in `zone` as a datetime-local input value: "2026-10-25T08:05". */
+export function wallTime(d: Date, zone: string): string {
+  // Swedish writes dates and times the ISO way: "2026-10-25 08:05".
+  const format = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  return format.format(d).replace(" ", "T");
 }
+
+/** The zone the form's time is in: the one in the URL (a repeated search), else the user's. */
+export const zoneOf = (values: Record<string, string>, userZone: string): string =>
+  given(values, "time_zone") ?? userZone;
 
 /**
  * What a field starts with: a flag is set only if given (its default is
- * irrelevant), a time not given is now, anything else is the given value or
- * the default.
+ * irrelevant), the zone is the given one or the user's, a time not given is
+ * `now` in that zone, anything else is the given value or the default.
  */
-export function initial(f: Field, values: Record<string, string>, now: Date): string | boolean {
+export function initial(f: Field, values: Record<string, string>, now: Date, userZone: string): string | boolean {
   const value = given(values, f.name);
   if (f.kind === "flag") return value !== undefined;
-  if (f.kind === "time") return value ?? localDateTime(now);
+  if (f.kind === "zone") return zoneOf(values, userZone);
+  if (f.kind === "time") return value ?? wallTime(now, zoneOf(values, userZone));
   return value ?? f.default;
 }
 
 // Where fields go: the trip first, then limits, the rest folded away.
-const TRIP = ["from", "to", "at", "window", "via"];
+const TRIP = ["from", "to", "at", "time_zone", "window", "via"];
 /** Fields by section: the trip in its fixed order, then limits and advanced in spec order. */
 export function sections(fields: readonly Field[]): { trip: Field[]; limits: Field[]; advanced: Field[] } {
   const trip = TRIP.flatMap((name) => fields.filter((f) => f.name === name).slice(0, 1));

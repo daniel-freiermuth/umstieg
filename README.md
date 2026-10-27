@@ -14,8 +14,8 @@ $ umstieg "Mannheim Hbf" "København H" --at "2026-10-24 06:30"
 fastest 9h39 · limits: ≤ 12h39 travel time, ≤ 15 changes · 1090 connections in 8 groups
 
 ■ ICE 378 … RJ 384  (49)
-  06:39 → 17:42  11h03  2×  min 42m   06:39 (+1) ICE 378 → 07:15 (+2) Frankfurt (Main) Südbahnhof ‖49m‖ 08:04 (+12) ICE 2558 + ICE 76 → 11:51 Hamburg Hbf ‖42m‖ 12:33 (+5) RJ 384 → 17:42 (+4) København H
-  06:39 → 17:42  11h03  2×  min 36m   06:39 (+1) ICE 378 → 08:21 (+10) Fulda Bahnhof ‖48m‖ 09:09 (+5) ICE 886 → 11:57 Hamburg Hbf ‖36m‖ 12:33 (+5) RJ 384 → 17:42 (+4) København H
+  06:39 CEST → 17:42 CEST  11h03  2×  min 42m   06:39 CEST (+1) ICE 378 → 07:15 CEST (+2) Frankfurt (Main) Südbahnhof ‖49m‖ 08:04 CEST (+12) ICE 2558 + ICE 76 → 11:51 CEST Hamburg Hbf ‖42m‖ 12:33 CEST (+5) RJ 384 → 17:42 CEST (+4) København H
+  06:39 CEST → 17:42 CEST  11h03  2×  min 36m   06:39 CEST (+1) ICE 378 → 08:21 CEST (+10) Fulda Bahnhof ‖48m‖ 09:09 CEST (+5) ICE 886 → 11:57 CEST Hamburg Hbf ‖36m‖ 12:33 CEST (+5) RJ 384 → 17:42 CEST (+4) København H
   …
 ```
 
@@ -25,15 +25,19 @@ much: `--missed-by` (default 5 min, 0 = off) lists those too, since delays can
 still shift either way; they sort after the feasible connections of their
 group, and their fallbacks show what still works. `umstieg --help` lists all options.
 
+Times are in `--time-zone` (e.g. `Europe/Berlin`; default: this machine's, from
+`TZ` or the system), both `--at` as given and every time shown, and each shown
+time names its zone (`06:39 CEST`).
+
 `--detail` adds platforms and, for every change, up to three fallbacks if the
 next train is missed: connections leaving within 2 h with at most 3 changes,
 cut where they catch a train of the plan again ("back on plan"), e.g.
 
 ```
-    08:04 (+12) Frankfurt (Main) Südbahnhof [5] → 11:52 (+1) Hamburg Hbf [12]   ICE 2558 + ICE 76
+    08:04 CEST (+12) Frankfurt (Main) Südbahnhof [5] → 11:52 CEST (+1) Hamburg Hbf [12]   ICE 2558 + ICE 76
       ↳ 48m buffer · if missed:
-          12:42 S1 (41618) → 12:54 Altona ‖14m‖ 13:08 RJ 384 (back on plan) · arrive 22:05 (+0m)
-          12:52 S1 (41620) → 13:04 Altona ‖4m⚠‖ 13:08 RJ 384 (back on plan) · arrive 22:05 (+0m)
+          12:42 CEST S1 (41618) → 12:54 CEST Altona ‖14m‖ 13:08 CEST RJ 384 (back on plan) · arrive 22:05 CEST (+0m)
+          12:52 CEST S1 (41620) → 13:04 CEST Altona ‖4m⚠‖ 13:08 CEST RJ 384 (back on plan) · arrive 22:05 CEST (+0m)
 ```
 
 ### Plot
@@ -107,7 +111,9 @@ suggestions as one types: a field shows "✓ found" once its text names one
 exactly, and the search can't start before every station is chosen (vias become
 removable chips). The chosen stop's id goes with the search, so it runs from
 exactly that stop, not from the best match for the name; the command line
-still takes names.
+still takes names. The time zone is the browser's, filled in next to the time
+(changeable): the search and its plot are in the user's time, whatever zone
+the server runs in.
 Submitting shows the search's
 progress, then the plot, whose "← Change search" link returns to the form with
 the same settings. Searches beyond `--parallel` wait their turn: each loads
