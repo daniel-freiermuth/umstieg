@@ -16,6 +16,7 @@ import {
   sections,
   stationSearch,
   unpicked,
+  zoneOf,
 } from "./fields";
 
 const SPEC = decodeSpec(parseJson(byId("spec", HTMLScriptElement).text), "spec");
@@ -152,11 +153,17 @@ function viaField(f: Field, id: string): HTMLElement {
   return box;
 }
 
+/** The user's time zone, as the browser knows it: "Europe/Berlin". */
+const USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** The time field's label, naming the zone the time is in. */
+let timeLabel: HTMLLabelElement | null = null;
+const timeLabelText = (zone: string): string => `${label("at")} (${zone})`;
+
 function fieldRow(f: Field): HTMLDivElement {
   const row = document.createElement("div");
   row.className = "field";
   const id = `f-${f.name}`;
-  const value = initial(f, SPEC.values, new Date());
+  const value = initial(f, SPEC.values, new Date(), USER_ZONE);
   let control: HTMLElement;
   if (f.kind === "station") {
     control = stationField(f, id);
@@ -172,12 +179,29 @@ function fieldRow(f: Field): HTMLDivElement {
     const text = Object.assign(document.createElement("input"), { id, name: f.name, value });
     text.type = f.kind === "number" ? "number" : f.kind === "time" ? "datetime-local" : "text";
     if (f.kind === "number") text.step = "any";
+    if (f.kind === "zone") zoneInput(text);
     control = text;
   }
   const l = Object.assign(document.createElement("label"), { htmlFor: id, textContent: label(f.name) });
+  if (f.kind === "time") {
+    l.textContent = timeLabelText(zoneOf(SPEC.values, USER_ZONE));
+    timeLabel = l;
+  }
   const help = Object.assign(document.createElement("div"), { className: "help", textContent: f.help });
   row.append(l, control, help);
   return row;
+}
+
+/** The time zone input: every zone the browser knows to choose from; the time's label follows it. */
+function zoneInput(input: HTMLInputElement): void {
+  const list = Object.assign(document.createElement("datalist"), { id: "zones" });
+  list.append(...Intl.supportedValuesOf("timeZone").map((z) => new Option(z)));
+  document.body.append(list);
+  input.setAttribute("list", list.id);
+  input.required = true;
+  input.addEventListener("input", () => {
+    if (timeLabel) timeLabel.textContent = timeLabelText(input.value.trim());
+  });
 }
 
 const trip = document.createElement("fieldset");

@@ -70,7 +70,7 @@ function entry(m, k, make) {
 }
 
 // fields.ts
-var kinds = ["text", "number", "flag", "choice", "time", "station", "stations"];
+var kinds = ["text", "number", "flag", "choice", "time", "zone", "station", "stations"];
 var decodeField = (v, path) => {
   const o = object(v, path);
   return {
@@ -92,19 +92,30 @@ var decodeSpec = (v, path) => {
 };
 var label = (name) => name.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 var given = (values, name) => Object.hasOwn(values, name) ? values[name] : undefined;
-var pad = (n) => String(n).padStart(2, "0");
-function localDateTime(d) {
-  return `${String(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function wallTime(d, zone) {
+  const format = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  return format.format(d).replace(" ", "T");
 }
-function initial(f, values, now) {
+var zoneOf = (values, userZone) => given(values, "time_zone") ?? userZone;
+function initial(f, values, now, userZone) {
   const value = given(values, f.name);
   if (f.kind === "flag")
     return value !== undefined;
+  if (f.kind === "zone")
+    return zoneOf(values, userZone);
   if (f.kind === "time")
-    return value ?? localDateTime(now);
+    return value ?? wallTime(now, zoneOf(values, userZone));
   return value ?? f.default;
 }
-var TRIP = ["from", "to", "at", "window", "via"];
+var TRIP = ["from", "to", "at", "time_zone", "window", "via"];
 function sections(fields) {
   const trip = TRIP.flatMap((name) => fields.filter((f) => f.name === name).slice(0, 1));
   const rest = fields.filter((f) => !TRIP.includes(f.name));
@@ -252,11 +263,14 @@ function viaField(f, id) {
   }
   return box;
 }
+var USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+var timeLabel = null;
+var timeLabelText = (zone) => `${label("at")} (${zone})`;
 function fieldRow(f) {
   const row = document.createElement("div");
   row.className = "field";
   const id = `f-${f.name}`;
-  const value = initial(f, SPEC.values, new Date);
+  const value = initial(f, SPEC.values, new Date, USER_ZONE);
   let control;
   if (f.kind === "station") {
     control = stationField(f, id);
@@ -274,12 +288,29 @@ function fieldRow(f) {
     text.type = f.kind === "number" ? "number" : f.kind === "time" ? "datetime-local" : "text";
     if (f.kind === "number")
       text.step = "any";
+    if (f.kind === "zone")
+      zoneInput(text);
     control = text;
   }
   const l = Object.assign(document.createElement("label"), { htmlFor: id, textContent: label(f.name) });
+  if (f.kind === "time") {
+    l.textContent = timeLabelText(zoneOf(SPEC.values, USER_ZONE));
+    timeLabel = l;
+  }
   const help = Object.assign(document.createElement("div"), { className: "help", textContent: f.help });
   row.append(l, control, help);
   return row;
+}
+function zoneInput(input) {
+  const list = Object.assign(document.createElement("datalist"), { id: "zones" });
+  list.append(...Intl.supportedValuesOf("timeZone").map((z) => new Option(z)));
+  document.body.append(list);
+  input.setAttribute("list", list.id);
+  input.required = true;
+  input.addEventListener("input", () => {
+    if (timeLabel)
+      timeLabel.textContent = timeLabelText(input.value.trim());
+  });
 }
 var trip = document.createElement("fieldset");
 trip.append(Object.assign(document.createElement("legend"), { textContent: "Trip" }));

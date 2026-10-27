@@ -538,11 +538,18 @@ var tip = byId("tip", HTMLDivElement);
 var details = byId("details", HTMLDivElement);
 var panelTitle = byId("panel-title", HTMLHeadingElement);
 var picksEl = byId("picks", HTMLDivElement);
-var timeFmt = new Intl.DateTimeFormat(undefined, {
+var tickFmt = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
   timeZone: D.tz
+});
+var timeFmt = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: D.tz,
+  timeZoneName: "short"
 });
 var trainColor = (t) => `hsl(${String(t * 137.508 % 360)}, 70%, 45%)`;
 var HINT = "Hover a line or station name to see what is reachable through it. Click it to pick it: the connections " + "passing it are listed (one alone is selected). Click more to narrow down, a pick again to remove it.";
@@ -772,7 +779,7 @@ function render() {
   const step2 = tickStep(dom.t1 - dom.t0);
   for (let t = Math.ceil(dom.t0 / step2) * step2;t <= dom.t1; t += step2) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
-    el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = timeFmt.format(t);
+    el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = tickFmt.format(t);
   }
   const pts = (p) => p.pts.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const base = el("g", { class: "base", "clip-path": "url(#area)" }, svg);
