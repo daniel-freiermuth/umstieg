@@ -135,13 +135,28 @@ fn router(app: Arc<App>) -> Router {
         .layer(tower_http::trace::TraceLayer::new_for_http())
 }
 
+/// How the form shows a field and turns its value back into arguments.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+enum FieldKind {
+    Text,
+    Number,
+    Flag,
+    Choice,
+    Time,
+    Zone,
+    /// A positional station.
+    Station,
+    /// Several stations, separated by ";".
+    Stations,
+}
+
 /// One form field, described from the command-line option.
 #[derive(Serialize)]
 struct Field {
     name: String,
     help: String,
-    /// "text", "number", "flag", "choice", "time", "zone", "station", "stations".
-    kind: &'static str,
+    kind: FieldKind,
     default: String,
     choices: Vec<String>,
     advanced: bool,
@@ -161,16 +176,16 @@ fn fields_of(command: &clap::Command) -> Vec<Field> {
             let default = a.get_default_values().first().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
             let choices: Vec<String> = a.get_possible_values().iter().map(|v| v.get_name().to_owned()).collect();
             let kind = match name.as_str() {
-                "from" | "to" => "station",
-                "via" => "stations",
-                "at" => "time",
-                "time_zone" => "zone",
-                _ if matches!(a.get_action(), ArgAction::SetTrue) => "flag",
-                _ if !choices.is_empty() => "choice",
-                _ if default.parse::<f64>().is_ok() => "number",
-                _ => "text",
+                "from" | "to" => FieldKind::Station,
+                "via" => FieldKind::Stations,
+                "at" => FieldKind::Time,
+                "time_zone" => FieldKind::Zone,
+                _ if matches!(a.get_action(), ArgAction::SetTrue) => FieldKind::Flag,
+                _ if !choices.is_empty() => FieldKind::Choice,
+                _ if default.parse::<f64>().is_ok() => FieldKind::Number,
+                _ => FieldKind::Text,
             };
-            let choices = if kind == "flag" { Vec::new() } else { choices };
+            let choices = if kind == FieldKind::Flag { Vec::new() } else { choices };
             Field {
                 help: a.get_help().map(ToString::to_string).unwrap_or_default(),
                 advanced: ADVANCED.contains(&name.as_str()),
@@ -192,18 +207,18 @@ fn parse(params: &[(String, String)]) -> Result<SearchArgs, String> {
     for f in fields() {
         let option = format!("--{}", f.name.replace('_', "-"));
         match f.kind {
-            "station" => stations.push(get(&f.name).unwrap_or_default().to_owned()),
-            "stations" => {
+            FieldKind::Station => stations.push(get(&f.name).unwrap_or_default().to_owned()),
+            FieldKind::Stations => {
                 for v in get(&f.name).unwrap_or_default().split(';').map(str::trim).filter(|v| !v.is_empty()) {
                     argv.push(format!("{option}={v}"));
                 }
             }
-            "flag" => {
+            FieldKind::Flag => {
                 if get(&f.name).is_some() {
                     argv.push(option);
                 }
             }
-            _ => {
+            FieldKind::Text | FieldKind::Number | FieldKind::Choice | FieldKind::Time | FieldKind::Zone => {
                 if let Some(v) = get(&f.name) {
                     argv.push(format!("{option}={v}"));
                 }

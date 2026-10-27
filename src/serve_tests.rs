@@ -10,7 +10,7 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::{ADVANCED, App, Form, Job, KEEP_JOBS, MAX_DETAILS, NOT_IN_FORM, admit, fields, parse, router};
+use super::{ADVANCED, App, FieldKind, Form, Job, KEEP_JOBS, MAX_DETAILS, NOT_IN_FORM, admit, fields, parse, router};
 use crate::plot::Metric;
 use crate::plot::{Detail, Rendered};
 use crate::search::Endpoints;
@@ -63,16 +63,16 @@ fn form_fields_are_the_search_options_minus_text_only_ones() {
     );
     let field = |name: &str| fields.iter().find(|f| f.name == name).unwrap();
     let cases = [
-        ("from", "station", ""),
-        ("to", "station", ""),
-        ("via", "stations", ""),
-        ("at", "time", ""),
-        ("time_zone", "zone", ""),
-        ("window", "number", "120"),
-        ("extra_hours", "number", "3"),
-        ("max_nodes", "number", "20000000"),
-        ("forward_only", "flag", ""),
-        ("no_db", "flag", ""),
+        ("from", FieldKind::Station, ""),
+        ("to", FieldKind::Station, ""),
+        ("via", FieldKind::Stations, ""),
+        ("at", FieldKind::Time, ""),
+        ("time_zone", FieldKind::Zone, ""),
+        ("window", FieldKind::Number, "120"),
+        ("extra_hours", FieldKind::Number, "3"),
+        ("max_nodes", FieldKind::Number, "20000000"),
+        ("forward_only", FieldKind::Flag, ""),
+        ("no_db", FieldKind::Flag, ""),
     ];
     for (name, kind, default) in cases {
         assert_eq!((field(name).kind, field(name).default.as_str()), (kind, default), "{name}");
@@ -93,10 +93,16 @@ fn options_with_choices_or_free_text_get_their_own_kinds() {
         .arg(Arg::new("label").long("label"))
         .arg(Arg::new("count").long("count").default_value("3"));
     let fields = super::fields_of(&command);
-    let kinds: Vec<(&str, &str, &str)> = fields.iter().map(|f| (f.name.as_str(), f.kind, f.default.as_str())).collect();
+    let kinds: Vec<(&str, FieldKind, &str)> =
+        fields.iter().map(|f| (f.name.as_str(), f.kind, f.default.as_str())).collect();
     assert_eq!(
         kinds,
-        [("sort", "choice", "fastest"), ("name", "text", "Fulda"), ("label", "text", ""), ("count", "number", "3")]
+        [
+            ("sort", FieldKind::Choice, "fastest"),
+            ("name", FieldKind::Text, "Fulda"),
+            ("label", FieldKind::Text, ""),
+            ("count", FieldKind::Number, "3")
+        ]
     );
     assert_eq!(fields[0].choices, ["fastest", "fewest"]);
     assert!(fields[1..].iter().all(|f| f.choices.is_empty()));
