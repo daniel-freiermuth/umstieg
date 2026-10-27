@@ -142,6 +142,15 @@ pub struct Enumeration {
     pub nodes: usize,
 }
 
+/// Keeps the smaller of `slot` and `v` in `slot`; whether `v` was smaller.
+fn improve<T: Ord + Copy>(slot: &mut Option<T>, v: T) -> bool {
+    let better = slot.is_none_or(|e| v < e);
+    if better {
+        *slot = Some(v);
+    }
+    better
+}
+
 /// Earliest arrival at every station when leaving `start` at `t0` on a train
 /// departing there by `latest`, with changes of any length, even missed by
 /// up to `missed_by`. As in the enumeration, walks only follow a ride: none
@@ -153,13 +162,6 @@ pub fn earliest_arrival(
     latest: DateTime<Utc>,
     missed_by: TimeDelta,
 ) -> Result<Vec<Option<DateTime<Utc>>>> {
-    fn improve(slot: &mut Option<DateTime<Utc>>, t: DateTime<Utc>) -> bool {
-        let better = slot.is_none_or(|e| t < e);
-        if better {
-            *slot = Some(t);
-        }
-        better
-    }
     let n = tt.stations.len();
     // Arrivals by train, and by a walk after one.
     let mut rode: Vec<Option<DateTime<Utc>>> = vec![None; n];
@@ -235,9 +237,7 @@ fn lower_bounds(tt: &Timetable, ride: impl Fn(Time, Time) -> TimeDelta) -> Resul
         for &(prev, w) in entry(&reverse, s, "station")? {
             // Saturating: a bound beyond the longest duration there is prunes all the same.
             let nd = checked::sum(d, w);
-            let slot = entry_mut(&mut best, prev, "station")?;
-            if slot.is_none_or(|b| nd < b) {
-                *slot = Some(nd);
+            if improve(entry_mut(&mut best, prev, "station")?, nd) {
                 heap.push(Reverse((nd, prev)));
             }
         }
@@ -316,11 +316,7 @@ pub fn fastest_journeys(tt: &Timetable) -> Result<Vec<Option<TimeDelta>>> {
             consider(reach(&profiles, next, walked)?);
         }
         let Some(goal) = goal else { return Ok(false) };
-        let here = entry_mut(stops, r.seq.0, "call")?;
-        let changed = here.is_none_or(|g| goal < g);
-        if changed {
-            *here = Some(goal);
-        }
+        let changed = improve(entry_mut(stops, r.seq.0, "call")?, goal);
         if !r.boardable {
             return Ok(changed);
         }
@@ -331,10 +327,7 @@ pub fn fastest_journeys(tt: &Timetable) -> Result<Vec<Option<TimeDelta>>> {
             _ => p.push((r.departure, goal)),
         }
         let duration = goal.signed_duration_since(r.departure);
-        let from = entry_mut(&mut best, r.from, "station")?;
-        if from.is_none_or(|b| duration < b) {
-            *from = Some(duration);
-        }
+        improve(entry_mut(&mut best, r.from, "station")?, duration);
         Ok::<_, anyhow::Error>(true)
     };
     for same_time in rides.chunk_by(|a, b| a.departure == b.departure) {
@@ -357,10 +350,7 @@ pub fn fastest_journeys(tt: &Timetable) -> Result<Vec<Option<TimeDelta>>> {
     for fp in &tt.footpaths {
         // Saturating: a duration beyond the longest there is is never the fastest.
         if let Some(after) = entry(&by_train, fp.to, "station")?.map(|b| checked::sum(b, fp.duration)) {
-            let from = entry_mut(&mut best, fp.from, "station")?;
-            if from.is_none_or(|b| after < b) {
-                *from = Some(after);
-            }
+            improve(entry_mut(&mut best, fp.from, "station")?, after);
         }
     }
     Ok(best)
