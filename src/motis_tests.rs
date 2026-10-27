@@ -237,6 +237,28 @@ async fn stop_matches_place_words_typed_without_accents() {
     }
 }
 
+#[test]
+fn unaccented_drops_accents_and_folds_the_rest() {
+    let cases = [
+        ("Köln Hbf", "koln hbf"),
+        ("Ålesund", "alesund"),
+        ("Besançon-Viotte", "besancon viotte"),
+        ("Saint-Étienne", "saint etienne"),
+        ("Ïle", "ile"),
+        ("Kraków Główny", "krakow glowny"),
+        ("Plzeň", "plzen"),
+        ("Přerov", "prerov"),
+        ("Košice", "kosice"),
+        ("Zürich HB", "zurich hb"),
+        ("Vysoké Mýto", "vysoke myto"),
+        ("Žilina", "zilina"),
+        ("Gießen", "giessen"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(unaccented(input), expected, "{input:?}");
+    }
+}
+
 #[tokio::test]
 async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() {
     let fake = Arc::new(Fake::default());
