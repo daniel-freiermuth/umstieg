@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type Data, applyHeights, decodeData, extent, load } from "./data";
+import { type Data, addDetails, applyHeights, decodeData, decodeDetails, extent, load } from "./data";
 import { type Json, parseJson } from "./decode";
 import { network } from "./reach";
 
@@ -53,7 +53,8 @@ describe("decodeData", () => {
         [29881992, 9],
       ],
     });
-    expect(d.chains[0]?.fallbacks).toEqual([
+    expect(d.chains[0]).toEqual({ group: 0, header: "09:29 → 10:15  46m  2×  min 1m⚠", pieces: [0, 1, 2, 3, 4] });
+    expect(d.details?.[0]?.fallbacks).toEqual([
       [0, "10:29 (+14m)"],
       [1, "10:35 (+20m)"],
     ]);
@@ -66,12 +67,13 @@ describe("decodeData", () => {
       [patched(["pieces", 2, "pts", 1, 1], "8"), "data.pieces[2].pts[1][1]: expected a number"],
       [patched(["pieces", 0, "trip"], "0"), "data.pieces[0].trip: expected a number"],
       [patched(["metrics", 1, "heights", 4], "2"), "data.metrics[1].heights[4]: expected a number"],
-      [patched(["chains", 0, "fallbacks", 1], [1]), "data.chains[0].fallbacks[1]: expected a pair"],
+      [patched(["details", 0, "fallbacks", 1], [1]), "data.details[0].fallbacks[1]: expected a pair"],
       [patched(["fallbacks", 1, "pieces", 0], null), "data.fallbacks[1].pieces[0]: expected a number"],
       [patched(["groups", 0, "count"], "11"), "data.groups[0].count: expected a number"],
       [patched(["back"], 1), "data.back: expected a string"],
       [without("tz", []), "data.tz: expected a value"],
-      [without("route", ["chains", 0]), "data.chains[0].route: expected a value"],
+      [without("route", ["details", 0]), "data.details[0].route: expected a value"],
+      [without("header", ["chains", 0]), "data.chains[0].header: expected a value"],
       [without("warn", ["pieces", 5]), "data.pieces[5].warn: expected a value"],
     ];
     for (const [value, message] of cases) expect(() => decodeData(value, "data")).toThrow(message);
@@ -79,6 +81,7 @@ describe("decodeData", () => {
 
   test("nullable fields take null", () => {
     expect(decodeData(patched(["back"], null), "data").back).toBeNull();
+    expect(decodeData(patched(["details"], null), "data").details).toBeNull();
     expect(decodeData(patched(["metrics", 0, "heights", 3], null), "data").metrics[0]?.heights[3]).toBeNull();
   });
 });
@@ -90,7 +93,7 @@ describe("load", () => {
       [29881949 * MIN, 0],
       [29881986 * MIN, 2],
     ]);
-    const [first, second] = plot.chains[0]?.fallbacks ?? [];
+    const [first, second] = plot.details.get(0)?.fallbacks ?? [];
     expect(first?.arrive).toBe("10:29 (+14m)");
     expect(second?.line).toBe(
       "10:28 U3 (30008) → 10:30 Frankfurt (Main) Willy-Brandt-Platz ‖3m⚠‖ 10:33 U4 (40001) → 10:35 Frankfurt (Main) Hauptbahnhof",
@@ -98,6 +101,29 @@ describe("load", () => {
     // Shared, so heights applied to the plot's pieces show in the fallbacks.
     expect(first?.pieces.map((p) => plot.pieces.indexOf(p))).toEqual([5, 6]);
     expect(second?.pieces.map((p) => plot.pieces.indexOf(p))).toEqual([7, 8, 9, 10]);
+  });
+
+  test("details not in the page are added as they arrive, linked up the same way", () => {
+    const plot = load(decodeData(patched(["details"], null), "data"));
+    expect(plot.details.size).toBe(0);
+    const [detail] = fresh().details ?? [];
+    if (detail === undefined) throw new Error("no detail in the sample");
+    addDetails(plot, [[0, detail]]);
+    expect(plot.details.get(0)?.route).toStartWith("09:29 ICE 692 → 10:06 Frankfurt (Main) Südbahnhof");
+    expect(plot.details.get(0)?.fallbacks.map((f) => [f.arrive, f.pieces.map((p) => plot.pieces.indexOf(p))])).toEqual([
+      ["10:29 (+14m)", [5, 6]],
+      ["10:35 (+20m)", [7, 8, 9, 10]],
+    ]);
+    expect(() => {
+      addDetails(plot, [[1, { route: "x", fallbacks: [[9, "y"]] }]]);
+    }).toThrow("index 9 out of range");
+  });
+
+  test("details as the server hands them out", () => {
+    expect(decodeDetails(parseJson('[{"route": "r", "fallbacks": [[1, "10:00"]]}]'), "details")).toEqual([
+      { route: "r", fallbacks: [[1, "10:00"]] },
+    ]);
+    expect(() => decodeDetails(parseJson('[{"route": "r"}]'), "details")).toThrow("details[0].fallbacks");
   });
 
   test("an out-of-range piece index fails", () => {

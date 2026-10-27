@@ -10,8 +10,9 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::{ADVANCED, App, Form, Job, KEEP_JOBS, NOT_IN_FORM, admit, fields, parse, router};
+use super::{ADVANCED, App, Form, Job, KEEP_JOBS, MAX_DETAILS, NOT_IN_FORM, admit, fields, parse, router};
 use crate::plot::Metric;
+use crate::plot::{Detail, Rendered};
 use crate::search::Endpoints;
 use crate::sync::lock;
 use crate::testkit::{self, embedded_json};
@@ -20,7 +21,17 @@ fn params(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|&(k, v)| (k.to_owned(), v.to_owned())).collect()
 }
 
-fn job(result: Option<Result<String, String>>) -> Job {
+fn job(result: Option<Result<&str, &str>>) -> Job {
+    let result = result.map(|r| {
+        r.map(|html| Rendered {
+            html: html.to_owned(),
+            details: vec![
+                Detail { route: "08:00 ICE 1 → 09:00 B".to_owned(), fallbacks: vec![(0, "10:00 (+1h)".to_owned())] },
+                Detail { route: "08:30 RE 2 → 10:00 B".to_owned(), fallbacks: Vec::new() },
+            ],
+        })
+        .map_err(str::to_owned)
+    });
     Job { query: String::new(), started: Instant::now(), log: Vec::new(), result }
 }
 
@@ -189,7 +200,7 @@ fn admit_forgets_the_oldest_finished_jobs_beyond_the_limit() {
     let mut jobs = HashMap::new();
     let finished = KEEP_JOBS as u64 + 5;
     for id in 1..=finished {
-        admit(&mut jobs, id, job(Some(Ok(String::new()))));
+        admit(&mut jobs, id, job(Some(Ok(""))));
     }
     // A long-running search older than all of them is never dropped.
     jobs.insert(0, job(None));
@@ -201,7 +212,7 @@ fn admit_forgets_the_oldest_finished_jobs_beyond_the_limit() {
     assert_eq!(ids, want);
 
     // At the limit, nothing goes.
-    let mut jobs: HashMap<u64, Job> = (1..=KEEP_JOBS as u64).map(|id| (id, job(Some(Err(String::new()))))).collect();
+    let mut jobs: HashMap<u64, Job> = (1..=KEEP_JOBS as u64).map(|id| (id, job(Some(Err(""))))).collect();
     admit(&mut jobs, 100, job(None));
     assert_eq!(jobs.len(), KEEP_JOBS + 1);
 }
@@ -235,7 +246,7 @@ fn app(api: &str) -> Arc<App> {
         db_api: "http://127.0.0.1:9".to_owned(),
         contact: "test".to_owned(),
     };
-    Arc::new(App::new(1, endpoints, || Ok(None)).unwrap())
+    Arc::new(App::new(1, endpoints, || Ok(None), 1).unwrap())
 }
 
 async fn get_page(app: &Arc<App>, uri: &str) -> (StatusCode, HashMap<String, String>, String) {
@@ -381,8 +392,8 @@ async fn job_pages_404_for_unknown_ids_and_plot_only_when_there_is_one() {
         assert_eq!(get_page(&app, uri).await.0, StatusCode::NOT_FOUND, "{uri}");
     }
     lock(&app.jobs).insert(1, job(None));
-    lock(&app.jobs).insert(2, job(Some(Err("No connection found.".to_owned()))));
-    lock(&app.jobs).insert(3, job(Some(Ok("<html>plot</html>".to_owned()))));
+    lock(&app.jobs).insert(2, job(Some(Err("No connection found."))));
+    lock(&app.jobs).insert(3, job(Some(Ok("<html>plot</html>"))));
     assert_eq!(get_page(&app, "/job/1/plot").await.0, StatusCode::NOT_FOUND);
     assert_eq!(get_page(&app, "/job/2/plot").await.0, StatusCode::NOT_FOUND);
     let (code, headers, body) = get_page(&app, "/job/3/plot").await;
@@ -395,6 +406,38 @@ async fn job_pages_404_for_unknown_ids_and_plot_only_when_there_is_one() {
     let (_, _, body) = get_page(&app, "/job/2/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
     assert_eq!((&status["done"], &status["error"]), (&json!(true), &json!("No connection found.")));
+}
+
+#[tokio::test]
+async fn connection_details_are_handed_out_by_index() {
+    let app = app("http://127.0.0.1:9");
+    lock(&app.jobs).insert(1, job(None));
+    lock(&app.jobs).insert(3, job(Some(Ok("<html>plot</html>"))));
+    let (code, headers, body) = get_page(&app, "/job/3/chains?ids=1,0,1").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL.as_str()], "private, max-age=3600");
+    let route = |r: &str, fallbacks: Value| json!({"route": r, "fallbacks": fallbacks});
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!([
+            route("08:30 RE 2 → 10:00 B", json!([])),
+            route("08:00 ICE 1 → 09:00 B", json!([[0, "10:00 (+1h)"]])),
+            route("08:30 RE 2 → 10:00 B", json!([]))
+        ])
+    );
+    for (uri, code) in [
+        ("/job/3/chains?ids=2", StatusCode::NOT_FOUND),
+        ("/job/1/chains?ids=0", StatusCode::NOT_FOUND),
+        ("/job/9/chains?ids=0", StatusCode::NOT_FOUND),
+        ("/job/3/chains?ids=0,x", StatusCode::BAD_REQUEST),
+        ("/job/3/chains", StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(get_page(&app, uri).await.0, code, "{uri}");
+    }
+    let many = vec!["0"; MAX_DETAILS].join(",");
+    assert_eq!(get_page(&app, &format!("/job/3/chains?ids={many}")).await.0, StatusCode::OK);
+    let too_many = vec!["0"; MAX_DETAILS + 1].join(",");
+    assert_eq!(get_page(&app, &format!("/job/3/chains?ids={too_many}")).await.0, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -422,4 +465,11 @@ async fn stops_completes_from_transitous_after_three_characters() {
     let (api, _) = stand_in(Value::Null).await;
     let (code, _, _) = get_page(&self::app(&api), "/stops?q=Mannheim").await;
     assert_eq!(code, StatusCode::BAD_GATEWAY);
+}
+
+#[test]
+fn job_ids_continue_from_the_clock_across_restarts() {
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() * 1000;
+    let first = super::first_job();
+    assert!(first >= before && first < before + 2000, "{first} vs {before}");
 }

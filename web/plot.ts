@@ -1,4 +1,16 @@
-import { type Fallback, type Piece, type Row, applyHeights, decodeData, extent, load } from "./data";
+import {
+  type Detail,
+  type DetailData,
+  type Fallback,
+  type Piece,
+  type Row,
+  addDetails,
+  applyHeights,
+  decodeData,
+  decodeDetails,
+  extent,
+  load,
+} from "./data";
 import { parseJson } from "./decode";
 import { byId } from "./dom";
 import {
@@ -62,6 +74,45 @@ interface View {
 }
 
 const D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
+
+// Connections' routes and fallbacks: in the page of a plot file, otherwise
+// asked for when shown (`umstieg serve` keeps them; a night search can list
+// 140 000 connections, which would make the page huge).
+const DETAILS_AT_ONCE = 500;
+/** Connections listed in the panel at most. */
+const MAX_LISTED = 200;
+const asked = new Set<number>(),
+  lost = new Set<number>();
+/** A connection's route, or what stands in for it until (unless) it arrives. */
+const routeOf = (i: number): string =>
+  D.details.get(i)?.route ?? (lost.has(i) ? "(details gone: the search has expired, run it again)" : "…");
+/** The connection's details if known; otherwise asks for them and redraws once they arrive. */
+function detailOf(i: number): Detail | undefined {
+  const known = D.details.get(i);
+  if (known === undefined) want([i]);
+  return known;
+}
+function want(chains: readonly number[]): void {
+  const missing = chains.filter((i) => !D.details.has(i) && !asked.has(i));
+  for (let at = 0; at < missing.length; at += DETAILS_AT_ONCE) {
+    const ids = missing.slice(at, at + DETAILS_AT_ONCE);
+    for (const i of ids) asked.add(i);
+    void (async () => {
+      const response = await fetch(`chains?ids=${ids.join(",")}`);
+      // Asked once only: a plot whose search is gone has no details left to give.
+      if (response.ok) {
+        const got = decodeDetails(parseJson(await response.text()), "details");
+        addDetails(
+          D,
+          got.map((d, k): [number, DetailData] => [item(ids, k), d]),
+        );
+      } else for (const i of ids) lost.add(i);
+      panelKey = null;
+      if (view) view.fbKey = undefined;
+      refresh();
+    })();
+  }
+}
 
 const NS = "http://www.w3.org/2000/svg";
 const plotEl = byId("plot", HTMLDivElement);
@@ -614,18 +665,20 @@ function refresh(): void {
   // only when the selection changes, so hovering them doesn't replace them.
   const fbKey = (focus: number | null): number | null => (focus === pinned ? focus : null);
   const focus = preview ?? pinned;
-  const fk = fbKey(focus);
+  // Drawn once the selection's details are known.
+  const fbDetail = ((k) => (k === null ? undefined : detailOf(k)))(fbKey(focus));
+  const fk = fbDetail === undefined ? null : fbKey(focus);
   if (fk !== view.fbKey) {
     view.fbKey = fk;
     fbLayer.replaceChildren();
     const fbTargets: FbTarget[] = [];
     view.fbTargets = fbTargets;
-    if (fk !== null) {
+    if (fbDetail !== undefined) {
       // Fallbacks share stretches (the same S1, the wait after the missed
       // train): one target per stretch and per continuous stay, naming all.
       const byPiece = new Map<Piece, Set<Fallback>>(),
         waits = new Map<number, { y: number; spans: { from: number; to: number; f: Fallback }[] }>();
-      for (const f of item(D.chains, fk).fallbacks) {
+      for (const f of fbDetail.fallbacks) {
         const g = el("g", {}, fbLayer);
         for (const p of f.pieces) {
           const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""}` }, g);
@@ -702,8 +755,9 @@ function refresh(): void {
           .map((f) => `<br><span style="color:var(--muted)">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`)
           .join("");
     } else if (only !== undefined) {
-      const c = item(D.chains, only);
-      who = `<br><b>${esc(c.header)}</b><span style="color:var(--muted)">${esc(c.route)}</span>`;
+      want([only]);
+      const route = routeOf(only);
+      who = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(route)}</span>`;
     } else {
       const groups = new Map<number, number>();
       for (const i of chains) {
@@ -756,13 +810,15 @@ function renderPanel(): void {
   if (pinned !== null) {
     panelTitle.textContent = "Selected connection";
     const c = item(D.chains, pinned);
+    const d = detailOf(pinned);
     let html =
       candidates && candidates.chains.length > 1
         ? `<span class="back" id="back">← all ${String(candidates.chains.length)} connections</span>`
         : "";
-    html += `<b>${esc(c.header)}</b>\n${esc(c.route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
+    const route = routeOf(pinned);
+    html += `<b>${esc(c.header)}</b>\n${esc(route).replaceAll(" ‖", "\n‖").replaceAll("‖ ", "‖\n")}`;
     let at: string | null = null;
-    for (const f of c.fallbacks) {
+    for (const f of d?.fallbacks ?? []) {
       if (f.at !== at) {
         html += `\n\n<span class="fb">If the change at ${esc(f.at)} is missed:</span>`;
         at = f.at;
@@ -780,11 +836,15 @@ function renderPanel(): void {
         ? `${String(candidates.chains.length)} connections pass all ${String(picks.length)}`
         : `${String(candidates.chains.length)} connections use it`;
     details.replaceChildren();
-    for (const i of candidates.chains) {
+    // The first ones: the rest takes picks to narrow down, not scrolling.
+    const shown = candidates.chains.slice(0, MAX_LISTED);
+    want(shown);
+    for (const i of shown) {
       const c = item(D.chains, i);
       const row = document.createElement("div");
       row.className = "candidate";
-      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(c.route)}</div>`;
+      const route = routeOf(i);
+      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(route)}</div>`;
       row.addEventListener("mouseenter", () => {
         preview = i;
         refresh();
@@ -799,6 +859,13 @@ function renderPanel(): void {
         refresh();
       });
       details.appendChild(row);
+    }
+    const more = candidates.chains.length - shown.length;
+    if (more > 0) {
+      const note = document.createElement("div");
+      note.className = "pick-hint";
+      note.textContent = `… and ${String(more)} more: click lines or stations to narrow down.`;
+      details.appendChild(note);
     }
   } else {
     panelTitle.textContent = "Selection";

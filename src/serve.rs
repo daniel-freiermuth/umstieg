@@ -20,9 +20,9 @@ use tokio::sync::Semaphore;
 
 use crate::db;
 use crate::motis::Motis;
-use crate::page;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
 use crate::sync::lock;
+use crate::{page, plot};
 
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
@@ -46,7 +46,8 @@ struct Job {
     query: String,
     started: Instant,
     log: Vec<String>,
-    result: Option<Result<String, String>>,
+    /// The plot, or why there is none.
+    result: Option<Result<plot::Rendered, String>>,
 }
 
 struct App {
@@ -61,14 +62,16 @@ struct App {
 }
 
 impl App {
+    /// `first_job`: the first search's id; see [`first_job`].
     fn new(
         parallel: usize,
         endpoints: Endpoints,
         credentials: fn() -> Result<Option<db::Credentials>>,
+        first_job: u64,
     ) -> Result<Self> {
         Ok(Self {
             jobs: Mutex::new(HashMap::new()),
-            next: AtomicU64::new(1),
+            next: AtomicU64::new(first_job),
             permits: Semaphore::new(parallel.max(1)),
             motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
             endpoints,
@@ -77,8 +80,14 @@ impl App {
     }
 }
 
+/// Job ids continue from the clock, not from 1, so a restarted server doesn't
+/// hand out an id whose plot a browser still has cached from before.
+fn first_job() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs().saturating_mul(1000))
+}
+
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
-    let app = Arc::new(App::new(parallel, endpoints, db::Credentials::load)?);
+    let app = Arc::new(App::new(parallel, endpoints, db::Credentials::load, first_job())?);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("route planner on http://{addr}/");
     axum::serve(listener, router(app)).await?;
@@ -93,7 +102,7 @@ pub fn test_router(
     endpoints: Endpoints,
     credentials: fn() -> Result<Option<db::Credentials>>,
 ) -> Result<Router> {
-    Ok(router(Arc::new(App::new(parallel, endpoints, credentials)?)))
+    Ok(router(Arc::new(App::new(parallel, endpoints, credentials, 1)?)))
 }
 
 fn router(app: Arc<App>) -> Router {
@@ -104,6 +113,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/job/{id}", get(progress))
         .route("/job/{id}/status", get(status))
         .route("/job/{id}/plot", get(plot))
+        .route("/job/{id}/chains", get(chains))
         .with_state(app)
         // Every request at debug: the progress page polls its status each second.
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -276,14 +286,17 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     };
     // The server's services and credentials, whatever the URL says.
     let result = match (app.credentials)() {
-        Ok(credentials) => search::run(&args, &app.endpoints, credentials, Some(PlotPage { back }), &events).await,
+        Ok(credentials) => {
+            search::run(&args, &app.endpoints, credentials, Some(PlotPage { back, embed_details: false }), &events)
+                .await
+        }
         Err(e) => Err(e),
     };
     let secs = started.elapsed().as_secs();
     let result = match result {
         Ok(outcome) => {
             tracing::info!(secs, "search done");
-            outcome.html.ok_or(outcome.text)
+            outcome.plot.ok_or(outcome.text)
         }
         Err(e) => {
             tracing::error!(secs, "search failed: {e:#}");
@@ -332,9 +345,37 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
 async fn plot(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
     let jobs = lock(&app.jobs);
     match jobs.get(&id).and_then(|j| j.result.as_ref()) {
-        Some(Ok(html)) => ([(header::CACHE_CONTROL, "private, max-age=3600")], Html(html.clone())).into_response(),
+        Some(Ok(plot)) => ([(header::CACHE_CONTROL, "private, max-age=3600")], Html(plot.html.clone())).into_response(),
         _ => (StatusCode::NOT_FOUND, "No plot for this search.").into_response(),
     }
+}
+
+/// Connections the plot page asks about at once, at most.
+const MAX_DETAILS: usize = 500;
+
+/// Details of the plot's connections `ids` (comma-separated indexes), in that order.
+async fn chains(
+    State(app): State<Arc<App>>,
+    Path(id): Path<u64>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let ids: Result<Vec<usize>, _> =
+        params.get("ids").map(String::as_str).unwrap_or_default().split(',').map(str::parse).collect();
+    let Ok(ids) = ids else { return (StatusCode::BAD_REQUEST, "ids: comma-separated numbers").into_response() };
+    if ids.len() > MAX_DETAILS {
+        return (StatusCode::BAD_REQUEST, format!("at most {MAX_DETAILS} ids at once")).into_response();
+    }
+    let jobs = lock(&app.jobs);
+    let Some(Some(Ok(plot))) = jobs.get(&id).map(|j| j.result.as_ref()) else {
+        return (StatusCode::NOT_FOUND, "No plot for this search.").into_response();
+    };
+    let found: Option<Vec<&plot::Detail>> = ids.iter().map(|&i| plot.details.get(i)).collect();
+    let response = found.map_or_else(
+        || (StatusCode::NOT_FOUND, "No such connection.").into_response(),
+        |details| ([(header::CACHE_CONTROL, "private, max-age=3600")], axum::Json(details)).into_response(),
+    );
+    drop(jobs);
+    response
 }
 
 #[cfg(test)]

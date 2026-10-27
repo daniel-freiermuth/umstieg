@@ -82,6 +82,14 @@ var decodePiece = (v, path) => {
     pts: field(o, "pts", array(pair(number, number)), path)
   };
 };
+var decodeDetail = (v, path) => {
+  const o = object(v, path);
+  return {
+    route: field(o, "route", string, path),
+    fallbacks: field(o, "fallbacks", array(pair(number, string)), path)
+  };
+};
+var decodeDetails = array(decodeDetail);
 var decodeData = (v, path) => {
   const o = object(v, path);
   return {
@@ -112,15 +120,14 @@ var decodeData = (v, path) => {
       return {
         group: field(oc, "group", number, p),
         header: field(oc, "header", string, p),
-        route: field(oc, "route", string, p),
-        pieces: field(oc, "pieces", array(number), p),
-        fallbacks: field(oc, "fallbacks", array(pair(number, string)), p)
+        pieces: field(oc, "pieces", array(number), p)
       };
-    }), path)
+    }), path),
+    details: field(o, "details", nullable(decodeDetails), path)
   };
 };
 function load(data) {
-  const { pieces: rawPieces, fallbacks: rawFallbacks, chains: rawChains, ...rest } = data;
+  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, ...rest } = data;
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts }) => ({
     kind,
     info,
@@ -130,14 +137,16 @@ function load(data) {
     pts: []
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
-  const chains = rawChains.map(({ group, header, route, pieces: ps, fallbacks: fs }) => ({
-    group,
-    header,
-    route,
-    pieces: ps,
-    fallbacks: fs.map(([i, arrive]) => ({ ...item(fallbacks, i), arrive }))
-  }));
-  return { ...rest, pieces, chains };
+  const plot = { ...rest, pieces, fallbacks, chains, details: new Map };
+  addDetails(plot, (rawDetails ?? []).map((d, i) => [i, d]));
+  return plot;
+}
+function addDetails(plot, details) {
+  for (const [i, { route, fallbacks }] of details)
+    plot.details.set(i, {
+      route,
+      fallbacks: fallbacks.map(([f, arrive]) => ({ ...item(plot.fallbacks, f), arrive }))
+    });
 }
 function applyHeights(plot, metric) {
   const heights = item(plot.metrics, metric).heights;
@@ -387,6 +396,16 @@ function network(pieces, chains, visible) {
   const stay = (s, y, span) => {
     entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
   };
+  const stretchesOf = new Map;
+  const stretches = (pi, trip, pts) => entry(stretchesOf, pi, () => {
+    const found = [];
+    for (let k = 1;k < pts.length; k++) {
+      const a = item(pts, k - 1), b = item(pts, k);
+      const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
+      found.push({ ride: entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set })), k });
+    }
+    return found;
+  });
   chains.forEach((c, i) => {
     if (!visible(i))
       return;
@@ -395,13 +414,11 @@ function network(pieces, chains, visible) {
       if (p.kind === "ride") {
         if (p.trip === null)
           return;
-        const trip = p.trip;
-        for (let k = 1;k < p.pts.length; k++) {
-          const a = item(p.pts, k - 1), b = item(p.pts, k);
-          const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
-          entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set })).chains.add(i);
+        for (const { ride, k } of stretches(pi, p.trip, p.pts)) {
+          ride.chains.add(i);
+          const [a, b] = ride.pts;
           if (a[2] === b[2])
-            stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip, j, k });
+            stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip: ride.trip, j, k });
         }
       } else if (p.kind === "wait") {
         const first = p.pts[0], last = p.pts[p.pts.length - 1];
@@ -532,6 +549,38 @@ function toggle(picks, target) {
 
 // plot.ts
 var D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
+var DETAILS_AT_ONCE = 500;
+var MAX_LISTED = 200;
+var asked = new Set;
+var lost = new Set;
+var routeOf = (i) => D.details.get(i)?.route ?? (lost.has(i) ? "(details gone: the search has expired, run it again)" : "…");
+function detailOf(i) {
+  const known = D.details.get(i);
+  if (known === undefined)
+    want([i]);
+  return known;
+}
+function want(chains) {
+  const missing = chains.filter((i) => !D.details.has(i) && !asked.has(i));
+  for (let at = 0;at < missing.length; at += DETAILS_AT_ONCE) {
+    const ids = missing.slice(at, at + DETAILS_AT_ONCE);
+    for (const i of ids)
+      asked.add(i);
+    (async () => {
+      const response = await fetch(`chains?ids=${ids.join(",")}`);
+      if (response.ok) {
+        const got = decodeDetails(parseJson(await response.text()), "details");
+        addDetails(D, got.map((d, k) => [item(ids, k), d]));
+      } else
+        for (const i of ids)
+          lost.add(i);
+      panelKey = null;
+      if (view)
+        view.fbKey = undefined;
+      refresh();
+    })();
+  }
+}
 var NS = "http://www.w3.org/2000/svg";
 var plotEl = byId("plot", HTMLDivElement);
 var tip = byId("tip", HTMLDivElement);
@@ -1010,15 +1059,16 @@ function refresh() {
     el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
   const fbKey = (focus2) => focus2 === pinned ? focus2 : null;
   const focus = preview ?? pinned;
-  const fk = fbKey(focus);
+  const fbDetail = ((k) => k === null ? undefined : detailOf(k))(fbKey(focus));
+  const fk = fbDetail === undefined ? null : fbKey(focus);
   if (fk !== view.fbKey) {
     view.fbKey = fk;
     fbLayer.replaceChildren();
     const fbTargets = [];
     view.fbTargets = fbTargets;
-    if (fk !== null) {
+    if (fbDetail !== undefined) {
       const byPiece = new Map, waits = new Map;
-      for (const f of item(D.chains, fk).fallbacks) {
+      for (const f of fbDetail.fallbacks) {
         const g = el("g", {}, fbLayer);
         for (const p of f.pieces) {
           const line = el("polyline", { points: pts(p), class: `${p.kind}${p.warn ? " warn" : ""}` }, g);
@@ -1085,8 +1135,9 @@ function refresh() {
       const at = [...new Set(hoverTarget.fallbacks.map((f) => f.at))];
       who = `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>` + hoverTarget.fallbacks.map((f) => `<br><span style="color:var(--muted)">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`).join("");
     } else if (only !== undefined) {
-      const c = item(D.chains, only);
-      who = `<br><b>${esc(c.header)}</b><span style="color:var(--muted)">${esc(c.route)}</span>`;
+      want([only]);
+      const route = routeOf(only);
+      who = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(route)}</span>`;
     } else {
       const groups = new Map;
       for (const i of chains) {
@@ -1134,13 +1185,15 @@ function renderPanel() {
   if (pinned !== null) {
     panelTitle.textContent = "Selected connection";
     const c = item(D.chains, pinned);
+    const d = detailOf(pinned);
     let html = candidates && candidates.chains.length > 1 ? `<span class="back" id="back">← all ${String(candidates.chains.length)} connections</span>` : "";
+    const route = routeOf(pinned);
     html += `<b>${esc(c.header)}</b>
-${esc(c.route).replaceAll(" ‖", `
+${esc(route).replaceAll(" ‖", `
 ‖`).replaceAll("‖ ", `‖
 `)}`;
     let at = null;
-    for (const f of c.fallbacks) {
+    for (const f of d?.fallbacks ?? []) {
       if (f.at !== at) {
         html += `
 
@@ -1158,11 +1211,14 @@ ${esc(c.route).replaceAll(" ‖", `
   } else if (candidates) {
     panelTitle.textContent = picks.length > 1 ? `${String(candidates.chains.length)} connections pass all ${String(picks.length)}` : `${String(candidates.chains.length)} connections use it`;
     details.replaceChildren();
-    for (const i of candidates.chains) {
+    const shown = candidates.chains.slice(0, MAX_LISTED);
+    want(shown);
+    for (const i of shown) {
       const c = item(D.chains, i);
       const row = document.createElement("div");
       row.className = "candidate";
-      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(c.route)}</div>`;
+      const route = routeOf(i);
+      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(route)}</div>`;
       row.addEventListener("mouseenter", () => {
         preview = i;
         refresh();
@@ -1177,6 +1233,13 @@ ${esc(c.route).replaceAll(" ‖", `
         refresh();
       });
       details.appendChild(row);
+    }
+    const more = candidates.chains.length - shown.length;
+    if (more > 0) {
+      const note = document.createElement("div");
+      note.className = "pick-hint";
+      note.textContent = `… and ${String(more)} more: click lines or stations to narrow down.`;
+      details.appendChild(note);
     }
   } else {
     panelTitle.textContent = "Selection";

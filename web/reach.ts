@@ -265,19 +265,30 @@ export function network(
   const stay = (s: number, y: number, span: Span): void => {
     entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
   };
+  // Pieces are shared by many connections (a night search lists 188 000 over
+  // a thousand pieces): a ride's stop-to-stop stretches are worked out once.
+  const stretchesOf = new Map<number, { ride: Ride; k: number }[]>();
+  const stretches = (pi: number, trip: number, pts: readonly Pt[]): { ride: Ride; k: number }[] =>
+    entry(stretchesOf, pi, () => {
+      const found: { ride: Ride; k: number }[] = [];
+      for (let k = 1; k < pts.length; k++) {
+        const a = item(pts, k - 1),
+          b = item(pts, k);
+        const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
+        found.push({ ride: entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set() })), k });
+      }
+      return found;
+    });
   chains.forEach((c, i) => {
     if (!visible(i)) return;
     c.pieces.forEach((pi, j) => {
       const p = item(pieces, pi);
       if (p.kind === "ride") {
         if (p.trip === null) return;
-        const trip = p.trip;
-        for (let k = 1; k < p.pts.length; k++) {
-          const a = item(p.pts, k - 1),
-            b = item(p.pts, k);
-          const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
-          entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set() })).chains.add(i);
-          if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip, j, k });
+        for (const { ride, k } of stretches(pi, p.trip, p.pts)) {
+          ride.chains.add(i);
+          const [a, b] = ride.pts;
+          if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip: ride.trip, j, k });
         }
       } else if (p.kind === "wait") {
         const first = p.pts[0],

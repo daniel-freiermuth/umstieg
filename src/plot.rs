@@ -166,6 +166,9 @@ struct Data {
     pieces: Vec<Piece>,
     fallbacks: Vec<FallbackOut>,
     chains: Vec<ChainOut>,
+    /// The connections' details in the page itself (a file has no server to
+    /// ask); `null` when the page fetches them.
+    details: Option<Vec<Detail>>,
 }
 
 #[derive(Serialize)]
@@ -188,12 +191,25 @@ struct GroupOut {
 struct ChainOut {
     group: usize,
     header: String,
-    route: String,
     /// Indexes into `Data::pieces`.
     pieces: Vec<usize>,
+}
+
+/// What a connection's selection shows: by far the bulk of the plot's data
+/// (a night search lists 140 000 connections), so `umstieg serve` hands it out
+/// per connection when asked (`/job/{id}/chains`) instead of in the page.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct Detail {
+    pub route: String,
     /// Fallbacks as (index into `Data::fallbacks`, arrival at the destination):
     /// shared routes, but the arrival depends on this connection's plan.
-    fallbacks: Vec<(usize, String)>,
+    pub fallbacks: Vec<(usize, String)>,
+}
+
+/// The plot page and the details of its connections, by connection index.
+pub struct Rendered {
+    pub html: String,
+    pub details: Vec<Detail>,
 }
 
 #[derive(Serialize)]
@@ -334,11 +350,13 @@ pub struct Plot<'a> {
     pub zone: Tz,
     /// Link back to the search form that produced the plot (`umstieg serve`).
     pub back: Option<String>,
+    /// Put the connections' details into the page, or leave them to be fetched.
+    pub embed_details: bool,
 }
 
 /// The plot of all connections in `plot.groups`, with fallbacks per change, as
-/// a self-contained HTML page.
-pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<String> {
+/// an HTML page, and the connections' details.
+pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<Rendered> {
     let tt = net.tt;
     let mut metrics = Vec::new();
     let mut shown = 0;
@@ -368,6 +386,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     let mut fallback_out: Vec<FallbackOut> = Vec::new();
     let mut fallback_index: HashMap<(usize, DateTime<Utc>, String), usize> = HashMap::new();
     let mut chains = Vec::new();
+    let mut details = Vec::new();
     for (g, group) in plot.groups.iter().enumerate() {
         for chain in &group.chains {
             let arrival = chain.arrival(tt)?;
@@ -399,8 +418,10 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             chains.push(ChainOut {
                 group: g,
                 header: text::header(tt, chain, plot.min_transfer, plot.zone)?,
-                route: text::route(tt, chain, plot.min_transfer, &HashSet::new(), plot.zone)?,
                 pieces: builder.pieces(chain, None, None)?,
+            });
+            details.push(Detail {
+                route: text::route(tt, chain, plot.min_transfer, &HashSet::new(), plot.zone)?,
                 fallbacks: refs,
             });
         }
@@ -436,8 +457,9 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         pieces: builder.pieces,
         fallbacks: fallback_out,
         chains,
+        details: plot.embed_details.then(|| details.clone()),
     };
-    page::PLOT.render(Some(&data))
+    Ok(Rendered { html: page::PLOT.render(Some(&data))?, details })
 }
 
 #[cfg(test)]

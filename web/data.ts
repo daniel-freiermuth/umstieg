@@ -17,7 +17,14 @@ export interface Data {
   groups: { label: string; count: number }[];
   pieces: PieceData[];
   fallbacks: { at: string; line: string; pieces: number[] }[];
-  chains: { group: number; header: string; route: string; pieces: number[]; fallbacks: [number, string][] }[];
+  chains: { group: number; header: string; pieces: number[] }[];
+  /** The connections' details, if in the page; otherwise fetched by connection. */
+  details: DetailData[] | null;
+}
+/** What a connection's selection shows: its route and fallbacks (index, arrival). */
+export interface DetailData {
+  route: string;
+  fallbacks: [number, string][];
 }
 export interface Metric {
   id: string;
@@ -54,6 +61,16 @@ const decodePiece: Decoder<PieceData> = (v, path) => {
     pts: field(o, "pts", array(pair(number, number)), path),
   };
 };
+const decodeDetail: Decoder<DetailData> = (v, path) => {
+  const o = object(v, path);
+  return {
+    route: field(o, "route", string, path),
+    fallbacks: field(o, "fallbacks", array(pair(number, string)), path),
+  };
+};
+/** Details as `umstieg serve` hands them out (`/job/{id}/chains`). */
+export const decodeDetails: Decoder<DetailData[]> = array(decodeDetail);
+
 export const decodeData: Decoder<Data> = (v, path) => {
   const o = object(v, path);
   return {
@@ -97,13 +114,12 @@ export const decodeData: Decoder<Data> = (v, path) => {
         return {
           group: field(oc, "group", number, p),
           header: field(oc, "header", string, p),
-          route: field(oc, "route", string, p),
           pieces: field(oc, "pieces", array(number), p),
-          fallbacks: field(oc, "fallbacks", array(pair(number, string)), p),
         };
       }),
       path,
     ),
+    details: field(o, "details", nullable(decodeDetails), path),
   };
 };
 
@@ -124,13 +140,18 @@ export interface Fallback {
 export interface Chain {
   group: number;
   header: string;
-  route: string;
   pieces: number[];
+}
+export interface Detail {
+  route: string;
   fallbacks: Fallback[];
 }
-export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains"> {
+export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains" | "details"> {
   pieces: Piece[];
+  fallbacks: Omit<Fallback, "arrive">[];
   chains: Chain[];
+  /** Details by connection, as far as known: all if in the page. */
+  details: Map<number, Detail>;
 }
 
 /**
@@ -139,7 +160,7 @@ export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains"> {
  * apply to both. `pts` is empty until heights are applied.
  */
 export function load(data: Data): Plot {
-  const { pieces: rawPieces, fallbacks: rawFallbacks, chains: rawChains, ...rest } = data;
+  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, ...rest } = data;
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts }): Piece => ({
     kind,
     info,
@@ -149,14 +170,24 @@ export function load(data: Data): Plot {
     pts: [],
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
-  const chains = rawChains.map(({ group, header, route, pieces: ps, fallbacks: fs }): Chain => ({
-    group,
-    header,
-    route,
-    pieces: ps,
-    fallbacks: fs.map(([i, arrive]) => ({ ...item(fallbacks, i), arrive })),
-  }));
-  return { ...rest, pieces, chains };
+  const plot: Plot = { ...rest, pieces, fallbacks, chains, details: new Map() };
+  addDetails(
+    plot,
+    (rawDetails ?? []).map((d, i) => [i, d]),
+  );
+  return plot;
+}
+
+/**
+ * Details of connections by index, linked up: fallbacks are the plot's,
+ * with the connection's arrival.
+ */
+export function addDetails(plot: Plot, details: [number, DetailData][]): void {
+  for (const [i, { route, fallbacks }] of details)
+    plot.details.set(i, {
+      route,
+      fallbacks: fallbacks.map(([f, arrive]) => ({ ...item(plot.fallbacks, f), arrive })),
+    });
 }
 
 /** A station with a row in the plot, at its height. */

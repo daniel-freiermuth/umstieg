@@ -297,8 +297,9 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
         min_transfer: MIN,
         zone: Berlin,
         back: Some("/?from=A&to=C".to_owned()),
+        embed_details: true,
     };
-    Ok(embedded_json(&render(&net, &mut fallbacks, &plot)?, "data"))
+    Ok(embedded_json(&render(&net, &mut fallbacks, &plot)?.html, "data"))
 }
 
 fn idx(v: &Value) -> usize {
@@ -352,10 +353,12 @@ fn rendered_data_is_consistent() {
     assert_eq!(counted, chains.len());
     assert_eq!(chains.len(), 3, "ICE with RE 2 or RE 4, and the bus");
     let fallbacks = data["fallbacks"].as_array().unwrap();
-    for c in chains {
+    let details = data["details"].as_array().unwrap();
+    assert_eq!(details.len(), chains.len(), "one per connection, in the page itself");
+    for (c, d) in chains.iter().zip(details) {
         assert!(idx(&c["group"]) < groups.len());
         assert!(indexes(&c["pieces"]).iter().all(|&i| i < pieces.len()));
-        for r in c["fallbacks"].as_array().unwrap() {
+        for r in d["fallbacks"].as_array().unwrap() {
             assert!(idx(&r[0]) < fallbacks.len());
         }
     }
@@ -364,8 +367,9 @@ fn rendered_data_is_consistent() {
     }
 
     // Missing RE 2 at B: RE 4 at 09:40, half an hour late, waited for from 09:10.
-    let change = chains.iter().find(|c| c["route"].as_str().unwrap().contains("RE 2")).unwrap();
-    assert_eq!(change["header"], "10:00 CEST → 12:00 CEST  2h00  1×  min 10m");
+    let (chain, change) =
+        chains.iter().zip(details).find(|(_, d)| d["route"].as_str().unwrap().contains("RE 2")).unwrap();
+    assert_eq!(chain["header"], "10:00 CEST → 12:00 CEST  2h00  1×  min 10m");
     let refs = change["fallbacks"].as_array().unwrap();
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0][1], "12:30 CEST (+30m)");

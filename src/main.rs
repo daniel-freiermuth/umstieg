@@ -79,11 +79,11 @@ async fn main() -> Result<()> {
             eprintln!("warning: {warning}");
         }
     };
-    let plot = args.html.as_ref().map(|_| search::PlotPage { back: None });
+    let plot = args.html.as_ref().map(|_| search::PlotPage { back: None, embed_details: true });
     let outcome = search::run(&args, &cli.endpoints, db::Credentials::load()?, plot, &events).await?;
     print!("{}", outcome.text);
-    if let (Some(path), Some(html)) = (&args.html, &outcome.html) {
-        std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))?;
+    if let (Some(path), Some(plot)) = (&args.html, &outcome.plot) {
+        std::fs::write(path, &plot.html).with_context(|| format!("writing {}", path.display()))?;
         println!("\nPlot written to {}", path.display());
     }
     Ok(())

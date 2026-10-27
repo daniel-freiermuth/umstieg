@@ -177,14 +177,16 @@ pub enum Event<'a> {
 pub struct Outcome {
     /// The text report, as the command line prints it.
     pub text: String,
-    /// The plot page, if asked for.
-    pub html: Option<String>,
+    /// The plot page and its connections' details, if asked for.
+    pub plot: Option<plot::Rendered>,
 }
 
 /// Asks `run` for the plot page.
 pub struct PlotPage {
     /// Link back to the search form that started the search.
     pub back: Option<String>,
+    /// Details in the page (a file), or fetched by it from `umstieg serve`.
+    pub embed_details: bool,
 }
 
 /// Runs a search; with `plot`, also renders the plot page. Without
@@ -456,7 +458,7 @@ impl Report {
         }
         let Some(fastest) = result.fastest else {
             writeln!(out, "\nNo connection found.")?;
-            return Ok(Outcome { text: out, html: None });
+            return Ok(Outcome { text: out, plot: None });
         };
         let completeness = match result.complete_up_to {
             Some(n) if n >= limits.max_changes => String::new(),
@@ -507,8 +509,8 @@ impl Report {
             writeln!(out, "      Deutsche Bahn Timetables API.")?;
         }
 
-        let html = match plot {
-            Some(PlotPage { back }) => {
+        let rendered = match plot {
+            Some(PlotPage { back, embed_details }) => {
                 // Only fails once `run` has stopped listening.
                 stages.send("Drawing the plot").ok();
                 let plot = plot::Plot {
@@ -519,12 +521,13 @@ impl Report {
                     min_transfer,
                     zone,
                     back,
+                    embed_details,
                 };
                 Some(plot::render(&net, &mut fallbacks, &plot)?)
             }
             None => None,
         };
-        Ok(Outcome { text: out, html })
+        Ok(Outcome { text: out, plot: rendered })
     }
 }
 

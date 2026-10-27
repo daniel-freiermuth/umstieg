@@ -359,14 +359,18 @@
   {
    "group": 0,
    "header": "09:29 → 10:15  46m  2×  min 1m⚠",
-   "route": "09:29 ICE 692 → 10:06 Frankfurt (Main) Südbahnhof ‖4m⚠‖ 10:10 U1 (10001) → 10:12 Frankfurt (Main) Willy-Brandt-Platz ‖1m⚠‖ 10:13 U5 (2100024) → 10:15 Frankfurt (Main) Hauptbahnhof",
    "pieces": [
     0,
     1,
     2,
     3,
     4
-   ],
+   ]
+  }
+ ],
+ "details": [
+  {
+   "route": "09:29 ICE 692 → 10:06 Frankfurt (Main) Südbahnhof ‖4m⚠‖ 10:10 U1 (10001) → 10:12 Frankfurt (Main) Willy-Brandt-Platz ‖1m⚠‖ 10:13 U5 (2100024) → 10:15 Frankfurt (Main) Hauptbahnhof",
    "fallbacks": [
     [
      0,

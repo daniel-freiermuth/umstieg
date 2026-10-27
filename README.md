@@ -116,7 +116,9 @@ still takes names. The time zone is the browser's, filled in next to the time
 the server runs in.
 Submitting shows the search's
 progress, then the plot, whose "← Change search" link returns to the form with
-the same settings. Searches beyond `--parallel` wait their turn: each loads
+the same settings. The plot page carries the drawing; a connection's route and
+fallbacks are fetched when it is shown (a night search can list 190 000
+connections). Searches beyond `--parallel` wait their turn: each loads
 Transitous and the DB quota. The last 20 results stay available. There is no
 login; put it behind an authenticating proxy before exposing it.
 

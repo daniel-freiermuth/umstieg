@@ -715,11 +715,11 @@ async fn search(stand_in: &StandIn, extra: &[&str], with_credentials: bool, plot
         &args(extra),
         &stand_in.endpoints(),
         with_credentials.then(credentials),
-        plot.then_some(PlotPage { back: None }),
+        plot.then_some(PlotPage { back: None, embed_details: true }),
         &events,
     )
     .await?;
-    Ok(Searched { text: outcome.text, html: outcome.html, warnings: warnings.into_inner().unwrap() })
+    Ok(Searched { text: outcome.text, html: outcome.plot.map(|p| p.html), warnings: warnings.into_inner().unwrap() })
 }
 
 /// Group headers and connection lines of a report.
@@ -993,10 +993,10 @@ async fn search_runs_on_a_current_thread_runtime() {
             stages.lock().unwrap().push(s.to_owned());
         }
     };
-    let plot = Some(PlotPage { back: None });
+    let plot = Some(PlotPage { back: None, embed_details: true });
     let outcome = search::run(&args(&[]), &stand_in.endpoints(), Some(credentials()), plot, &events).await.unwrap();
     assert!(summary(&outcome.text).starts_with("fastest 2h01 "), "{}", outcome.text);
-    assert!(outcome.html.is_some());
+    assert!(outcome.plot.is_some());
     let stages = stages.into_inner().unwrap();
     assert_eq!(stages.iter().rev().take(2).collect::<Vec<_>>(), ["Drawing the plot", "Enumerating connections"]);
 }
@@ -1042,10 +1042,11 @@ async fn plot_embeds_every_connection_of_the_report() {
     assert_eq!(groups, reported);
 
     let chains = data["chains"].as_array().unwrap();
+    let details = data["details"].as_array().unwrap();
     let lines = connection_lines(text);
-    assert_eq!(chains.len(), lines.len());
-    for chain in chains {
-        let line = format!("  {}   {}", chain["header"].as_str().unwrap(), chain["route"].as_str().unwrap());
+    assert_eq!((chains.len(), details.len()), (lines.len(), lines.len()));
+    for (chain, detail) in chains.iter().zip(details) {
+        let line = format!("  {}   {}", chain["header"].as_str().unwrap(), detail["route"].as_str().unwrap());
         assert!(lines.contains(&line.as_str()), "{line} not in\n{text}");
     }
 
@@ -1053,10 +1054,11 @@ async fn plot_embeds_every_connection_of_the_report() {
     let trips: Vec<&str> = data["trips"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
     let pieces = data["pieces"].as_array().unwrap();
     let chain_pieces = |route_start: &str, last: &str| -> Vec<&Value> {
-        let chain = chains
+        let (chain, _) = chains
             .iter()
-            .find(|c| {
-                let route = c["route"].as_str().unwrap();
+            .zip(details)
+            .find(|(_, d)| {
+                let route = d["route"].as_str().unwrap();
                 route.starts_with(route_start) && route.contains(last)
             })
             .unwrap_or_else(|| panic!("no chain {route_start} … {last}"));
@@ -1173,9 +1175,11 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     assert_eq!(data["back"], back.as_str());
     assert_eq!(data["tz"], "America/New_York", "the plot's time axis");
     assert_eq!(data["chains"].as_array().unwrap().len(), 6);
-    // ICE 203 at 10:49 in Berlin.
-    assert!(data["chains"].as_array().unwrap().iter().any(|c| c["route"].as_str().unwrap().contains("04:49 EST (+4)")));
     assert!(data["subtitle"].as_str().unwrap().starts_with("departing 02:00 EST–03:00 EST · "), "{data}");
+    // Details aren't in the page: it asks for them by connection. ICE 203 at 10:49 in Berlin.
+    assert_eq!(data["details"], Value::Null);
+    let details: Value = http.get(format!("{job}/chains?ids=0,1,2,3,4,5")).send().await.unwrap().json().await.unwrap();
+    assert!(details.as_array().unwrap().iter().any(|d| d["route"].as_str().unwrap().contains("04:49 EST (+4)")));
     // The back link brings the form up with the same values.
     let again = http.get(format!("{site}{back}")).send().await.unwrap().text().await.unwrap();
     let values = &testkit::embedded_json(&again, "spec")["values"];
