@@ -298,6 +298,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
         zone: Berlin,
         back: Some("/?from=A&to=C".to_owned()),
         embed_details: true,
+        progress: &|_, _| {},
     };
     Ok(embedded_json(&render(&net, &mut fallbacks, &plot)?.html, "data"))
 }
@@ -431,4 +432,30 @@ proptest::proptest! {
             }
         }
     }
+}
+
+#[test]
+fn drawing_reports_the_connections_done() {
+    let tt = located();
+    let net = Network::new(&tt).unwrap();
+    let groups = chains(&net);
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let reports = std::sync::Mutex::new(Vec::new());
+    let progress = |done, total| reports.lock().unwrap().push((done, total));
+    let plot = Plot {
+        title: String::new(),
+        subtitle: String::new(),
+        groups: &groups,
+        metric: Metric::Axis,
+        min_transfer: MIN,
+        back: None,
+        embed_details: false,
+        zone: Berlin,
+        progress: &progress,
+    };
+    let rendered = render(&net, &mut fallbacks, &plot).unwrap();
+    // Tests report before every connection.
+    assert_eq!(*reports.lock().unwrap(), [(0, 3), (1, 3), (2, 3)]);
+    assert_eq!(embedded_json(&rendered.html, "data")["details"], Value::Null, "not embedded");
+    assert_eq!(rendered.details.len(), 3);
 }

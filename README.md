@@ -115,7 +115,8 @@ still takes names. The time zone is the browser's, filled in next to the time
 (changeable): the search and its plot are in the user's time, whatever zone
 the server runs in.
 Submitting shows the search's
-progress, then the plot, whose "← Change search" link returns to the form with
+progress, updated at least every few seconds (requests sent so far, DB's
+per-minute limit being waited for, states explored, connections drawn), then the plot, whose "← Change search" link returns to the form with
 the same settings. The plot page carries the drawing; a connection's route and
 fallbacks are fetched when it is shown (a night search can list 190 000
 connections). Searches beyond `--parallel` wait their turn: each loads

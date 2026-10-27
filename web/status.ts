@@ -4,6 +4,8 @@ import { type Decoder, array, boolean, field, nullable, object, string } from ".
 
 export interface Status {
   log: string[];
+  /** How the current stage is getting on, if it said. */
+  now: string | null;
   done: boolean;
   /** Why there is no plot: an error, or the report saying nothing was found. */
   error: string | null;
@@ -14,6 +16,7 @@ export const decodeStatus: Decoder<Status> = (v, path) => {
   const o = object(v, path);
   return {
     log: field(o, "log", array(string), path),
+    now: field(o, "now", nullable(string), path),
     done: field(o, "done", boolean, path),
     error: field(o, "error", nullable(string), path),
     back: field(o, "back", string, path),

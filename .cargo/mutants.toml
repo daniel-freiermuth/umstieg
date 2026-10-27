@@ -37,6 +37,11 @@ exclude_re = [
   # A stop of the other copy at the very time of the first or last known call
   # is at another station: a train isn't at two at once.
   'replace < with <= in add_stops',
+  # Progress reports: tests report at every state (stride 1, no interval), so
+  # the production stride and the clock check can't change what tests see.
+  'enumerate\.rs:\d+:\d+: replace << with >>',
+  "replace && with \\|\\| in Search<'_>::report_due",
+  "replace Search<'_>::report_due -> bool with true",
   # A stop missing from one copy at the very time of a stop both have: a train
   # isn't at two stations at once, so the anchors around it don't change.
   'replace < with <= in merge$',

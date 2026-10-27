@@ -4,13 +4,15 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Tz;
 use futures::future::{join_all, try_join_all};
+use tokio::sync::mpsc::UnboundedSender;
 
-use crate::enumerate::{self, Chain, Limits, Network, Step};
+use crate::enumerate::{self, Chain, Limits, Network, REPORT_EVERY, Step};
 use crate::fallback::{self, Fallbacks};
 use crate::motis::{Motis, Stop};
 use crate::text::{buffer, clock, duration, header, route, timed};
@@ -172,6 +174,9 @@ impl Endpoints {
 pub enum Event<'a> {
     Stage(&'a str),
     Warning(&'a str),
+    /// How the current stage is getting on, about every `REPORT_EVERY`; each
+    /// replaces the one before.
+    Progress(&'a str),
 }
 
 pub struct Outcome {
@@ -234,14 +239,15 @@ pub async fn run(
     let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
     let (origin, destination, vias) = stations(&motis, args).await?;
+    let asked = || requests_so_far(&motis, efa.as_ref(), db.as_ref());
 
     events(Event::Stage("Asking Transitous and EFA for rough routes"));
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: args.hubs };
-    let rough = rough::collect(&motis, efa.as_ref(), &query).await?;
+    let rough = ticking(rough::collect(&motis, efa.as_ref(), &query), events, asked).await?;
     events(Event::Stage("Building the timetable from DB station boards"));
-    let mut built =
-        timetable::build(&motis, db.as_ref(), &rough.itineraries, &query.origin, &query.destination, args.all_stops)
-            .await;
+    let boards =
+        timetable::build(&motis, db.as_ref(), &rough.itineraries, &query.origin, &query.destination, args.all_stops);
+    let mut built = ticking(boards, events, asked).await;
     if args.planned {
         built.timetable.ignore_delays();
     }
@@ -262,15 +268,17 @@ pub async fn run(
         forward_only: args.forward_only,
         max_nodes: args.max_nodes,
     };
-    // CPU-bound: on a blocking thread, keeping the runtime's other tasks (e.g.
-    // a web server) responsive on any runtime.
-    let (mut built, mut enumeration, limits) = tokio::task::spawn_blocking(move || -> Result<_> {
-        let enumeration = enumerate::enumerate(&Network::new(&built.timetable)?, &limits)?;
+    let (mut built, mut enumeration, limits) = blocking(events, move |updates| {
+        let report = |p: enumerate::Progress| {
+            let found = format!("{} connections found", p.found);
+            let line = format!("up to {} changes: {} states explored, {found}", p.changes, p.nodes);
+            updates.send(Update::Progress(line)).ok();
+        };
+        let enumeration = enumerate::enumerate_reporting(&Network::new(&built.timetable)?, &limits, &report)?;
         Ok((built, enumeration, limits))
     })
-    .await
-    .context("the search thread failed")??;
-    complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events).await;
+    .await?;
+    ticking(complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events), events, asked).await;
     let requests = format!(
         "{} Transitous requests{}{}",
         motis.request_count(),
@@ -299,16 +307,7 @@ pub async fn run(
         min_transfer,
         plot,
     };
-    // CPU-bound from here on: on a blocking thread, keeping the runtime's other
-    // tasks (e.g. a web server) responsive on any runtime. Stages are passed on
-    // as they happen.
-    let (stages, mut stage) = tokio::sync::mpsc::unbounded_channel();
-    let job = tokio::task::spawn_blocking(move || report.write(&stages));
-    // Ends when the job drops its sender: finished, failed or panicked.
-    while let Some(s) = stage.recv().await {
-        events(Event::Stage(s));
-    }
-    job.await.context("the search thread failed")?
+    blocking(events, move |updates| report.write(updates)).await
 }
 
 /// Origin, destination and vias: as picked in the form, or the best match for the names.
@@ -375,6 +374,66 @@ async fn complete_stops(
     }
 }
 
+/// What a blocking job tells the search's events.
+enum Update {
+    Stage(&'static str),
+    Progress(String),
+}
+
+/// Runs `job` on a blocking thread (CPU-bound work, keeping the runtime's
+/// other tasks, e.g. a web server, responsive on any runtime), passing its
+/// updates on to `events` as they come.
+async fn blocking<T: Send + 'static>(
+    events: &(dyn Fn(Event<'_>) + Sync),
+    job: impl FnOnce(&UnboundedSender<Update>) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let (updates, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::task::spawn_blocking(move || job(&updates));
+    // Ends when the job drops its sender: finished, failed or panicked.
+    while let Some(update) = received.recv().await {
+        match update {
+            Update::Stage(stage) => events(Event::Stage(stage)),
+            Update::Progress(line) => events(Event::Progress(&line)),
+        }
+    }
+    handle.await.context("the search thread failed")?
+}
+
+/// `work`, with what `status` says passed on as progress about every `REPORT_EVERY`.
+async fn ticking<T>(
+    work: impl Future<Output = T>,
+    events: &(dyn Fn(Event<'_>) + Sync),
+    status: impl Fn() -> String,
+) -> T {
+    let mut every = tokio::time::interval(REPORT_EVERY.max(Duration::from_millis(10)));
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick is at once: nothing to say yet.
+    every.tick().await;
+    let mut work = std::pin::pin!(work);
+    loop {
+        // The work first: tokio::select! picks at random.
+        let tick = std::pin::pin!(every.tick());
+        match futures::future::select(work.as_mut(), tick).await {
+            futures::future::Either::Left((done, _)) => return done,
+            futures::future::Either::Right(_) => events(Event::Progress(&status())),
+        }
+    }
+}
+
+/// "38 requests to Transitous, 6 to EFA, 80 to DB · waiting 40 s more for DB's limit of 60 requests per minute".
+fn requests_so_far(motis: &Motis, efa: Option<&efa::Efa>, db: Option<&db::Db>) -> String {
+    let efa = efa.map(|efa| format!(", {} to EFA", efa.request_count())).unwrap_or_default();
+    let db = db
+        .map(|db| {
+            let quota = db.waiting().map_or_else(String::new, |left| {
+                format!(" · waiting {} s more for DB's limit of 60 requests per minute", left.as_secs())
+            });
+            format!(", {} to DB{quota}", db.request_count())
+        })
+        .unwrap_or_default();
+    format!("{} requests to Transitous{efa}{db}", motis.request_count())
+}
+
 /// `--extra-hours` as a duration, negative meaning none.
 fn extra_time(hours: f64) -> Result<TimeDelta> {
     let seconds = hours * 3600.0;
@@ -405,9 +464,9 @@ struct Report {
 
 impl Report {
     /// Writes the report of the enumerated connections, sending the stages
-    /// that follow to `stages`.
+    /// that follow, and progress, to `updates`.
     #[expect(clippy::too_many_lines, reason = "the report, section after section")]
-    fn write(self, stages: &tokio::sync::mpsc::UnboundedSender<&'static str>) -> Result<Outcome> {
+    fn write(self, updates: &UnboundedSender<Update>) -> Result<Outcome> {
         let Self {
             args,
             built,
@@ -512,7 +571,10 @@ impl Report {
         let rendered = match plot {
             Some(PlotPage { back, embed_details }) => {
                 // Only fails once `run` has stopped listening.
-                stages.send("Drawing the plot").ok();
+                updates.send(Update::Stage("Drawing the plot")).ok();
+                let progress = |done: usize, total: usize| {
+                    updates.send(Update::Progress(format!("{done} of {total} connections drawn"))).ok();
+                };
                 let plot = plot::Plot {
                     title,
                     subtitle: format!("{departing} · {summary}{completeness}"),
@@ -522,6 +584,7 @@ impl Report {
                     zone,
                     back,
                     embed_details,
+                    progress: &progress,
                 };
                 Some(plot::render(&net, &mut fallbacks, &plot)?)
             }

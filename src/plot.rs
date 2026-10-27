@@ -5,6 +5,7 @@
 //! line are parallel lines.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -352,10 +353,13 @@ pub struct Plot<'a> {
     pub back: Option<String>,
     /// Put the connections' details into the page, or leave them to be fetched.
     pub embed_details: bool,
+    /// Told (connections drawn, of how many) about every `REPORT_EVERY`.
+    pub progress: &'a dyn Fn(usize, usize),
 }
 
 /// The plot of all connections in `plot.groups`, with fallbacks per change, as
 /// an HTML page, and the connections' details.
+#[expect(clippy::too_many_lines, reason = "the page's data, part after part")]
 pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<Rendered> {
     let tt = net.tt;
     let mut metrics = Vec::new();
@@ -387,8 +391,14 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     let mut fallback_index: HashMap<(usize, DateTime<Utc>, String), usize> = HashMap::new();
     let mut chains = Vec::new();
     let mut details = Vec::new();
+    let total: usize = plot.groups.iter().map(|g| g.chains.len()).sum();
+    let mut report_at = enumerate::next_report();
     for (g, group) in plot.groups.iter().enumerate() {
         for chain in &group.chains {
+            if Instant::now() >= report_at {
+                report_at = enumerate::next_report();
+                (plot.progress)(chains.len(), total);
+            }
             let arrival = chain.arrival(tt)?;
             let mut refs = Vec::new();
             for (change, transfer) in chain.transfers(tt)?.iter().enumerate() {

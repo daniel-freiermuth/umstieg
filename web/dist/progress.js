@@ -58,6 +58,7 @@ var decodeStatus = (v, path) => {
   const o = object(v, path);
   return {
     log: field(o, "log", array(string), path),
+    now: field(o, "now", nullable(string), path),
     done: field(o, "done", boolean, path),
     error: field(o, "error", nullable(string), path),
     back: field(o, "back", string, path)
@@ -71,6 +72,7 @@ function next(status) {
 
 // progress.ts
 var log = byId("log", HTMLPreElement);
+var now = byId("now", HTMLPreElement);
 var title = byId("title", HTMLHeadingElement);
 var back = byId("back", HTMLAnchorElement);
 var job = location.pathname.replace(/\/+$/, "");
@@ -84,6 +86,7 @@ async function poll() {
   back.href = status.back;
   log.textContent = status.log.join(`
 `);
+  now.textContent = status.now ?? "";
   const then = next(status);
   if ("poll" in then) {
     setTimeout(() => void poll(), 1000);

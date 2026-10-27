@@ -3,7 +3,7 @@ use chrono_tz::Europe::Berlin;
 use chrono_tz::UTC;
 use clap::Parser;
 
-use super::{Endpoints, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, time_zone};
+use super::{Endpoints, Event, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, time_zone};
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{self, Builder, at};
 
@@ -198,4 +198,32 @@ fn via_ids_pair_up_with_the_vias_if_given() {
         Err("--via-id: one per --via (1 for 2)".to_owned())
     );
     assert_eq!(check(&["A", "B", "--via-id", "c"]), Err("--via-id: one per --via (1 for 0)".to_owned()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_work_reports_progress_while_it_runs() {
+    let said = std::sync::Mutex::new(Vec::new());
+    let events = |e: Event<'_>| {
+        if let Event::Progress(p) = e {
+            said.lock().unwrap().push(p.to_owned());
+        }
+    };
+    let asked = std::sync::atomic::AtomicUsize::new(0);
+    let status = || format!("{} asked", asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    // Every 10 ms in tests: 55 ms of work tell five times, then the result.
+    let done = super::ticking(tokio::time::sleep(std::time::Duration::from_millis(55)), &events, status).await;
+    assert_eq!(done, ());
+    assert_eq!(*said.lock().unwrap(), ["0 asked", "1 asked", "2 asked", "3 asked", "4 asked"]);
+    // Work done at once says nothing.
+    assert_eq!(super::ticking(async { 7 }, &events, || panic!("asked")).await, 7);
+}
+
+#[test]
+fn progress_counts_the_requests_per_service_asked() {
+    let motis = crate::motis::Motis::new("http://unused.test", "t").unwrap();
+    let efa = crate::efa::Efa::new("http://unused.test", "t").unwrap();
+    let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
+    let db = crate::db::Db::new("http://unused.test", credentials, "t").unwrap();
+    assert_eq!(super::requests_so_far(&motis, None, None), "0 requests to Transitous");
+    assert_eq!(super::requests_so_far(&motis, Some(&efa), Some(&db)), "0 requests to Transitous, 0 to EFA, 0 to DB");
 }

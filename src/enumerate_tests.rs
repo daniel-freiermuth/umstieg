@@ -732,6 +732,30 @@ fn fastest_journeys_settle_rides_taking_no_time() {
     assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
 }
 
+#[test]
+fn a_running_search_reports_rounds_states_and_finds() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:30", "")]);
+    b.trip("RE 2", &[("B", "", "08:40"), ("C", "09:10", "")]);
+    b.trip("RE 3", &[("A", "", "08:10"), ("C", "09:30", "")]);
+    let tt = b.build("A", "C");
+    let reports = std::sync::Mutex::new(Vec::new());
+    let result = enumerate_reporting(&Network::new(&tt).unwrap(), &limits(&tt, "07:00", "09:00"), &|p| {
+        reports.lock().unwrap().push(p);
+    })
+    .unwrap();
+    let reports = reports.into_inner().unwrap();
+    // Tests report at every state.
+    assert_eq!(reports.len(), result.nodes);
+    assert!(
+        reports.windows(2).all(|w| w[0].nodes < w[1].nodes && w[0].changes <= w[1].changes && w[0].found <= w[1].found)
+    );
+    let last = reports.last().unwrap();
+    assert_eq!((last.nodes, last.changes), (result.nodes, 5));
+    // Counted when a state is entered, before it may record one more.
+    assert!(last.found <= result.chains.len() && reports.iter().any(|p| p.changes == 1 && p.found >= 1));
+}
+
 /// Every connection the rules allow, by plain depth-first search without
 /// pruning, indexes or deepening; detours kept.
 struct Oracle<'a> {

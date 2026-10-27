@@ -6,6 +6,7 @@ import { byId } from "./dom";
 import { decodeStatus, next } from "./status";
 
 const log = byId("log", HTMLPreElement);
+const now = byId("now", HTMLPreElement);
 const title = byId("title", HTMLHeadingElement);
 const back = byId("back", HTMLAnchorElement);
 // The page lives at /job/{id}.
@@ -20,6 +21,8 @@ async function poll(): Promise<void> {
   const status = decodeStatus(parseJson(await response.text()), "status");
   back.href = status.back;
   log.textContent = status.log.join("\n");
+  // The current stage's progress, under the log, replaced as it comes.
+  now.textContent = status.now ?? "";
   const then = next(status);
   if ("poll" in then) {
     setTimeout(() => void poll(), 1000);

@@ -56,12 +56,23 @@
       a {
         color: var(--accent);
       }
+      #now {
+        color: var(--muted);
+        background: none;
+        border: 0;
+        padding: 0 12px;
+        margin-top: -6px;
+      }
+      #now:empty {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1 id="title">Searching…</h1>
       <pre id="log"></pre>
+      <pre id="now"></pre>
       <p><a id="back" href="/">← Change search</a></p>
     </main>
     <script type="module">

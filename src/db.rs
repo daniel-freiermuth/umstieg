@@ -187,6 +187,8 @@ pub struct Db {
     requests: AtomicUsize,
     /// Time spent waiting for the per-minute quota.
     waited: Mutex<Duration>,
+    /// The end of the quota wait going on, if one is.
+    waiting_until: Mutex<Option<Instant>>,
 }
 
 impl Db {
@@ -209,6 +211,7 @@ impl Db {
             changes: Mutex::new(HashMap::new()),
             requests: AtomicUsize::new(0),
             waited: Mutex::new(Duration::ZERO),
+            waiting_until: Mutex::new(None),
         })
     }
 
@@ -219,6 +222,12 @@ impl Db {
     /// How long requests waited for the per-minute quota so far.
     pub fn waited(&self) -> Duration {
         *lock(&self.waited)
+    }
+
+    /// How much longer requests wait for the per-minute quota, if they do now.
+    pub fn waiting(&self) -> Option<Duration> {
+        let until = (*lock(&self.waiting_until))?;
+        Some(until.saturating_duration_since(Instant::now()))
     }
 
     /// Wait until another request fits into the per-minute quota.
@@ -234,7 +243,9 @@ impl Db {
                     let mut waited = lock(&self.waited);
                     *waited = waited.saturating_add(wait);
                 }
+                *lock(&self.waiting_until) = Instant::now().checked_add(wait);
                 tokio::time::sleep(wait).await;
+                *lock(&self.waiting_until) = None;
             } else {
                 break;
             }

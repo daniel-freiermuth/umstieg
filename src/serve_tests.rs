@@ -32,7 +32,7 @@ fn job(result: Option<Result<&str, &str>>) -> Job {
         })
         .map_err(str::to_owned)
     });
-    Job { query: String::new(), started: Instant::now(), log: Vec::new(), result }
+    Job { query: String::new(), started: Instant::now(), log: Vec::new(), now: None, result }
 }
 
 #[test]
@@ -472,4 +472,21 @@ fn job_ids_continue_from_the_clock_across_restarts() {
     let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() * 1000;
     let first = super::first_job();
     assert!(first >= before && first < before + 2000, "{first} vs {before}");
+}
+
+#[tokio::test]
+async fn progress_replaces_progress_until_the_next_stage() {
+    let mut j = job(None);
+    j.note("Enumerating connections", false);
+    j.note("up to 1 changes: 10 states", true);
+    j.note("up to 2 changes: 99 states", true);
+    assert_eq!((j.log.len(), j.now.as_deref()), (1, Some("  0s  up to 2 changes: 99 states")));
+    let app = app("http://127.0.0.1:9");
+    lock(&app.jobs).insert(1, j);
+    let (_, _, body) = get_page(&app, "/job/1/status").await;
+    let status: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status["now"], "  0s  up to 2 changes: 99 states");
+    let mut j = lock(&app.jobs).remove(&1).unwrap();
+    j.note("Drawing the plot", false);
+    assert_eq!((j.log.len(), j.now), (2, None));
 }

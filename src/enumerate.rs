@@ -2,6 +2,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -443,9 +444,39 @@ struct Search<'a> {
     found: HashSet<Vec<Step>>,
     nodes: usize,
     truncated: bool,
+    report: &'a dyn Fn(Progress),
+    /// When to report next.
+    report_at: Instant,
+}
+
+/// How a running enumeration is getting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    /// Changes allowed in the current deepening round.
+    pub changes: usize,
+    /// States explored so far.
+    pub nodes: usize,
+    /// Connections found so far.
+    pub found: usize,
+}
+
+/// How often a running search reports, about (tests: at every chance).
+pub const REPORT_EVERY: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
+/// The clock is read every this many states (tests: every state).
+const REPORT_STRIDE: usize = if cfg!(test) { 1 } else { 1 << 16 };
+
+/// The time `REPORT_EVERY` from now (now, should that overflow).
+pub fn next_report() -> Instant {
+    let now = Instant::now();
+    now.checked_add(REPORT_EVERY).unwrap_or(now)
 }
 
 pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Result<Enumeration> {
+    enumerate_reporting(net, limits, &|_| {})
+}
+
+/// [`enumerate`], telling `report` about every `REPORT_EVERY` how it is getting on.
+pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(Progress)) -> Result<Enumeration> {
     let tt = net.tt;
     let starts = entry(&net.departures, limits.origin, "origin station")?;
     let fastest_with = |missed_by| -> Result<Option<TimeDelta>> {
@@ -491,6 +522,8 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Result<Enumeration> {
         found: HashSet::new(),
         nodes: 0,
         truncated: false,
+        report,
+        report_at: next_report(),
     };
     *entry_mut(&mut search.visited, limits.origin, "origin station")? = true;
     // Deepen by changes so that hitting the effort cap still leaves complete
@@ -511,6 +544,11 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Result<Enumeration> {
 }
 
 impl Search<'_> {
+    /// Whether to report progress now: the clock is read only now and then.
+    fn report_due(&self) -> bool {
+        self.nodes.is_multiple_of(REPORT_STRIDE) && Instant::now() >= self.report_at
+    }
+
     /// At `station`, ready to leave at `ready`. `deadline` is set once the first train is chosen.
     #[expect(
         clippy::too_many_lines,
@@ -525,6 +563,14 @@ impl Search<'_> {
     ) -> Result<()> {
         // Saturating: past the cap, the count only has to stay above it.
         self.nodes = self.nodes.saturating_add(1);
+        if self.report_due() {
+            self.report_at = next_report();
+            (self.report)(Progress {
+                changes: self.max_rides.saturating_sub(1),
+                nodes: self.nodes,
+                found: self.found.len(),
+            });
+        }
         if self.nodes > self.limits.max_nodes {
             self.truncated = true;
             return Ok(());

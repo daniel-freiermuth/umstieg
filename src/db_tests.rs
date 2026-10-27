@@ -697,6 +697,7 @@ async fn requests_keep_to_the_quota_per_minute() {
     db.pace().await;
     assert!(start.elapsed() >= waited.saturating_add(QUOTA_WINDOW));
     assert_eq!(db.waited(), start.elapsed(), "all the time went into waiting for the quota");
+    assert_eq!(db.waiting(), None, "not waiting once a request went out");
 }
 
 #[tokio::test]
@@ -760,4 +761,26 @@ async fn concurrent_lookups_leave_one_intact_cache_line_each() {
     for (i, name) in names.iter().enumerate() {
         assert_eq!(cache.get(name).cloned().flatten().map(|s| s.eva), Some(format!("80010{i:02}")), "{name}");
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quota_wait_says_how_long_it_has_left() {
+    let db = Arc::new(
+        Db::new("http://unused.test", Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() }, "t")
+            .unwrap(),
+    );
+    for _ in 0..REQUESTS_PER_MINUTE {
+        db.pace().await;
+    }
+    assert_eq!(db.waiting(), None);
+    let paced = tokio::spawn({
+        let db = db.clone();
+        async move { db.pace().await }
+    });
+    // Let it reach the wait, then let a quarter of the window pass.
+    tokio::task::yield_now().await;
+    tokio::time::advance(QUOTA_WINDOW / 4).await;
+    assert_eq!(db.waiting(), QUOTA_WINDOW.checked_sub(QUOTA_WINDOW / 4));
+    paced.await.unwrap();
+    assert_eq!(db.waiting(), None);
 }

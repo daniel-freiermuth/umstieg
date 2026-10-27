@@ -46,8 +46,24 @@ struct Job {
     query: String,
     started: Instant,
     log: Vec<String>,
+    /// How the current stage is getting on, as the last progress said.
+    now: Option<String>,
     /// The plot, or why there is none.
     result: Option<Result<plot::Rendered, String>>,
+}
+
+impl Job {
+    /// A stage or warning goes into the log; progress replaces the last
+    /// progress, which the next stage ends.
+    fn note(&mut self, line: &str, progress: bool) {
+        let line = format!("{:>3}s  {line}", self.started.elapsed().as_secs());
+        if progress {
+            self.now = Some(line);
+        } else {
+            self.now = None;
+            self.log.push(line);
+        }
+    }
 }
 
 struct App {
@@ -247,7 +263,7 @@ async fn start(
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
     let id = app.next.fetch_add(1, Ordering::Relaxed);
-    let job = Job { query: raw.unwrap_or_default(), started: Instant::now(), log: Vec::new(), result: None };
+    let job = Job { query: raw.unwrap_or_default(), started: Instant::now(), log: Vec::new(), now: None, result: None };
     admit(&mut lock(&app.jobs), id, job);
     tokio::spawn(run(app, id, args));
     Redirect::to(&format!("/job/{id}")).into_response()
@@ -265,24 +281,24 @@ fn admit(jobs: &mut HashMap<u64, Job>, id: u64, job: Job) {
 
 #[tracing::instrument(name = "job", skip_all, fields(id = id))]
 async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
-    let note = |line: String| {
+    let note = |line: &str, progress: bool| {
         if let Some(job) = lock(&app.jobs).get_mut(&id) {
-            let secs = job.started.elapsed().as_secs();
-            job.log.push(format!("{secs:>3}s  {line}"));
+            job.note(line, progress);
         }
     };
     let query = lock(&app.jobs).get(&id).map(|j| j.query.clone()).unwrap_or_default();
     tracing::info!(query, "search asked");
     if app.permits.available_permits() == 0 {
         tracing::info!("waiting for another search to finish");
-        note("Waiting for another search to finish".to_owned());
+        note("Waiting for another search to finish", false);
     }
     let Ok(_permit) = app.permits.acquire().await else { return };
     let started = Instant::now();
     let back = Some(format!("/?{query}"));
     let events = |event: Event<'_>| match event {
-        Event::Stage(stage) => note(stage.to_owned()),
-        Event::Warning(warning) => note(format!("warning: {warning}")),
+        Event::Stage(stage) => note(stage, false),
+        Event::Warning(warning) => note(&format!("warning: {warning}"), false),
+        Event::Progress(line) => note(line, true),
     };
     // The server's services and credentials, whatever the URL says.
     let result = match (app.credentials)() {
@@ -303,7 +319,7 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
             Err(format!("{e:#}"))
         }
     };
-    note(if result.is_ok() { "Done".to_owned() } else { "Failed".to_owned() });
+    note(if result.is_ok() { "Done" } else { "Failed" }, false);
     if let Some(job) = lock(&app.jobs).get_mut(&id) {
         job.result = Some(result);
     }
@@ -321,6 +337,8 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
     #[derive(Serialize)]
     struct Status<'a> {
         log: &'a [String],
+        /// How the current stage is getting on.
+        now: Option<&'a str>,
         done: bool,
         /// Why no plot: an error, or the report saying no connection was found.
         error: Option<&'a str>,
@@ -330,6 +348,7 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
     let Some(job) = jobs.get(&id) else { return StatusCode::NOT_FOUND.into_response() };
     let status = Status {
         log: &job.log,
+        now: job.now.as_deref(),
         done: job.result.is_some(),
         error: match &job.result {
             Some(Err(e)) => Some(e),
