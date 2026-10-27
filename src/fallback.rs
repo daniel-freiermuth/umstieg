@@ -30,7 +30,7 @@ pub struct Fallback {
     pub line: String,
 }
 
-/// Fallback connections per (station, missed departure), computed once.
+/// Fallback connections per (station, earliest departure), computed once.
 pub struct Fallbacks<'n> {
     net: &'n Network<'n>,
     min_transfer: TimeDelta,
@@ -44,12 +44,13 @@ impl<'n> Fallbacks<'n> {
         Self { net, min_transfer, zone, cache: HashMap::new() }
     }
 
-    fn candidates(&mut self, station: usize, missed: DateTime<Utc>) -> Result<&[Chain]> {
+    /// What leaves `station` after the `missed` train, once there at `ready`.
+    fn candidates(&mut self, station: usize, missed: DateTime<Utc>, ready: DateTime<Utc>) -> Result<&[Chain]> {
         let (net, min_transfer) = (self.net, self.min_transfer);
-        match self.cache.entry((station, missed)) {
+        let after = checked::later(missed, TimeDelta::minutes(1), "departure after a missed train")?.max(ready);
+        match self.cache.entry((station, after)) {
             Entry::Occupied(found) => Ok(found.into_mut()),
             Entry::Vacant(slot) => {
-                let after = checked::later(missed, TimeDelta::minutes(1), "departure after a missed train")?;
                 let limits = Limits {
                     origin: station,
                     depart_from: after,
@@ -94,9 +95,12 @@ impl<'n> Fallbacks<'n> {
                 starts.push(boards_at);
             }
         }
+        // A change listed although missed (negative buffer): the traveller is
+        // there only after the missed train left; nothing leaves before that.
+        let ready = checked::earlier_or_min(transfer.departure, transfer.slack);
         let mut candidates: Vec<Chain> = Vec::new();
         for s in starts {
-            candidates.extend_from_slice(self.candidates(s, transfer.departure)?);
+            candidates.extend_from_slice(self.candidates(s, transfer.departure, ready)?);
         }
         let mut ranked = candidates
             .iter()

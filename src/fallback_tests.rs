@@ -77,7 +77,7 @@ fn candidates_leave_after_the_missed_train_within_the_window() {
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let hamburg = tt.stations.iter().position(|s| s.name == "Hamburg").unwrap();
     let mut got: Vec<String> =
-        fallbacks.candidates(hamburg, at("12:00")).unwrap().iter().map(|c| show(&tt, &c.steps)).collect();
+        fallbacks.candidates(hamburg, at("12:00"), at("11:51")).unwrap().iter().map(|c| show(&tt, &c.steps)).collect();
     got.sort();
     let mut expected = vec![
         "RE 7 Hamburg-Schleswig / RJ 384 Schleswig-København",
