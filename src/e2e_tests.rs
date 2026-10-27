@@ -482,9 +482,19 @@ impl StandIn {
     }
 
     /// Every stand-in gets its own path prefix: the MOTIS and EFA disk caches
-    /// are keyed by URL, and ports get reused.
+    /// are keyed by URL, and ports get reused. The DB plan cache is keyed by
+    /// EVA and hour alone, and boards differ between worlds (FLX 1236), so
+    /// the corridor's cached plans go.
     async fn launch(efa: Efa, regional: bool, flix: bool) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        if let Some(Ok(plans)) = crate::cache::root().map(|root| std::fs::read_dir(root.join("db-plan"))) {
+            let corridor = [&AMSEL, &BERGSTADT, &KREUZHAUSEN, &ZIELHAFEN, &MITTELSTADT].map(|s| format!("{}_", s.eva));
+            for file in plans.flatten() {
+                if corridor.iter().any(|eva| file.file_name().to_string_lossy().starts_with(eva.as_str())) {
+                    std::fs::remove_file(file.path()).ok();
+                }
+            }
+        }
         let world = Arc::new(World { efa, regional, flix, log: Mutex::new(Vec::new()) });
         let router = Router::new()
             .route("/{scope}/api/v1/geocode", get(geocode))
