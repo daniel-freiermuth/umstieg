@@ -8,7 +8,7 @@ use axum::routing::get;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::testkit::{Builder, ride};
+use crate::testkit::{Builder, at, ride};
 use crate::timetable::add_stops;
 
 /// FLX 1236 as DB boards know it: Frankfurt Süd and Hamburg Hbf only.
@@ -189,4 +189,29 @@ fn a_copy_disagreeing_where_both_stop_adds_nothing() {
     assert_eq!(add_stops(&mut tt, 0, &leg("2026-10-24T07:00:00Z")), Some(vec![0, 2]));
     // Nothing new the second time.
     assert!(add_stops(&mut tt, 0, &leg("2026-10-24T07:00:00Z")).is_none());
+}
+
+#[test]
+fn added_stops_take_on_the_trains_delay() {
+    // RE7 (11172): DB has it 5 minutes late at Schleswig and Flensburg;
+    // Transitous's copy, planned times only, adds Jübek in between.
+    let mut b = Builder::new();
+    b.trip("RE7 (11172)", &[("Schleswig", "16:16+4", "16:17+5"), ("Flensburg", "16:41+5", "")]);
+    let mut tt = b.build("Schleswig", "Flensburg");
+    let leg: Leg = serde_json::from_value(json!({
+        "mode": "REGIONAL_RAIL",
+        "tripId": "t",
+        "startTime": "2026-10-24T16:17:00Z",
+        "endTime": "2026-10-24T16:41:00Z",
+        "from": { "name": "Schleswig", "scheduledDeparture": "2026-10-24T16:17:00Z" },
+        "intermediateStops": [{ "name": "Jübek", "scheduledArrival": "2026-10-24T16:23:00Z",
+                                "scheduledDeparture": "2026-10-24T16:24:00Z" }],
+        "to": { "name": "Flensburg", "scheduledArrival": "2026-10-24T16:41:00Z" },
+    }))
+    .unwrap();
+    add_stops(&mut tt, 0, &leg).unwrap();
+    let jubek = &tt.trips[0].calls[1];
+    assert_eq!(tt.stations[jubek.station].name, "Jübek");
+    let actual = |t: Option<crate::timetable::Time>| t.map(|t| t.actual);
+    assert_eq!((actual(jubek.arrival), actual(jubek.departure)), (Some(at("16:28")), Some(at("16:29"))));
 }

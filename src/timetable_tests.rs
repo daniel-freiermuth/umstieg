@@ -291,7 +291,7 @@ fn meters_matches_known_great_circle_distances() {
 
 #[test]
 fn propagate_delays_carries_the_last_known_delay_forward() {
-    let cases: [DelayCase<'_>; 5] = [
+    let cases: [DelayCase<'_>; 7] = [
         (
             "DB delay carried over MOTIS stops without live data",
             &[(true, "", "08:00+5"), (false, "09:00", "09:02"), (true, "10:00+2", "")],
@@ -308,9 +308,20 @@ fn propagate_delays_carries_the_last_known_delay_forward() {
             &["07:57", "09:00"],
         ),
         (
-            "never earlier than the previous time, DB's own times included",
+            "a delay shrinks by at most a quarter of each stretch, DB's own times included",
             &[(true, "", "08:00+30"), (true, "08:20", "08:22"), (true, "09:00", "")],
-            &["08:30", "08:30", "08:30", "09:00"],
+            // 20 minutes take at least 15; 38 at least 29 (whole minutes made up).
+            &["08:30", "08:45", "08:45", "09:14"],
+        ),
+        (
+            "no forecast abroad: IC 5762 leaves Padborg 34 late, 'on time' in Kolding",
+            &[(true, "", "16:10+34"), (true, "17:05", "")],
+            &["16:44", "17:26"],
+        ),
+        (
+            "a dwell time may shrink to nothing: the delay is made up there",
+            &[(true, "", "08:00+5"), (true, "08:30+5", "08:40"), (true, "09:00", "")],
+            &["08:05", "08:35", "08:40", "09:00"],
         ),
         ("no live data anywhere: planned", &[(false, "", "08:00"), (false, "09:00", "")], &["08:00", "09:00"]),
     ];
@@ -386,22 +397,36 @@ proptest! {
             .flat_map(|c| [c.arrival, c.departure].into_iter().flatten().map(move |t| (c.from_db, t)))
             .collect();
         propagate_delays(&mut calls);
-        let after: Vec<Time> = calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().collect();
-        prop_assert_eq!(before.len(), after.len());
+        prop_assert_eq!(before.len(), calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().count());
+        // The model: per call, its first time is at least the last time at the
+        // call before plus the stretch's planned time less a quarter (whole
+        // minutes); no time is earlier than the one before.
         let mut delay = TimeDelta::zero();
-        let mut previous: Option<DateTime<Utc>> = None;
-        for (&(from_db, old), new) in before.iter().zip(&after) {
-            prop_assert_eq!(new.planned, old.planned);
-            let live = from_db || old.actual != old.planned;
-            let unclamped = if live {
-                delay = old.delay();
-                old.actual
-            } else {
-                old.planned + delay.max(TimeDelta::zero())
-            };
-            let expected = previous.map_or(unclamped, |p| unclamped.max(p));
-            prop_assert_eq!(new.actual, expected);
-            previous = Some(new.actual);
+        let mut previous: Option<Time> = None;
+        let mut left: Option<Time> = None;
+        let mut k = 0;
+        for c in &calls {
+            let mut first = true;
+            for new in [c.arrival, c.departure].into_iter().flatten() {
+                let (from_db, old) = before[k];
+                k += 1;
+                prop_assert_eq!(new.planned, old.planned);
+                let live = from_db || old.actual != old.planned;
+                let mut expected = if live { old.actual } else { old.planned + delay.max(TimeDelta::zero()) };
+                if let Some(l) = left.filter(|_| first) {
+                    let planned = old.planned - l.planned;
+                    let fastest = planned - minutes(planned.num_minutes().div_euclid(4));
+                    expected = expected.max(l.actual + fastest);
+                }
+                if let Some(p) = previous {
+                    expected = expected.max(p.actual);
+                }
+                prop_assert_eq!(new.actual, expected);
+                delay = new.delay();
+                previous = Some(new);
+                first = false;
+            }
+            left = previous;
         }
     }
 }

@@ -144,6 +144,10 @@ command line logs nothing unless `RUST_LOG` is set.
    trains, about three times the requests), plus stations where DB long-distance
    trains call before the next corridor station (this finds Frankfurt Süd).
    Trains are joined across boards by DB's run id, live changes applied.
+   Live times that contradict each other are put right: a stop without live
+   data gets the last known delay, and a delay shrinks by at most a quarter of
+   a stretch's planned time (DB has no forecasts abroad, so IC 5762 left
+   Padborg 34 minutes late and was "on time" in Kolding, 55 minutes later).
    `--planned` ignores delays (planned times only); DB's latest schedule —
    cancellations, diversions, extra trains — still applies.
    MOTIS trains are merged in by number or identical times; DB wins where it

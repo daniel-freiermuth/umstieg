@@ -15,6 +15,8 @@ use crate::motis::{Itinerary, Leg, Motis, Place, Stop};
 const MERGE_TOLERANCE: TimeDelta = TimeDelta::minutes(60);
 /// Without a matching number, two shared stations within this difference = same train.
 const SAME_TIME: TimeDelta = TimeDelta::minutes(2);
+/// A train makes up at most 1/`MAX_CATCH_UP` of a stretch's planned time.
+const MAX_CATCH_UP: i64 = 4;
 /// Boards are fetched this far around the times MOTIS has for a station.
 const BOARD_MARGIN: TimeDelta = TimeDelta::minutes(30);
 const MAX_HOURS_PER_STATION: usize = 10;
@@ -483,25 +485,47 @@ fn footpaths(stations: &[Station], mut walks: HashMap<(usize, usize), TimeDelta>
 /// MOTIS stops merged into a DB train often lack live data while DB's stops
 /// have it; carry the last known delay forward so a delayed train doesn't
 /// arrive at the next stop before it left the previous one.
+///
+/// Live data also contradicts itself: DB has no forecasts abroad, so IC 5762
+/// leaves Padborg 34 minutes late and is "on time" in Kolding, 55 minutes
+/// later; an RE7's forecast had it reach Jübek in 0 of its 6 minutes from
+/// Schleswig. A train makes up at most a quarter of a stretch's planned time
+/// (`MAX_CATCH_UP`; dwell times may shrink to nothing), so such live times
+/// are put back.
 fn propagate_delays(calls: &mut [Call]) {
     let mut delay = TimeDelta::zero();
-    let mut previous: Option<DateTime<Utc>> = None;
+    // The last time, and the train's last time at the stop before.
+    let mut previous: Option<Time> = None;
+    let mut left: Option<Time> = None;
     for call in calls {
         let from_db = call.from_db;
+        let mut first = true;
         for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
-            if from_db || time.actual != time.planned {
-                delay = time.delay();
-            } else {
+            if !(from_db || time.actual != time.planned) {
                 // Only absurd feed delays reach past representable time; such a
                 // stop is then later than anything, i.e. unreachable.
                 time.actual = checked::later_or_max(time.planned, delay.max(TimeDelta::zero()));
             }
-            if let Some(previous) = previous.filter(|&p| time.actual < p) {
-                time.actual = previous;
+            if let Some(left) = left.filter(|_| first) {
+                time.actual = time.actual.max(checked::later_or_max(left.actual, fastest_ride(left, *time)));
             }
-            previous = Some(time.actual);
+            if let Some(previous) = previous.filter(|p| time.actual < p.actual) {
+                time.actual = previous.actual;
+            }
+            delay = time.delay();
+            previous = Some(*time);
+            first = false;
         }
+        left = previous;
     }
+}
+
+/// The shortest a ride from `left` to `time` can take: its planned time less
+/// the whole minutes a train can make up on it.
+fn fastest_ride(left: Time, time: Time) -> TimeDelta {
+    let planned = time.planned.signed_duration_since(left.planned);
+    let catch_up = planned.num_minutes().checked_div(MAX_CATCH_UP).unwrap_or(0);
+    checked::difference(planned, TimeDelta::try_minutes(catch_up).unwrap_or_default())
 }
 
 fn leg_places(leg: &Leg) -> Vec<&Place> {
@@ -578,6 +602,8 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
         }
     }
     trip.calls = all.into_iter().map(|(_, c)| c).collect();
+    // The added stops' times follow DB's delays the same way as every train's.
+    propagate_delays(&mut trip.calls);
     Some(remap)
 }
 
