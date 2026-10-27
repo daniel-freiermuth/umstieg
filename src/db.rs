@@ -321,18 +321,23 @@ impl Db {
         }
         lock(&self.stations).insert(name.to_owned(), found.clone());
         if let Some(dir) = &self.cache_dir {
-            use std::io::Write;
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-            let path = dir.join(STATION_CACHE);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
-            let (eva, db_name) = found.as_ref().map_or(("", ""), |s| (s.eva.as_str(), s.name.as_str()));
-            // One write per line: appends of concurrent searches don't interleave.
-            file.write_all(format!("{name}\t{eva}\t{db_name}\n").as_bytes())
-                .with_context(|| format!("writing {}", path.display()))?;
+            let append = || -> Result<()> {
+                use std::io::Write;
+                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+                let path = dir.join(STATION_CACHE);
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .with_context(|| format!("opening {}", path.display()))?;
+                let (eva, db_name) = found.as_ref().map_or(("", ""), |s| (s.eva.as_str(), s.name.as_str()));
+                // One write per line: appends of concurrent searches don't interleave.
+                file.write_all(format!("{name}\t{eva}\t{db_name}\n").as_bytes())
+                    .with_context(|| format!("writing {}", path.display()))
+            };
+            if let Err(e) = append() {
+                tracing::warn!(name, "not cached: {e:#}");
+            }
         }
         Ok(found)
     }
@@ -351,8 +356,10 @@ impl Db {
             Some(xml)
         } else {
             let xml = self.get(&format!("/plan/{eva}/{slot}")).await?;
-            if let (Some(xml), Some(file)) = (&xml, &file) {
-                crate::cache::write_atomic(file, xml)?;
+            if let (Some(xml), Some(file)) = (&xml, &file)
+                && let Err(e) = crate::cache::write_atomic(file, xml)
+            {
+                tracing::warn!(eva, slot, "not cached: {e:#}");
             }
             xml
         };
