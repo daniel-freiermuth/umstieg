@@ -248,14 +248,16 @@ impl Motis {
     }
 
     /// Resolve free text to a stop whose name contains every place word of the
-    /// text. The geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
+    /// text, spelled alike or alike but for accents ("Koln" for "Köln"). The
+    /// geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
     /// "Hauptbahnhof"), so station words are also tried spelled differently,
     /// and stops with trains are preferred, then stations by name over bus stops.
     pub async fn stop(&self, text: &str) -> Result<Stop> {
         const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
         let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
-        let folded = fold(text);
-        let place: Vec<&str> = folded.split(' ').filter(|w| !STATION_WORDS.contains(w)).collect();
+        let (folded, plain) = (fold(text), unaccented(text));
+        let place: Vec<(&str, &str)> =
+            folded.split(' ').zip(plain.split(' ')).filter(|(w, _)| !STATION_WORDS.contains(w)).collect();
         // Queries keep the original spelling: the geocoder doesn't know "duerkheim".
         let bare = text.split_whitespace().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
         let queries = [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
@@ -266,8 +268,10 @@ impl Motis {
                 .into_iter()
                 .filter(|m| m.kind == "STOP")
                 .filter(|m| {
-                    let name = fold(&m.name);
-                    place.iter().all(|w| name.split(' ').any(|n| n == *w))
+                    let (name, plain_name) = (fold(&m.name), unaccented(&m.name));
+                    place
+                        .iter()
+                        .all(|(w, p)| name.split(' ').any(|n| n == *w) || plain_name.split(' ').any(|n| n == *p))
                 })
                 .collect();
             // Keep the geocoder's order, but stops with trains first, then stations by name.
@@ -355,6 +359,31 @@ impl Motis {
         let itinerary: Itinerary = serde_json::from_str(&text).context("decoding trip")?;
         itinerary.legs.into_iter().find(Leg::is_transit).with_context(|| format!("trip {trip_id} has no ride"))
     }
+}
+
+/// [`fold`] with accents dropped instead of spelled out: "Köln", "Koln" and
+/// "Genève", "Geneve" compare equal, where `fold` matches "Köln" to "Koeln".
+fn unaccented(s: &str) -> String {
+    let bare: String = s
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' => 'c',
+            'è' | 'é' | 'ê' | 'ë' | 'ę' | 'ě' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ł' => 'l',
+            'ñ' | 'ń' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ő' => 'o',
+            'ř' => 'r',
+            'ś' | 'š' => 's',
+            'ù' | 'ú' | 'û' | 'ü' | 'ů' | 'ű' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            c => c,
+        })
+        .collect();
+    fold(&bare)
 }
 
 #[cfg(test)]
