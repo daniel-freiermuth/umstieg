@@ -226,19 +226,31 @@ fn lower_bounds(tt: &Timetable, ride: impl Fn(Time, Time) -> TimeDelta) -> Resul
     for fp in &tt.footpaths {
         entry_mut(&mut reverse, fp.to, "station")?.push((fp.from, fp.duration));
     }
-    let mut best: Vec<Option<TimeDelta>> = vec![None; n];
+    // Saturating: a bound beyond the longest duration there is prunes all the same.
+    shortest_paths(&reverse, tt.destination, TimeDelta::zero(), checked::sum)
+}
+
+/// Dijkstra from `source` over `edges` (station → (neighbour, weight)): the
+/// least sum of weights to reach each station, `None` where unreachable.
+/// `add` should saturate rather than overflow.
+pub fn shortest_paths<W: Ord + Copy>(
+    edges: &[Vec<(usize, W)>],
+    source: usize,
+    zero: W,
+    add: impl Fn(W, W) -> W,
+) -> Result<Vec<Option<W>>> {
+    let mut best: Vec<Option<W>> = vec![None; edges.len()];
     let mut heap = BinaryHeap::new();
-    *entry_mut(&mut best, tt.destination, "destination station")? = Some(TimeDelta::zero());
-    heap.push(Reverse((TimeDelta::zero(), tt.destination)));
+    *entry_mut(&mut best, source, "destination station")? = Some(zero);
+    heap.push(Reverse((zero, source)));
     while let Some(Reverse((d, s))) = heap.pop() {
         if entry(&best, s, "station")?.is_some_and(|b| d > b) {
             continue;
         }
-        for &(prev, w) in entry(&reverse, s, "station")? {
-            // Saturating: a bound beyond the longest duration there is prunes all the same.
-            let nd = checked::sum(d, w);
-            if improve(entry_mut(&mut best, prev, "station")?, nd) {
-                heap.push(Reverse((nd, prev)));
+        for &(next, w) in entry(edges, s, "station")? {
+            let nd = add(d, w);
+            if improve(entry_mut(&mut best, next, "station")?, nd) {
+                heap.push(Reverse((nd, next)));
             }
         }
     }
