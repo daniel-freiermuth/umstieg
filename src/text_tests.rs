@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use chrono_tz::Europe::{Berlin, London};
 use chrono_tz::UTC;
 
-use super::{buffer, clock, duration, header, route, timed};
+use super::{buffer, clock, duration, header, route, timed, window};
 use crate::enumerate::{Chain, Step};
 use crate::testkit::{Builder, time};
 
@@ -30,6 +30,22 @@ fn clock_is_in_the_zone_with_its_abbreviation_and_dst() {
     ];
     for (t, zone, want) in cases {
         assert_eq!(clock(t, zone), want, "{t} in {zone}");
+    }
+}
+
+#[test]
+fn window_has_the_date_in_the_zone_and_the_end_date_only_when_it_differs() {
+    let utc = |m, d, h, mi| Utc.with_ymd_and_hms(2026, m, d, h, mi, 0).unwrap();
+    let cases = [
+        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), Berlin, "Thu 29 Oct 2026, 06:00 CET–08:00 CET"),
+        // 23:30 UTC is already the next day in Berlin.
+        (utc(10, 29, 23, 30), utc(10, 30, 1, 0), Berlin, "Fri 30 Oct 2026, 00:30 CET–02:00 CET"),
+        (utc(10, 29, 22, 0), utc(10, 29, 23, 30), Berlin, "Thu 29 Oct 2026, 23:00 CET – Fri 30 Oct, 00:30 CET"),
+        (utc(10, 25, 0, 30), utc(10, 25, 1, 30), Berlin, "Sun 25 Oct 2026, 02:30 CEST–02:30 CET"),
+        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), New_York, "Thu 29 Oct 2026, 01:00 EDT–03:00 EDT"),
+    ];
+    for (from, until, zone, want) in cases {
+        assert_eq!(window(from, until, zone), want, "{from}–{until} in {zone}");
     }
 }
 

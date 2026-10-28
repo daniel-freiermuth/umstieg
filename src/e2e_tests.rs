@@ -1182,7 +1182,10 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     assert_eq!(data["back"], back.as_str());
     assert_eq!(data["tz"], "America/New_York", "the plot's time axis");
     assert_eq!(data["chains"].as_array().unwrap().len(), 6);
-    assert!(data["subtitle"].as_str().unwrap().starts_with("departing 02:00 EST–03:00 EST · "), "{data}");
+    assert!(
+        data["subtitle"].as_str().unwrap().starts_with("departing Tue 3 Nov 2026, 02:00 EST–03:00 EST · "),
+        "{data}"
+    );
     // Details aren't in the page: it asks for them by connection. ICE 203 at 10:49 in Berlin.
     assert_eq!(data["details"], Value::Null);
     let details_url = format!("{site}{}?ids=0,1,2,3,4,5", data["details_url"].as_str().unwrap());
@@ -1349,7 +1352,7 @@ async fn nothing_running_is_reported_without_a_plot() {
     let text = &found.text;
     assert!(found.html.is_none(), "plot of nothing");
     // The window is printed in --time-zone.
-    assert!(text.starts_with("Amsel → Zielhafen Hbf, departing 14:00 CET–15:00 CET\n"), "{text}");
+    assert!(text.starts_with("Amsel → Zielhafen Hbf, departing Tue 3 Nov 2026, 14:00 CET–15:00 CET\n"), "{text}");
     assert!(text.ends_with("\n\nNo connection found.\n"), "{text}");
     assert!(!text.contains("fastest") && !text.contains("Data:"), "{text}");
 }

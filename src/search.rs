@@ -15,7 +15,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::enumerate::{self, Chain, Limits, Network, REPORT_EVERY, Step};
 use crate::fallback::{self, Fallbacks};
 use crate::motis::{Motis, Stop};
-use crate::text::{buffer, clock, duration, header, route, timed};
+use crate::text::{buffer, clock, duration, header, route, timed, window};
 use crate::{checked, complete, db, efa, plot, rough, timetable};
 
 /// Upper limit of the options in minutes (`--window`, `--min-transfer`,
@@ -496,9 +496,8 @@ impl Report {
         let mut out = String::new();
         let title = format!("{} → {}", tt.station(tt.origin)?.name, tt.station(tt.destination)?.name);
         let departing = format!(
-            "departing {}–{}{}",
-            clock(time, zone),
-            clock(depart_until, zone),
+            "departing {}{}",
+            window(time, depart_until, zone),
             if args.planned { " · planned times, delays ignored" } else { "" }
         );
         writeln!(out, "{title}, {departing}")?;

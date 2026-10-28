@@ -14,6 +14,19 @@ pub fn clock(t: DateTime<Utc>, zone: Tz) -> String {
     t.with_timezone(&zone).format("%H:%M %Z").to_string()
 }
 
+/// A departure window with its date in `zone`: "Thu 29 Oct 2026, 06:00 CET–08:00 CET",
+/// the end's date too if it falls on another day.
+pub fn window(from: DateTime<Utc>, until: DateTime<Utc>, zone: Tz) -> String {
+    let (a, b) = (from.with_timezone(&zone), until.with_timezone(&zone));
+    // Spaced when the end has its own date, so the dash doesn't read as part of a date.
+    let end = if a.date_naive() == b.date_naive() {
+        format!("–{}", clock(until, zone))
+    } else {
+        format!(" – {}, {}", b.format("%a %-d %b"), clock(until, zone))
+    };
+    format!("{}, {}{end}", a.format("%a %-d %b %Y"), clock(from, zone))
+}
+
 pub fn duration(d: TimeDelta) -> String {
     let m = d.num_minutes();
     let (hours, rest) = (m.checked_div(60).unwrap_or_default(), m.checked_rem(60).unwrap_or_default());
