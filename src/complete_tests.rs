@@ -215,3 +215,27 @@ fn added_stops_take_on_the_trains_delay() {
     let actual = |t: Option<crate::timetable::Time>| t.map(|t| t.actual);
     assert_eq!((actual(jubek.arrival), actual(jubek.departure)), (Some(at("16:28")), Some(at("16:29"))));
 }
+
+#[test]
+fn with_delays_ignored_added_stops_keep_planned_times() {
+    // --planned: Transitous' copy of FLX 1236 is 40 minutes late at Berlin Hbf.
+    let mut tt = flx();
+    tt.ignore_delays();
+    let leg: Leg = serde_json::from_value(json!({
+        "mode": "LONG_DISTANCE",
+        "tripId": "t",
+        "startTime": "2026-10-24T06:58:00Z",
+        "endTime": "2026-10-24T13:21:00Z",
+        "from": { "name": "Frankfurt Süd", "scheduledDeparture": "2026-10-24T06:58:00Z" },
+        "intermediateStops": [{ "name": "Berlin Hbf",
+                                "scheduledArrival": "2026-10-24T11:01:00Z", "arrival": "2026-10-24T11:41:00Z",
+                                "scheduledDeparture": "2026-10-24T11:18:00Z", "departure": "2026-10-24T11:58:00Z" }],
+        "to": { "name": "Hamburg Hbf", "scheduledArrival": "2026-10-24T13:21:00Z" },
+    }))
+    .unwrap();
+    add_stops(&mut tt, 0, &leg).unwrap();
+    let actual: Vec<_> =
+        tt.trips[0].calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().map(|t| t.actual).collect();
+    let planned: Vec<_> = ["06:55", "06:58", "11:01", "11:18", "13:21"].into_iter().map(at).collect();
+    assert_eq!(actual, planned);
+}
