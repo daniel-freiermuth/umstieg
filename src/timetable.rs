@@ -151,7 +151,6 @@ pub struct Station {
     /// Name in the board feed's data (DB's, or Trafikverket's in Sweden), as
     /// used in train routes.
     pub board_name: Option<String>,
-    pub tz: Option<String>,
     pub position: Option<(f64, f64)>,
     /// Transitous (MOTIS) station id, for asking about trains there.
     pub motis_id: Option<String>,
@@ -230,7 +229,6 @@ struct Sighting<'a> {
     eva: Option<&'a str>,
     tv: Option<&'a str>,
     board_name: Option<&'a str>,
-    tz: Option<&'a str>,
     position: Option<(f64, f64)>,
     motis_id: Option<&'a str>,
     /// Seen as a stop of a bus, not a train.
@@ -352,7 +350,6 @@ impl Stations {
                 eva: None,
                 tv: None,
                 board_name: None,
-                tz: None,
                 position: None,
                 motis_id: None,
             });
@@ -373,9 +370,6 @@ impl Stations {
         if station.board_name.is_none() {
             station.board_name = s.board_name.map(str::to_owned);
         }
-        if station.tz.is_none() {
-            station.tz = s.tz.map(str::to_owned);
-        }
         if station.position.is_none() {
             station.position = s.position;
         }
@@ -390,7 +384,6 @@ impl Stations {
 fn sighting<'a>(
     resolved: &'a HashMap<String, db::Station>,
     name: &'a str,
-    tz: Option<&'a str>,
     position: Option<(f64, f64)>,
     motis_id: Option<&'a str>,
 ) -> Sighting<'a> {
@@ -400,7 +393,6 @@ fn sighting<'a>(
         eva: db.map(|s| s.eva.as_str()),
         tv: None,
         board_name: db.map(|s| s.name.as_str()),
-        tz,
         position,
         motis_id,
         bus: false,
@@ -446,9 +438,9 @@ pub async fn build(
     }
 
     let mut stations = Stations::default();
-    let origin_idx = stations.intern(sighting(&resolved, &origin.name, None, origin.position, Some(&origin.id)));
+    let origin_idx = stations.intern(sighting(&resolved, &origin.name, origin.position, Some(&origin.id)));
     let destination_idx =
-        stations.intern(sighting(&resolved, &destination.name, None, destination.position, Some(&destination.id)));
+        stations.intern(sighting(&resolved, &destination.name, destination.position, Some(&destination.id)));
     let mut rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
 
     let mut discovered = Vec::new();
@@ -558,7 +550,7 @@ fn from_motis(
         // Walks at the ends lead from / to the queried place: coordinates
         // (no stop id) stand for our origin or destination, stops for a hub.
         let end_station = |stations: &mut Stations, p: &Place, coordinate: usize| match p.stop_id {
-            Some(_) => stations.intern(sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon), p.station_id())),
+            Some(_) => stations.intern(sighting(resolved, &p.name, p.lat.zip(p.lon), p.station_id())),
             None => coordinate,
         };
         let mut previous_end: Option<usize> = None;
@@ -724,7 +716,7 @@ fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut 
         .map(|(k, p)| Call {
             station: stations.intern(Sighting {
                 bus: !rail,
-                ..sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon), p.station_id().filter(|_| rail))
+                ..sighting(resolved, &p.name, p.lat.zip(p.lon), p.station_id().filter(|_| rail))
             }),
             arrival: if k > 0 { Time::new(p.scheduled_arrival, p.arrival) } else { None },
             departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
@@ -905,7 +897,6 @@ async fn fetch_boards(
                     eva: Some(&station.eva),
                     tv: None,
                     board_name: Some(&station.name),
-                    tz: Some(DB_TIME_ZONE),
                     position: stop.as_ref().and_then(|s| s.position),
                     motis_id: stop.as_ref().map(|s| s.id.as_str()),
                     bus: false,

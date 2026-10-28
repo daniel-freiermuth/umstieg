@@ -37,7 +37,6 @@ fn station(name: &str, board_name: Option<&str>) -> Station {
         eva: None,
         tv: None,
         board_name: board_name.map(str::to_owned),
-        tz: None,
         position: None,
         motis_id: None,
     }
@@ -672,7 +671,6 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         eva: Some("8000115"),
         tv: None,
         board_name: Some("Fulda"),
-        tz: Some("Europe/Berlin"),
         position: Some((50.554, 9.684)),
         motis_id: Some("de-DELFI_de:06631:1234_G"),
         bus: false,
@@ -682,7 +680,6 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         eva: None,
         tv: None,
         board_name: Some("Fulda Bf"),
-        tz: Some("Europe/Paris"),
         position: Some((1.0, 1.0)),
         motis_id: Some("other"),
         bus: false,
@@ -693,14 +690,8 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
     let s = &stations.list[a];
     assert_eq!(stations.list.len(), 2);
     assert_eq!(
-        (s.eva.as_deref(), s.board_name.as_deref(), s.tz.as_deref(), s.position, s.motis_id.as_deref()),
-        (
-            Some("8000115"),
-            Some("Fulda"),
-            Some("Europe/Berlin"),
-            Some((50.554, 9.684)),
-            Some("de-DELFI_de:06631:1234_G")
-        )
+        (s.eva.as_deref(), s.board_name.as_deref(), s.position, s.motis_id.as_deref()),
+        (Some("8000115"), Some("Fulda"), Some((50.554, 9.684)), Some("de-DELFI_de:06631:1234_G"))
     );
 }
 
