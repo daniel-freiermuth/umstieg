@@ -12,8 +12,9 @@ use anyhow::Result;
 use axum::Router;
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
+use chrono::Utc;
 use clap::{ArgAction, CommandFactory, Parser};
 use serde::Serialize;
 use tokio::sync::Semaphore;
@@ -268,7 +269,9 @@ struct Progress {
 
 /// The search's own page, so its link is a permalink: its progress while it
 /// runs, then its plot. A finished search is kept for a while; after that, or
-/// if it failed, the link runs it again (cached answers make that quick).
+/// if it failed, the link runs it again (cached answers make that quick). A
+/// time relative to today (none for now, "HH:MM") is dated first: opened
+/// tomorrow, the link means another search.
 async fn search(
     State(app): State<Arc<App>>,
     RawQuery(raw): RawQuery,
@@ -278,6 +281,9 @@ async fn search(
         Ok(args) => args,
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
+    if let Some(link) = search::dated_at(&args, Utc::now()).and_then(|at| dated_link(&params, &at)) {
+        return Redirect::to(&link).into_response();
+    }
     let key = search_key(&params);
     let mut jobs = lock(&app.jobs);
     let found = jobs.iter().filter(|(_, j)| j.key == key && !matches!(j.result, Some(Err(_)))).map(|(&id, _)| id).max();
@@ -298,6 +304,13 @@ async fn search(
     drop(jobs);
     // The same link shows progress first, the plot later.
     ([(header::CACHE_CONTROL, "no-cache")], Html(page)).into_response()
+}
+
+/// The search's link with `at` in place of whatever time it had.
+fn dated_link(params: &[(String, String)], at: &str) -> Option<String> {
+    let mut link = reqwest::Url::parse("http://umstieg/search").ok()?;
+    link.query_pairs_mut().extend_pairs(params.iter().filter(|(k, _)| k != "at")).append_pair("at", at);
+    Some(format!("/search?{}", link.query()?))
 }
 
 /// The search's values without blanks, in a fixed order.

@@ -653,6 +653,23 @@ fn write_groups(
     Ok(())
 }
 
+/// For `at` relative to `now` (nothing, "HH:MM"): the date and time it stands
+/// for in the search's zone, as "YYYY-MM-DDTHH:MM", so that a link names one
+/// search, not whichever "now" it is opened at. `None` for a dated `at`, or
+/// one that won't parse.
+pub fn dated_at(args: &SearchArgs, now: DateTime<Utc>) -> Option<String> {
+    let at = args.at.as_deref().filter(|a| !a.is_empty());
+    if at.is_some_and(|a| NaiveTime::parse_from_str(a, "%H:%M").is_err()) {
+        return None;
+    }
+    let zone = match args.time_zone {
+        Some(zone) => zone,
+        None => machine_zone().ok()?,
+    };
+    let time = parse_time_in(at, zone, now).ok()?;
+    Some(time.with_timezone(&zone).format("%Y-%m-%dT%H:%M").to_string())
+}
+
 /// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`.
 fn parse_time_in(at: Option<&str>, zone: Tz, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(now) };
