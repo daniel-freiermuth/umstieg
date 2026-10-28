@@ -122,7 +122,10 @@ DB's per-minute limit being waited for, states explored, connections drawn),
 then the plot, whose "← Change search" link returns to the form with the same
 settings. The link is a permalink: opened again, it shows the same search's
 plot while the server keeps it, and runs the search again after that (with the
-same results, schedules unchanged; a failed search always runs again). The plot
+same results, schedules unchanged; a failed search always runs again). A link
+whose time is relative (no `at`: now; `at=HH:MM`: today) leads on to the link
+with that date and time, so opened tomorrow it runs tomorrow's search instead
+of showing today's. The plot
 page carries the drawing; a connection's route and fallbacks are fetched when it
 is shown (a night search can list 190 000 connections). Searches beyond `--parallel` wait their turn: each loads
 Transitous and the DB quota. The last 20 results stay available. There is no
