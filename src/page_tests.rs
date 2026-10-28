@@ -65,3 +65,19 @@ fn real_templates_embed_data_before_their_script() {
         assert_eq!(html.matches(page.script).count(), 1);
     }
 }
+
+#[test]
+fn every_page_gets_the_shared_look_once_and_data_cannot_ask_for_it() {
+    let data = json!({ "name": "<!--__HEAD__--> <!--__BRAND__-->" });
+    for page in [PLOT, FORM, PROGRESS] {
+        let html = page.render(Some(&data)).unwrap();
+        assert_eq!(html.matches(super::THEME).count(), 1);
+        assert_eq!(html.matches("rel=\"icon\"").count(), 1);
+        assert_eq!(html.matches("class=\"brand\"").count(), 1);
+        // The icon is one attribute: no double quote or `#` inside the data URL.
+        let icon = html.split("href=\"data:image/svg+xml,").nth(1).unwrap().split('"').next().unwrap();
+        assert!(icon.starts_with("<svg") && icon.ends_with("</svg>") && !icon.contains('#'), "{icon}");
+        // The data's look-alikes stay data (escaped `<` in JSON).
+        assert!(!html.contains("<!--__HEAD__-->") && !html.contains("<!--__BRAND__-->"));
+    }
+}

@@ -3,47 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='15' fill='%23d97706' /><g fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round'><path d='M10 42 L30 18 M28 50 L52 22' stroke-width='3' opacity='0.35' /><path d='M12 52 L24 36 H38 L52 14' stroke-width='5' /></g><circle cx='24' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /><circle cx='38' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /></svg>"
-    />
     <title>umstieg · search</title>
+    <!--__HEAD__-->
     <style>
-      :root {
-        --bg: #fff;
-        --fg: #1d2129;
-        --muted: #6b7280;
-        --grid: #e5e7eb;
-        --panel: #f8fafc;
-        --accent: #d97706;
-        --warn: #dc2626;
-        --ok: #15803d;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #111418;
-          --fg: #e5e7eb;
-          --muted: #9ca3af;
-          --grid: #2a2f37;
-          --panel: #181c22;
-          --accent: #f59e0b;
-          --warn: #f87171;
-          --ok: #4ade80;
-        }
-      }
-      * {
-        box-sizing: border-box;
-      }
       body {
-        margin: 0;
         min-height: 100vh;
-        font:
-          15px/1.45 system-ui,
-          sans-serif;
-        background:
-          radial-gradient(1200px 500px at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
-          var(--bg);
-        color: var(--fg);
+        font-size: 15px;
       }
       main {
         width: min(520px, 100%);
@@ -55,36 +20,22 @@
         margin-bottom: 22px;
       }
       h1 {
-        font-size: 30px;
-        letter-spacing: -0.02em;
-        margin: 0 0 4px;
+        margin: 0 0 6px;
       }
-      h1 {
-        display: flex;
-        align-items: center;
-        justify-content: center;
+      h1 .brand {
+        font-size: 30px;
         gap: 12px;
       }
-      .logo {
+      h1 .brand svg {
         width: 44px;
         height: 44px;
-        filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent) 35%, transparent));
-      }
-      .word span {
-        color: var(--accent);
       }
       .lead {
         color: var(--muted);
         margin: 0;
       }
       .card {
-        background: var(--panel);
-        border: 1px solid var(--grid);
-        border-radius: 16px;
         padding: 22px 22px 10px;
-        box-shadow:
-          0 1px 2px rgb(0 0 0 / 6%),
-          0 12px 32px rgb(0 0 0 / 8%);
       }
       .field label {
         display: block;
@@ -117,13 +68,6 @@
       .trip input[type="datetime-local"] {
         font-size: 16px;
         padding: 10px 12px;
-      }
-      input:focus,
-      select:focus,
-      button:focus-visible,
-      summary:focus-visible {
-        outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-        outline-offset: 1px;
       }
       input.picked {
         border-color: color-mix(in srgb, var(--ok) 70%, var(--grid));
@@ -321,17 +265,7 @@
   <body>
     <main>
       <header>
-        <h1>
-          <svg class="logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-            <rect width="64" height="64" rx="15" fill="#d97706" />
-            <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M10 42 L30 18 M28 50 L52 22" stroke-width="3" opacity="0.35" />
-              <path d="M12 52 L24 36 H38 L52 14" stroke-width="5" />
-            </g>
-            <circle cx="24" cy="36" r="4.5" fill="#d97706" stroke="#fff" stroke-width="3" />
-            <circle cx="38" cy="36" r="4.5" fill="#d97706" stroke="#fff" stroke-width="3" /></svg
-          ><span class="word">um<span>stieg</span></span>
-        </h1>
+        <h1><!--__BRAND__--></h1>
         <p class="lead">Every connection within your limits, including those journey planners hide.</p>
       </header>
       <div class="card">

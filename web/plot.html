@@ -3,46 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='15' fill='%23d97706' /><g fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round'><path d='M10 42 L30 18 M28 50 L52 22' stroke-width='3' opacity='0.35' /><path d='M12 52 L24 36 H38 L52 14' stroke-width='5' /></g><circle cx='24' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /><circle cx='38' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /></svg>"
-    />
     <title>umstieg</title>
+    <!--__HEAD__-->
     <style>
-      :root {
-        --bg: #fff;
-        --fg: #1d2129;
-        --muted: #6b7280;
-        --grid: #e5e7eb;
-        --wait: #9ca3af;
-        --panel: #f8fafc;
-        --accent: #d97706;
-        --warn: #dc2626;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #111418;
-          --fg: #e5e7eb;
-          --muted: #9ca3af;
-          --grid: #2a2f37;
-          --wait: #6b7280;
-          --panel: #181c22;
-          --accent: #f59e0b;
-          --warn: #f87171;
-        }
-      }
-      * {
-        box-sizing: border-box;
-      }
       body {
-        margin: 0;
-        font:
-          13px/1.4 system-ui,
-          sans-serif;
-        background: var(--bg);
-        color: var(--fg);
+        font-size: 13px;
+        line-height: 1.4;
         display: grid;
-        grid-template-columns: 1fr 320px;
+        grid-template-columns: 1fr 340px;
         grid-template-rows: auto 1fr;
         height: 100vh;
       }
@@ -51,13 +19,24 @@
         padding: 10px 16px;
         border-bottom: 1px solid var(--grid);
         display: flex;
-        gap: 16px;
-        justify-content: space-between;
-        align-items: flex-start;
+        gap: 18px;
+        align-items: center;
+        background: color-mix(in srgb, var(--panel) 70%, transparent);
+        backdrop-filter: blur(6px);
+      }
+      header .brand {
+        padding-right: 18px;
+        border-right: 1px solid var(--grid);
+        align-self: stretch;
+      }
+      .titles {
+        flex: 1;
+        min-width: 0;
       }
       header h1 {
         font-size: 16px;
         margin: 0;
+        letter-spacing: -0.01em;
       }
       header p {
         margin: 2px 0 0;
@@ -70,22 +49,14 @@
         flex-shrink: 0;
       }
       .controls label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         color: var(--muted);
-      }
-      .controls button,
-      .controls select,
-      .controls a {
-        font: inherit;
-        padding: 3px 10px;
-        border-radius: 4px;
-        border: 1px solid var(--grid);
-        background: var(--panel);
-        color: var(--fg);
-        cursor: pointer;
-        text-decoration: none;
       }
       #plot {
         position: relative;
+        background: var(--bg);
         overflow: hidden;
         cursor: grab;
         user-select: none;
@@ -99,13 +70,22 @@
         border-left: 1px solid var(--grid);
         background: var(--panel);
         overflow: auto;
-        padding: 10px 12px;
+        padding: 12px 14px;
       }
       aside h2 {
-        font-size: 13px;
-        margin: 10px 0 6px;
-        color: var(--muted);
+        font-size: 11px;
         font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 18px 0 8px;
+        padding-top: 14px;
+        border-top: 1px solid var(--grid);
+      }
+      aside h2:first-of-type {
+        margin-top: 4px;
+        padding-top: 0;
+        border-top: 0;
       }
       .group {
         display: flex;
@@ -136,10 +116,11 @@
         display: flex;
         gap: 6px;
         align-items: baseline;
-        padding: 3px 6px;
-        margin-bottom: 3px;
-        border-radius: 4px;
-        background: var(--grid);
+        padding: 4px 8px;
+        margin-bottom: 4px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--grid));
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg));
         font-size: 12px;
         cursor: pointer;
       }
@@ -160,12 +141,12 @@
         pointer-events: none;
         background: var(--panel);
         border: 1px solid var(--grid);
-        border-radius: 6px;
-        padding: 6px 8px;
+        border-radius: 10px;
+        padding: 8px 10px;
         max-width: 560px;
         font-size: 12px;
         display: none;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        box-shadow: var(--shadow);
       }
       #tip b {
         display: block;
@@ -301,12 +282,6 @@
         display: block;
         margin-bottom: 6px;
       }
-      kbd {
-        font: 11px monospace;
-        border: 1px solid var(--grid);
-        border-radius: 3px;
-        padding: 0 3px;
-      }
       /* Phones: the plot over the lists, the page scrolls. */
       @media (max-width: 760px) {
         body {
@@ -316,11 +291,21 @@
         }
         header {
           grid-column: 1;
-          flex-direction: column;
-          gap: 8px;
+          flex-wrap: wrap;
+          gap: 8px 14px;
+        }
+        header .brand {
+          border-right: 0;
+          padding-right: 0;
+        }
+        .titles {
+          flex-basis: 100%;
+          order: 1;
         }
         .controls {
           flex-wrap: wrap;
+          flex-basis: 100%;
+          order: 2;
         }
         aside {
           border-left: 0;
@@ -332,17 +317,18 @@
   </head>
   <body>
     <header>
-      <div>
+      <!--__BRAND__-->
+      <div class="titles">
         <h1 id="title"></h1>
         <p id="subtitle"></p>
       </div>
       <div class="controls">
-        <a id="new-search" hidden>← Change search</a>
+        <a id="new-search" class="btn" hidden>← Change search</a>
         <label
           >Height
           <select id="metric"></select
         ></label>
-        <button id="reset" title="Or double-click the plot">Reset zoom</button>
+        <button id="reset" class="btn" title="Or double-click the plot">Reset zoom</button>
       </div>
     </header>
     <div id="plot"><div id="tip"></div></div>

@@ -15,6 +15,7 @@ const { status: statusUrl } = decodeProgress(parseJson(byId("data", HTMLScriptEl
 async function poll(): Promise<void> {
   const response = await fetch(statusUrl);
   if (!response.ok) {
+    document.body.classList.add("over");
     title.textContent = "Search not found";
     return;
   }
@@ -32,6 +33,7 @@ async function poll(): Promise<void> {
     location.reload();
     return;
   }
+  document.body.classList.add("over");
   title.textContent = "No plot";
   const error = Object.assign(document.createElement("pre"), { className: "error", textContent: then.error });
   log.after(error);

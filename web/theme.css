@@ -1,0 +1,126 @@
+/* Shared by every page (see src/page.rs): colours, type, the brand and controls. */
+:root {
+  --bg: #fff;
+  --fg: #1d2129;
+  --muted: #6b7280;
+  --grid: #e5e7eb;
+  --wait: #9ca3af;
+  --panel: #f8fafc;
+  --accent: #d97706;
+  --warn: #dc2626;
+  --ok: #15803d;
+  --glow: color-mix(in srgb, var(--accent) 14%, transparent);
+  --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 12px 32px rgb(0 0 0 / 8%);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418;
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --grid: #2a2f37;
+    --wait: #6b7280;
+    --panel: #181c22;
+    --accent: #f59e0b;
+    --warn: #f87171;
+    --ok: #4ade80;
+    --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 35%);
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font:
+    14px/1.45 system-ui,
+    sans-serif;
+  background: radial-gradient(1200px 500px at 50% -10%, var(--glow), transparent), var(--bg);
+  background-repeat: no-repeat;
+  color: var(--fg);
+}
+a {
+  color: var(--accent);
+}
+
+/* The logo and wordmark, linking to a new search. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.brand svg {
+  width: 28px;
+  height: 28px;
+  filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--accent) 35%, transparent));
+}
+.brand .word > span {
+  color: var(--accent);
+}
+
+/* A raised panel. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+/* Buttons and button-like links; `.primary` is the main action. */
+.btn,
+select {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--grid);
+  background: var(--panel);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn.primary {
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.primary:hover {
+  filter: brightness(1.08);
+  color: #fff;
+}
+input:focus,
+select:focus,
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+kbd {
+  font: 11px monospace;
+  border: 1px solid var(--grid);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  background: var(--bg);
+}
+/* Small capitals over a section, like the form's field labels. */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
