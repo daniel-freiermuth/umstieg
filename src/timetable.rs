@@ -153,6 +153,8 @@ pub struct Timetable {
     pub footpaths: Vec<Footpath>,
     pub origin: usize,
     pub destination: usize,
+    /// Set by `ignore_delays`: stops added later keep planned times too.
+    pub delays_ignored: bool,
 }
 
 impl Timetable {
@@ -179,11 +181,16 @@ impl Timetable {
     /// Planned times everywhere: delays are dropped, while the latest schedule
     /// (cancellations, diversions, extra trains from DB's changes) stays.
     pub fn ignore_delays(&mut self) {
-        for call in self.trips.iter_mut().flat_map(|t| t.calls.iter_mut()) {
-            for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
-                time.actual = time.planned;
-            }
+        for trip in &mut self.trips {
+            drop_delays(&mut trip.calls);
         }
+        self.delays_ignored = true;
+    }
+}
+
+fn drop_delays(calls: &mut [Call]) {
+    for time in calls.iter_mut().flat_map(|c| [&mut c.arrival, &mut c.departure]).flatten() {
+        time.actual = time.planned;
     }
 }
 
@@ -402,6 +409,7 @@ pub async fn build(
             trips: finish(trips),
             origin: origin_idx,
             destination: destination_idx,
+            delays_ignored: false,
         },
         discovered,
         warnings,
@@ -681,8 +689,13 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
         }
     }
     trip.calls = all.into_iter().map(|(_, c)| c).collect();
-    // The added stops' times follow DB's delays the same way as every train's.
-    propagate_delays(&mut trip.calls);
+    // The added stops' times follow DB's delays the same way as every train's,
+    // or none at all: Transitous' live times are delays too.
+    if tt.delays_ignored {
+        drop_delays(&mut trip.calls);
+    } else {
+        propagate_delays(&mut trip.calls);
+    }
     Some(remap)
 }
 

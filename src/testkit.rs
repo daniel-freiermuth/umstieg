@@ -111,7 +111,14 @@ impl Builder {
 
     pub fn build(mut self, origin: &str, destination: &str) -> Timetable {
         let (origin, destination) = (self.station(origin), self.station(destination));
-        Timetable { stations: self.stations, trips: self.trips, footpaths: self.footpaths, origin, destination }
+        Timetable {
+            stations: self.stations,
+            trips: self.trips,
+            footpaths: self.footpaths,
+            origin,
+            destination,
+            delays_ignored: false,
+        }
     }
 }
 
