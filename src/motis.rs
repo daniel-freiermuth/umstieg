@@ -253,6 +253,13 @@ impl Motis {
     /// "Hauptbahnhof"), so station words are also tried spelled differently,
     /// and stops with trains are preferred, then stations by name over bus stops.
     pub async fn stop(&self, text: &str) -> Result<Stop> {
+        let (stop, queries) = self.find_stop(text).await?;
+        stop.with_context(|| format!("no stop named like {text:?} found (tried: {})", queries.join(", ")))
+    }
+
+    /// [`Motis::stop`], with `None` (and the queries tried) when no stop fits:
+    /// errors are only failures to ask.
+    pub async fn find_stop(&self, text: &str) -> Result<(Option<Stop>, [String; 4])> {
         const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
         let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
         let (folded, plain) = (fold(text), unaccented(text));
@@ -279,10 +286,10 @@ impl Motis {
                 (!m.has_trains(), !fold(&m.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c"))
             });
             if let Some(m) = fitting.into_iter().next() {
-                return Ok(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name });
+                return Ok((Some(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name }), queries));
             }
         }
-        bail!("no stop named like {text:?} found (tried: {})", queries.join(", "))
+        Ok((None, queries))
     }
 
     /// Stops matching `text` for the form to pick from: stops with trains

@@ -687,14 +687,19 @@ async fn fetch_boards(
     between.truncate(MAX_DISCOVERED);
 
     // DB station plus position and id from MOTIS, so feeds naming it differently
-    // unify, and trains there can be looked up.
+    // unify, and trains there can be looked up. A stop MOTIS lacks is no error;
+    // failing to ask is, as the station then has no position or id.
     let lookups = between.iter().map(|(name, _)| async move {
         let station = db.resolve(name, None).await;
-        let stop = motis.stop(name).await.ok().filter(|s| db::same_place(&s.name, name));
+        let stop = motis.find_stop(name).await.map(|(stop, _)| stop.filter(|s| db::same_place(&s.name, name)));
         (station, stop)
     });
     let mut wanted = Vec::new();
     for ((name, (_, lo, hi)), (result, stop)) in between.iter().zip(join_all(lookups).await) {
+        let stop = stop.unwrap_or_else(|e| {
+            warnings.push(format!("MOTIS stop lookup for {name}: {e:#}"));
+            None
+        });
         match result {
             Ok(Some(station)) => {
                 let idx = stations.intern(Sighting {

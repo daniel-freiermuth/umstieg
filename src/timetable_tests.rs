@@ -1202,33 +1202,55 @@ fn feed_trains_sharing_a_number_but_no_time_stay_apart() {
 
 // ---------------------------------------------------------------- DB boards
 
-#[tokio::test]
-async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
+/// `fetch_boards` from Westend and Osthafen against a fake DB and MOTIS whose
+/// geocoder answers `geocode`; DB trains run via `middle`. `evas` are
+/// Westend's, `middle`'s and Osthafen's: each test uses its own, as DB
+/// answers are cached across tests. Discovered names, warnings, stations,
+/// boards and the paths asked for.
+async fn discover_between_westend_and_osthafen(
+    geocode: axum::http::StatusCode,
+    middle: &'static str,
+    evas: [&'static str; 3],
+) -> (Vec<String>, Vec<String>, Stations, Boards, Vec<String>) {
     use std::sync::{Arc, Mutex};
 
     use axum::extract::{Request, State};
+    use axum::http::StatusCode;
 
-    // ICE 1 leaves Westend at 08:00 UTC via Mittelfeld (not in the corridor)
+    #[derive(Clone)]
+    struct Fake {
+        log: Arc<Mutex<Vec<String>>>,
+        geocode: StatusCode,
+        middle: &'static str,
+        evas: [&'static str; 3],
+    }
+    // ICE 1 leaves Westend at 08:00 UTC via `middle` (not in the corridor)
     // for Osthafen, arriving 12:00; ICE 2 arrives at Osthafen at 09:00.
-    async fn answer(State(log): State<Arc<Mutex<Vec<String>>>>, request: Request) -> String {
+    async fn answer(State(fake): State<Fake>, request: Request) -> (StatusCode, String) {
         let path = request.uri().path().to_owned();
-        log.lock().unwrap().push(path.clone());
-        let body = if path.starts_with("/plan/8099701/") {
-            r#"<s id="1001-2610241000-1"><tl f="F" t="p" o="80" c="ICE" n="1"/><dp pt="2610241000" ppth="Mittelfeld|Osthafen"/></s>"#
-        } else if path.starts_with("/plan/8099703/") {
-            r#"<s id="2002-2610241030-4"><tl f="F" t="p" o="80" c="ICE" n="2"/><ar pt="2610241100" ppth="Westend"/></s>
-<s id="1001-2610241000-3"><tl f="F" t="p" o="80" c="ICE" n="1"/><ar pt="2610241400" ppth="Westend|Mittelfeld"/></s>"#
+        fake.log.lock().unwrap().push(path.clone());
+        let (middle, [west, eva, east]) = (fake.middle, fake.evas);
+        let body = if path.starts_with(&format!("/plan/{west}/")) {
+            format!(
+                r#"<s id="1001-2610241000-1"><tl f="F" t="p" o="80" c="ICE" n="1"/><dp pt="2610241000" ppth="{middle}|Osthafen"/></s>"#
+            )
+        } else if path.starts_with(&format!("/plan/{east}/")) {
+            format!(
+                r#"<s id="2002-2610241030-4"><tl f="F" t="p" o="80" c="ICE" n="2"/><ar pt="2610241100" ppth="Westend"/></s>
+<s id="1001-2610241000-3"><tl f="F" t="p" o="80" c="ICE" n="1"/><ar pt="2610241400" ppth="Westend|{middle}"/></s>"#
+            )
         } else if path.starts_with("/station/") {
-            r#"<station p="" meta="" name="Mittelfeld" eva="8099702" ds100="X" db="true"/>"#
+            format!(r#"<station p="" meta="" name="{middle}" eva="{eva}" ds100="X" db="true"/>"#)
         } else if path == "/api/v1/geocode" {
-            return "[]".to_owned();
+            return (fake.geocode, "[]".to_owned());
         } else {
-            ""
+            String::new()
         };
-        format!("<timetable>{body}</timetable>")
+        (StatusCode::OK, format!("<timetable>{body}</timetable>"))
     }
     let log = Arc::new(Mutex::new(Vec::new()));
-    let base = crate::testkit::serve(axum::Router::new().fallback(answer).with_state(log.clone())).await;
+    let fake = Fake { log: log.clone(), geocode, middle, evas };
+    let base = crate::testkit::serve(axum::Router::new().fallback(answer).with_state(fake)).await;
     let motis = crate::motis::Motis::new(&base, "umstieg-test").unwrap();
     let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
     let db = crate::db::Db::new(&base, credentials, "umstieg-test").unwrap();
@@ -1236,10 +1258,23 @@ async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
     let mut stations = Stations::default();
     let mut db_station =
         |name, eva| stations.intern(Sighting { name, eva: Some(eva), db_name: Some(name), ..Sighting::default() });
-    let (westend, osthafen) = (db_station("Westend", "8099701"), db_station("Osthafen", "8099703"));
+    let (westend, osthafen) = (db_station("Westend", evas[0]), db_station("Osthafen", evas[2]));
     let corridor = HashMap::from([(westend, (at("08:00"), at("08:00"))), (osthafen, (at("12:00"), at("12:00")))]);
     let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
     let boards = super::fetch_boards(&motis, &db, &mut stations, &corridor, &mut discovered, &mut warnings).await;
+    let asked = log.lock().unwrap().clone();
+    (discovered, warnings, stations, boards, asked)
+}
+
+#[tokio::test]
+async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
+    // MOTIS knows no Mittelfeld: no position, but nothing to warn about.
+    let (discovered, warnings, stations, boards, log) = discover_between_westend_and_osthafen(
+        axum::http::StatusCode::OK,
+        "Mittelfeld",
+        ["8099701", "8099702", "8099703"],
+    )
+    .await;
 
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(discovered, ["Mittelfeld"]);
@@ -1247,7 +1282,26 @@ async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
     assert!(boards.contains_key(&mittelfeld));
     // From 30 minutes before ICE 1 leaves Westend to 30 after it reaches Osthafen, in Berlin hours.
     let mut asked: Vec<String> =
-        log.lock().unwrap().iter().filter_map(|p| p.strip_prefix("/plan/8099702/261024/").map(str::to_owned)).collect();
+        log.iter().filter_map(|p| p.strip_prefix("/plan/8099702/261024/").map(str::to_owned)).collect();
     asked.sort();
     assert_eq!(asked, ["09", "10", "11", "12", "13", "14"]);
+}
+
+#[tokio::test]
+async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
+    let (discovered, warnings, stations, boards, _) = discover_between_westend_and_osthafen(
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "Mittelberg",
+        ["8099711", "8099712", "8099713"],
+    )
+    .await;
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("MOTIS stop lookup for Mittelberg: GET "), "{warnings:?}");
+    assert!(warnings[0].ends_with("500 Internal Server Error"), "{warnings:?}");
+    // The station is still used, from DB alone.
+    assert_eq!(discovered, ["Mittelberg"]);
+    let mittelberg = index_of(&stations, "Mittelberg");
+    assert!(boards.contains_key(&mittelberg));
+    assert_eq!(stations.list[mittelberg].position, None);
 }
