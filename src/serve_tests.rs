@@ -428,6 +428,49 @@ async fn a_search_link_finds_its_search_again_and_shows_its_plot_once_done() {
 }
 
 #[tokio::test]
+async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search() {
+    let app = app("http://127.0.0.1:9");
+    let key = |query: &str| {
+        super::search_key(&params(&query.split('&').map(|kv| kv.split_once('=').unwrap()).collect::<Vec<_>>()))
+    };
+    // The same links opened days ago: "now" and "08:00 today" were then.
+    let zone = "time_zone=Europe/Berlin";
+    for (id, query) in [(1, format!("from=A&to=C&{zone}")), (2, format!("from=A&to=C&{zone}&at=08:00"))] {
+        let mut old = job(Some(Ok("<html>old plot</html>")));
+        old.key = key(&query);
+        lock(&app.jobs).insert(id, old);
+    }
+    let today = || chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
+    let link_at = |location: &str| {
+        let url = reqwest::Url::parse(&format!("http://umstieg{location}")).unwrap();
+        let pairs: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let at = pairs.iter().find(|(k, _)| k == "at").map(|(_, v)| v.clone()).unwrap_or_default();
+        (url.path().to_owned(), pairs.into_iter().filter(|(k, _)| k != "at").collect::<Vec<_>>(), at)
+    };
+    let same = params(&[("from", "A"), ("to", "C"), ("time_zone", "Europe/Berlin")]);
+
+    // No time is now: the search's own link has today's date and time.
+    let before = today();
+    let (code, headers, page) = get_page(&app, &format!("/search?from=A&to=C&{zone}")).await;
+    let after = today();
+    assert_ne!(page, "<html>old plot</html>", "an old search's plot for \"now\"");
+    assert_eq!(code, StatusCode::SEE_OTHER);
+    let (path, rest, at) = link_at(&headers[header::LOCATION.as_str()]);
+    assert_eq!((path.as_str(), &rest), ("/search", &same));
+    let minute = |t: chrono::DateTime<chrono_tz::Tz>| t.format("%Y-%m-%dT%H:%M").to_string();
+    assert!([minute(before), minute(after)].contains(&at), "{at} is not now");
+
+    // "HH:MM" is today.
+    let (code, headers, page) = get_page(&app, &format!("/search?from=A&to=C&{zone}&at=08:00")).await;
+    assert_ne!(page, "<html>old plot</html>", "an old search's plot for \"08:00 today\"");
+    assert_eq!(code, StatusCode::SEE_OTHER);
+    let (path, rest, at) = link_at(&headers[header::LOCATION.as_str()]);
+    assert_eq!((path.as_str(), &rest), ("/search", &same));
+    assert_eq!(at, format!("{}T08:00", today().date_naive()));
+    assert_eq!(lock(&app.jobs).len(), 2, "the dated link starts the search, not this one");
+}
+
+#[tokio::test]
 async fn connection_details_are_handed_out_by_index() {
     let app = app("http://127.0.0.1:9");
     lock(&app.jobs).insert(1, job(None));
