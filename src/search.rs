@@ -466,7 +466,6 @@ struct Report {
 impl Report {
     /// Writes the report of the enumerated connections, sending the stages
     /// that follow, and progress, to `updates`.
-    #[expect(clippy::too_many_lines, reason = "the report, section after section")]
     fn write(self, updates: &UnboundedSender<Update>) -> Result<Outcome> {
         let Self {
             args,
@@ -519,49 +518,11 @@ impl Report {
             writeln!(out, "\nNo connection found.")?;
             return Ok(Outcome { text: out, plot: None });
         };
-        let completeness = match result.complete_up_to {
-            Some(n) if n >= limits.max_changes => String::new(),
-            Some(n) => format!(", complete up to {n} changes; raise --max-nodes for more"),
-            None => ", incomplete even without changes; raise --max-nodes".to_owned(),
-        };
-        let summary = format!(
-            "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups{}",
-            duration(fastest),
-            duration(checked::sum(fastest, limits.extra_time)),
-            limits.max_changes,
-            total,
-            groups.len(),
-            if missed > 0 {
-                format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by))
-            } else {
-                String::new()
-            },
-        );
+        let (summary, completeness) = summarize(fastest, result.complete_up_to, &limits, total, groups.len(), missed);
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 
         let mut fallbacks = Fallbacks::new(&net, min_transfer, zone);
-        for group in &groups {
-            writeln!(
-                out,
-                "■ {} … {}  ({})",
-                tt.trip(group.first)?.label,
-                tt.trip(group.last)?.label,
-                group.chains.len()
-            )?;
-            let shown = if args.per_group == 0 { group.chains.len() } else { args.per_group };
-            for chain in group.chains.iter().take(shown) {
-                if args.detail {
-                    write_detail(&mut out, tt, chain, &mut fallbacks, min_transfer, zone)?;
-                } else {
-                    let route = route(tt, chain, min_transfer, &HashSet::new(), zone)?;
-                    writeln!(out, "  {}   {route}", header(tt, chain, min_transfer, zone)?)?;
-                }
-            }
-            if group.chains.len() > shown {
-                writeln!(out, "    … {} more", group.chains.len().saturating_sub(shown))?;
-            }
-            writeln!(out)?;
-        }
+        write_groups(&mut out, tt, &groups, &args, &mut fallbacks, min_transfer, zone)?;
         let times = if args.planned { "planned times" } else { "live data where available" };
         writeln!(out, "Data: Transitous, https://transitous.org/sources/ — {times}.")?;
         if with_db {
@@ -592,6 +553,66 @@ impl Report {
         };
         Ok(Outcome { text: out, plot: rendered })
     }
+}
+
+/// The summary line, and how complete the enumeration is (", complete up to
+/// 2 changes; raise --max-nodes for more", or nothing when it is).
+fn summarize(
+    fastest: TimeDelta,
+    complete_up_to: Option<usize>,
+    limits: &Limits,
+    total: usize,
+    groups: usize,
+    missed: usize,
+) -> (String, String) {
+    let completeness = match complete_up_to {
+        Some(n) if n >= limits.max_changes => String::new(),
+        Some(n) => format!(", complete up to {n} changes; raise --max-nodes for more"),
+        None => ", incomplete even without changes; raise --max-nodes".to_owned(),
+    };
+    let summary = format!(
+        "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups{}",
+        duration(fastest),
+        duration(checked::sum(fastest, limits.extra_time)),
+        limits.max_changes,
+        total,
+        groups,
+        if missed > 0 {
+            format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by))
+        } else {
+            String::new()
+        },
+    );
+    (summary, completeness)
+}
+
+/// Each group, with its first `--per-group` connections, in detail or one line each.
+fn write_groups(
+    out: &mut String,
+    tt: &timetable::Timetable,
+    groups: &[enumerate::Group],
+    args: &SearchArgs,
+    fallbacks: &mut Fallbacks<'_>,
+    min_transfer: TimeDelta,
+    zone: Tz,
+) -> Result<()> {
+    for group in groups {
+        writeln!(out, "■ {} … {}  ({})", tt.trip(group.first)?.label, tt.trip(group.last)?.label, group.chains.len())?;
+        let shown = if args.per_group == 0 { group.chains.len() } else { args.per_group };
+        for chain in group.chains.iter().take(shown) {
+            if args.detail {
+                write_detail(out, tt, chain, fallbacks, min_transfer, zone)?;
+            } else {
+                let route = route(tt, chain, min_transfer, &HashSet::new(), zone)?;
+                writeln!(out, "  {}   {route}", header(tt, chain, min_transfer, zone)?)?;
+            }
+        }
+        if group.chains.len() > shown {
+            writeln!(out, "    … {} more", group.chains.len().saturating_sub(shown))?;
+        }
+        writeln!(out)?;
+    }
+    Ok(())
 }
 
 /// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`.
