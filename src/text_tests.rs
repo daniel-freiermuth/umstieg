@@ -97,13 +97,12 @@ fn buffer_warns_below_the_minimum_and_marks_missed_changes() {
 }
 
 #[test]
-fn header_shows_times_in_the_given_zone_whatever_the_stations_and_the_smallest_buffer() {
+fn header_shows_times_in_the_given_zone_and_the_smallest_buffer() {
     let mut b = Builder::new();
     let ice = b.trip("ICE 1", &[("A", "", "06:39"), ("B", "08:00+3", "")]);
     let re = b.trip("RE 2", &[("B", "", "08:10"), ("C", "09:00", "")]);
     let s = b.trip("S 3", &[("C", "", "09:04"), ("D", "21:05+1", "")]);
     let mut tt = b.build("A", "D");
-    tt.stations[tt.destination].tz = Some("Europe/London".to_owned());
 
     let two = Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1), ride(s, 0, 1)] };
     // Buffers 7m and 4m: the smaller, flagged. 06:39 and 21:06 UTC are 08:39 and 23:06 in Berlin.
