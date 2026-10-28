@@ -125,22 +125,7 @@ fn remaining_ride_minutes(tt: &Timetable) -> Result<Vec<Option<i32>>> {
     for fp in &tt.footpaths {
         connect(fp.from, fp.to, fp.duration.num_minutes().max(0))?;
     }
-    let mut best: Vec<Option<i64>> = vec![None; tt.stations.len()];
-    let mut heap = std::collections::BinaryHeap::new();
-    *best.get_mut(tt.destination).context("no destination station")? = Some(0);
-    heap.push(std::cmp::Reverse((0_i64, tt.destination)));
-    while let Some(std::cmp::Reverse((d, s))) = heap.pop() {
-        if best.get(s).copied().flatten().is_some_and(|b| d > b) {
-            continue;
-        }
-        for &(next, w) in edges.get(s).into_iter().flatten() {
-            let nd = d.saturating_add(w);
-            if let Some(slot) = best.get_mut(next).filter(|b| b.is_none_or(|b| nd < b)) {
-                *slot = Some(nd);
-                heap.push(std::cmp::Reverse((nd, next)));
-            }
-        }
-    }
+    let best = enumerate::shortest_paths(&edges, tt.destination, 0_i64, i64::saturating_add)?;
     Ok(best.into_iter().map(|b| b.map(|m| i32::try_from(m).unwrap_or(i32::MAX))).collect())
 }
 
