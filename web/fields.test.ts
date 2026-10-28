@@ -3,7 +3,7 @@ import { parseJson } from "./decode";
 import {
   type Field,
   type Kind,
-  advancedOpen,
+  changed,
   decodeSpec,
   given,
   initial,
@@ -119,7 +119,7 @@ test("wallTime: the time in the zone, padded, midnight as 00", () => {
   expect(wallTime(new Date(Date.UTC(2026, 11, 31, 23, 59)), "UTC")).toBe("2026-12-31T23:59");
 });
 
-test("sections: the trip in its own order, then limits and advanced in spec order", () => {
+test("sections: the trip in its own order, zone and via apart, then options and advanced in spec order", () => {
   const fields = [
     f("max_changes", "number"),
     f("via", "stations"),
@@ -134,28 +134,33 @@ test("sections: the trip in its own order, then limits and advanced in spec orde
   ];
   const s = sections(fields);
   const names = (xs: Field[]): string[] => xs.map((x) => x.name);
-  expect(names(s.trip)).toEqual(["from", "to", "at", "time_zone", "window", "via"]);
-  expect(names(s.limits)).toEqual(["max_changes", "metric"]);
+  expect(names(s.trip)).toEqual(["from", "to", "at"]);
+  expect([s.zone?.name, s.via?.name]).toEqual(["time_zone", "via"]);
+  expect(names(s.options)).toEqual(["max_changes", "window", "metric"]);
   expect(names(s.advanced)).toEqual(["parallel", "verbose"]);
 });
 
 test("sections: a trip field given twice is shown once, the first", () => {
   const s = sections([f("from", "station", "A"), f("from", "station", "B")]);
   expect(s.trip.map((x) => x.default)).toEqual(["A"]);
-  expect([...s.limits, ...s.advanced]).toEqual([]);
+  expect([...s.options, ...s.advanced]).toEqual([]);
+  expect([s.zone, s.via]).toEqual([undefined, undefined]);
 });
 
-describe("advancedOpen", () => {
-  const fields = [f("parallel", "number", "2", true), f("max_changes", "number", "3")];
-  const cases: [string, Record<string, string>, boolean][] = [
-    ["nothing given", {}, false],
-    ["advanced at its default", { parallel: "2" }, false],
-    ["advanced changed", { parallel: "4" }, true],
-    ["only a plain field changed", { max_changes: "5" }, false],
+describe("changed", () => {
+  const fields = [f("parallel", "number", "2", true), f("max_changes", "number", "3"), f("planned", "flag", "false")];
+  const cases: [string, Record<string, string>, number][] = [
+    ["nothing given", {}, 0],
+    ["at the defaults", { parallel: "2", max_changes: "3" }, 0],
+    ["one changed", { parallel: "4", max_changes: "3" }, 1],
+    ["a flag set", { planned: "on" }, 1],
+    ["blank is the default", { parallel: "" }, 0],
+    ["other fields don't count", { metric: "changes", constructor: "x" }, 0],
+    ["all changed", { parallel: "4", max_changes: "5", planned: "on" }, 3],
   ];
   for (const [name, values, expected] of cases)
     test(name, () => {
-      expect(advancedOpen(fields, values)).toBe(expected);
+      expect(changed(fields, values)).toBe(expected);
     });
 });
 

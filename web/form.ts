@@ -1,12 +1,12 @@
 // Search form of `umstieg serve`, built from the field descriptions the server
-// derives from the command-line options.
+// derives from the command-line options: the trip up front, the rest folded.
 
 import { parseJson } from "./decode";
 import { byId } from "./dom";
 import {
   type Field,
   type Stop,
-  advancedOpen,
+  changed,
   decodeSpec,
   decodeStops,
   initial,
@@ -24,6 +24,11 @@ const form = byId("form", HTMLFormElement);
 if (SPEC.error !== null) Object.assign(byId("error", HTMLDivElement), { textContent: SPEC.error, hidden: false });
 
 const NOT_PICKED = "Choose a station from the suggestions";
+
+const element = <K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  props: Partial<HTMLElementTagNameMap[K]> = {},
+): HTMLElementTagNameMap[K] => Object.assign(document.createElement(tag), props);
 
 /** Every station suggested so far, by name: typing or choosing a name exactly picks it. */
 const known = new Map<string, string>();
@@ -47,8 +52,8 @@ const pickedNow = (text: string): Stop | null => {
  */
 let lists = 0;
 function stationText(id: string, typed: (stop: Stop | null) => void): HTMLInputElement {
-  const input = Object.assign(document.createElement("input"), { type: "text", id, autocomplete: "off" });
-  const list = Object.assign(document.createElement("datalist"), { id: `stops-${String(lists++)}` });
+  const input = element("input", { type: "text", id, autocomplete: "off" });
+  const list = element("datalist", { id: `stops-${String(lists++)}` });
   input.setAttribute("list", list.id);
   document.body.append(list);
   let timer: number | undefined;
@@ -68,24 +73,29 @@ function stationText(id: string, typed: (stop: Stop | null) => void): HTMLInputE
   return input;
 }
 
-const hidden = (name: string): HTMLInputElement =>
-  Object.assign(document.createElement("input"), { type: "hidden", name });
+const hidden = (name: string): HTMLInputElement => element("input", { type: "hidden", name });
+
+interface StationField {
+  box: HTMLElement;
+  input: HTMLInputElement;
+  /** Shows whether the text names a picked station, after it was set from outside. */
+  refresh: () => void;
+}
 
 /** Origin or destination: required, and only a picked station counts. */
-function stationField(f: Field, id: string): HTMLElement {
-  const box = Object.assign(document.createElement("div"), { className: "station" });
+function stationField(f: Field, id: string): StationField {
+  const box = element("div", { className: "station" });
   const stationId = hidden(`${f.name}_id`);
-  const status = Object.assign(document.createElement("div"), { className: "status" });
+  const status = element("div", { className: "status" });
   const show = (stop: Stop | null): void => {
     stationId.value = stop?.id ?? "";
     input.classList.toggle("picked", stop !== null);
     const blank = input.value.trim() === "";
     input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
-    status.textContent = stop !== null ? "✓ found" : blank ? "" : NOT_PICKED;
-    status.classList.toggle("todo", stop === null && !blank);
+    status.textContent = stop !== null || blank ? "" : NOT_PICKED;
   };
   const input = stationText(id, show);
-  Object.assign(input, { name: f.name, required: true });
+  Object.assign(input, { name: f.name, required: true, placeholder: "Station" });
   box.append(input, stationId, status);
   const [given] = picked(SPEC.values, f.name);
   if (given !== undefined) known.set(given.name, given.id);
@@ -97,13 +107,19 @@ function stationField(f: Field, id: string): HTMLElement {
     void lookup(q).then(() => {
       show(pickedNow(input.value));
     });
-  return box;
+  return {
+    box,
+    input,
+    refresh: () => {
+      show(pickedNow(input.value));
+    },
+  };
 }
 
 /** Stations to route through: each picked one becomes a removable chip. */
 function viaField(f: Field, id: string): HTMLElement {
-  const box = Object.assign(document.createElement("div"), { className: "station" });
-  const chips = Object.assign(document.createElement("div"), { className: "chips" });
+  const box = element("div", { className: "station" });
+  const chips = element("div", { className: "chips" });
   const names = hidden(f.name);
   const ids = hidden(`${f.name}_id`);
   const stops: Stop[] = [...picked(SPEC.values, f.name)];
@@ -112,12 +128,8 @@ function viaField(f: Field, id: string): HTMLElement {
     ids.value = stops.map((s) => s.id).join(";");
     chips.replaceChildren(
       ...stops.map((s, i) => {
-        const chip = Object.assign(document.createElement("span"), { className: "chip", textContent: s.name });
-        const remove = Object.assign(document.createElement("button"), {
-          type: "button",
-          textContent: "×",
-          title: `Remove ${s.name}`,
-        });
+        const chip = element("span", { className: "chip", textContent: s.name });
+        const remove = element("button", { type: "button", textContent: "×", title: `Remove ${s.name}` });
         remove.addEventListener("click", () => {
           stops.splice(i, 1);
           render();
@@ -155,88 +167,115 @@ function viaField(f: Field, id: string): HTMLElement {
 
 /** The user's time zone, as the browser knows it: "Europe/Berlin". */
 const USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-/** The time field's label, naming the zone the time is in. */
-let timeLabel: HTMLLabelElement | null = null;
-const timeLabelText = (zone: string): string => `${label("at")} (${zone})`;
 
-function fieldRow(f: Field): HTMLDivElement {
-  const row = document.createElement("div");
-  row.className = "field";
-  const id = `f-${f.name}`;
-  const value = initial(f, SPEC.values, new Date(), USER_ZONE);
-  let control: HTMLElement;
-  if (f.kind === "station") {
-    control = stationField(f, id);
-  } else if (f.kind === "stations") {
-    control = viaField(f, id);
-  } else if (typeof value === "boolean") {
-    control = Object.assign(document.createElement("input"), { type: "checkbox", checked: value, id, name: f.name });
-  } else if (f.kind === "choice") {
-    const select = Object.assign(document.createElement("select"), { id, name: f.name });
-    for (const c of f.choices) select.append(new Option(c, c, false, c === value));
-    control = select;
-  } else {
-    const text = Object.assign(document.createElement("input"), { id, name: f.name, value });
-    text.type = f.kind === "number" ? "number" : f.kind === "time" ? "datetime-local" : "text";
-    if (f.kind === "number") text.step = "any";
-    if (f.kind === "zone") zoneInput(text);
-    control = text;
-  }
-  const l = Object.assign(document.createElement("label"), { htmlFor: id, textContent: label(f.name) });
-  if (f.kind === "time") {
-    l.textContent = timeLabelText(zoneOf(SPEC.values, USER_ZONE));
-    timeLabel = l;
-  }
-  const help = Object.assign(document.createElement("div"), { className: "help", textContent: f.help });
-  row.append(l, control, help);
-  return row;
+/** A row: the label (unless the fold says it), the control, and the option's help below if `help`. */
+function row(f: Field, control: HTMLElement, id: string, help = true): HTMLDivElement {
+  const box = element("div", { className: `field ${f.kind}` });
+  const l = element("label", { htmlFor: id, textContent: f.kind === "time" ? "Departure" : label(f.name) });
+  if (f.kind === "flag") box.append(control, l);
+  else if (f.kind === "stations") box.append(control);
+  else box.append(l, control);
+  if (help && f.help !== "") box.append(element("div", { className: "help", textContent: f.help }));
+  return box;
 }
 
-/** The time zone input: every zone the browser knows to choose from; the time's label follows it. */
-function zoneInput(input: HTMLInputElement): void {
-  const list = Object.assign(document.createElement("datalist"), { id: "zones" });
+/** An option's input, filled with its initial value. */
+function control(f: Field, id: string): HTMLElement {
+  const value = initial(f, SPEC.values, new Date(), USER_ZONE);
+  if (typeof value === "boolean") return element("input", { type: "checkbox", checked: value, id, name: f.name });
+  if (f.kind === "choice") {
+    const select = element("select", { id, name: f.name });
+    for (const c of f.choices) select.append(new Option(c, c, false, c === value));
+    return select;
+  }
+  const text = element("input", { id, name: f.name, value });
+  text.type = f.kind === "number" ? "number" : f.kind === "time" ? "datetime-local" : "text";
+  if (f.kind === "number") text.step = "any";
+  return text;
+}
+
+const optionRow = (f: Field): HTMLDivElement => row(f, control(f, `f-${f.name}`), `f-${f.name}`);
+
+/** A fold; `count` values changed inside open it and show in its title. */
+function fold(title: string, count: number, className: string): HTMLDetailsElement {
+  const details = element("details", { className: `fold ${className}`, open: count > 0 });
+  const summary = element("summary", { textContent: title });
+  if (count > 0) summary.append(element("span", { className: "badge", textContent: String(count) }));
+  details.append(summary);
+  return details;
+}
+
+/** The time, its zone below it: a fold to change it, open if not the user's own. */
+function timeRow(f: Field, zoneField: Field | undefined): HTMLDivElement {
+  const box = row(f, control(f, "f-at"), "f-at", false);
+  if (zoneField === undefined) return box;
+  const zone = element("input", {
+    id: "f-time_zone",
+    name: zoneField.name,
+    value: zoneOf(SPEC.values, USER_ZONE),
+    required: true,
+  });
+  const list = element("datalist", { id: "zones" });
   list.append(...Intl.supportedValuesOf("timeZone").map((z) => new Option(z)));
   document.body.append(list);
-  input.setAttribute("list", list.id);
-  input.required = true;
-  input.addEventListener("input", () => {
-    if (timeLabel) timeLabel.textContent = timeLabelText(input.value.trim());
+  zone.setAttribute("list", list.id);
+  const shown = element("span", { className: "zone-name", textContent: zone.value });
+  zone.addEventListener("input", () => {
+    shown.textContent = zone.value.trim();
   });
+  const summary = element("summary");
+  summary.append("Times in ", shown);
+  const details = element("details", { className: "zone", open: zone.value !== USER_ZONE });
+  details.append(summary, zone, element("div", { className: "help", textContent: zoneField.help }));
+  box.append(details);
+  return box;
 }
 
-const trip = document.createElement("fieldset");
-trip.append(Object.assign(document.createElement("legend"), { textContent: "Trip" }));
-const limits = document.createElement("fieldset");
-limits.append(Object.assign(document.createElement("legend"), { textContent: "Limits and display" }));
-const advanced = document.createElement("details");
-advanced.append(Object.assign(document.createElement("summary"), { textContent: "Advanced" }));
 const placed = sections(SPEC.fields);
-trip.append(...placed.trip.map(fieldRow));
-limits.append(...placed.limits.map(fieldRow));
-advanced.append(...placed.advanced.map(fieldRow));
-const submit = Object.assign(document.createElement("button"), { type: "submit", textContent: "Search" });
-const note = Object.assign(document.createElement("p"), {
-  className: "note",
-  textContent: "A search takes from 20 seconds to a few minutes; repeating one within 10 minutes is fast (cached).",
-});
-form.append(trip, limits, advanced, submit, note);
-advanced.open = advancedOpen(SPEC.fields, SPEC.values);
+const [fromField, toField, atField] = placed.trip;
+const trip = element("div", { className: "trip" });
+if (fromField !== undefined && toField !== undefined) {
+  const from = stationField(fromField, "f-from");
+  const to = stationField(toField, "f-to");
+  const swap = element("button", { type: "button", className: "swap", textContent: "⇅", title: "Swap" });
+  swap.addEventListener("click", () => {
+    [from.input.value, to.input.value] = [to.input.value, from.input.value];
+    from.refresh();
+    to.refresh();
+  });
+  trip.append(row(fromField, from.box, "f-from", false), swap, row(toField, to.box, "f-to", false));
+}
+if (atField !== undefined) trip.append(timeRow(atField, placed.zone));
+
+const more = element("div", { className: "more" });
+if (placed.via !== undefined) {
+  const via = fold("Via", picked(SPEC.values, "via").length + unpicked(SPEC.values, "via").length, "via");
+  via.append(row(placed.via, viaField(placed.via, "f-via"), "f-via"));
+  more.append(via);
+}
+const advanced = fold("Advanced", changed(placed.advanced, SPEC.values), "advanced");
+advanced.append(...placed.advanced.map(optionRow));
+const options = fold("Options", changed([...placed.options, ...placed.advanced], SPEC.values), "options");
+options.append(...placed.options.map(optionRow), advanced);
+more.append(options);
+form.append(trip, element("button", { type: "submit", className: "go", textContent: "Search" }), more);
+
 // Only send what differs from the defaults: shorter links, same search.
 form.addEventListener("submit", () => {
   for (const f of SPEC.fields) {
-    const element = form.elements.namedItem(f.name);
-    if ((element instanceof HTMLInputElement || element instanceof HTMLSelectElement) && omitted(f, element.value)) {
-      element.disabled = true;
+    const input = form.elements.namedItem(f.name);
+    if ((input instanceof HTMLInputElement || input instanceof HTMLSelectElement) && omitted(f, input.value)) {
+      input.disabled = true;
     }
   }
-  for (const element of form.elements) {
-    if (element instanceof HTMLInputElement && element.name.endsWith("_id") && element.value === "") {
-      element.disabled = true;
+  for (const input of form.elements) {
+    if (input instanceof HTMLInputElement && input.name.endsWith("_id") && input.value === "") {
+      input.disabled = true;
     }
   }
   setTimeout(() => {
-    for (const element of form.elements) {
-      if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) element.disabled = false;
+    for (const input of form.elements) {
+      if (input instanceof HTMLInputElement || input instanceof HTMLSelectElement) input.disabled = false;
     }
   });
 });

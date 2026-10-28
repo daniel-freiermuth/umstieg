@@ -32,55 +32,59 @@
       }
       body {
         margin: 0;
+        min-height: 100vh;
         font:
-          14px/1.45 system-ui,
+          15px/1.45 system-ui,
           sans-serif;
-        background: var(--bg);
+        background:
+          radial-gradient(1200px 500px at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
+          var(--bg);
         color: var(--fg);
       }
       main {
-        max-width: 760px;
+        width: min(520px, 100%);
         margin: 0 auto;
-        padding: 20px 16px 40px;
+        padding: max(6vh, 24px) 16px 40px;
+      }
+      header {
+        text-align: center;
+        margin-bottom: 22px;
       }
       h1 {
-        font-size: 20px;
+        font-size: 30px;
+        letter-spacing: -0.02em;
         margin: 0 0 4px;
+      }
+      h1 span {
+        color: var(--accent);
       }
       .lead {
         color: var(--muted);
-        margin: 0 0 18px;
+        margin: 0;
       }
-      fieldset {
-        border: 1px solid var(--grid);
-        border-radius: 8px;
-        padding: 10px 14px 6px;
-        margin: 0 0 14px;
+      .card {
         background: var(--panel);
-      }
-      legend {
-        font-weight: 600;
-        padding: 0 6px;
-      }
-      details > summary {
-        cursor: pointer;
-        font-weight: 600;
-        margin: 4px 0 8px;
-      }
-      .field {
-        display: grid;
-        grid-template-columns: 170px 1fr;
-        gap: 4px 12px;
-        align-items: start;
-        margin: 0 0 10px;
+        border: 1px solid var(--grid);
+        border-radius: 16px;
+        padding: 22px 22px 10px;
+        box-shadow:
+          0 1px 2px rgb(0 0 0 / 6%),
+          0 12px 32px rgb(0 0 0 / 8%);
       }
       .field label {
-        padding-top: 5px;
-      }
-      .field .help {
-        grid-column: 2;
-        color: var(--muted);
+        display: block;
         font-size: 12px;
+        font-weight: 600;
+        color: var(--muted);
+        margin: 0 0 4px;
+      }
+      .trip .field {
+        margin: 0 0 12px;
+      }
+      .trip .field > label {
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 11px;
       }
       input[type="text"],
       input[type="number"],
@@ -88,45 +92,183 @@
       select {
         font: inherit;
         width: 100%;
-        padding: 5px 8px;
+        padding: 8px 10px;
         border: 1px solid var(--grid);
-        border-radius: 5px;
+        border-radius: 8px;
         background: var(--bg);
         color: var(--fg);
       }
-      input[type="checkbox"] {
-        margin-top: 8px;
+      .trip input[type="text"],
+      .trip input[type="datetime-local"] {
+        font-size: 16px;
+        padding: 10px 12px;
       }
-      .error {
-        white-space: pre-wrap;
+      input:focus,
+      select:focus,
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+        outline-offset: 1px;
+      }
+      input.picked {
+        border-color: color-mix(in srgb, var(--ok) 70%, var(--grid));
+      }
+      .station .status {
         color: var(--warn);
-        border: 1px solid var(--warn);
-        border-radius: 6px;
-        padding: 8px 10px;
-        margin: 0 0 14px;
-        font-family: monospace;
         font-size: 12px;
       }
-      button {
+      .station .status:not(:empty) {
+        margin-top: 3px;
+      }
+      .swap {
+        display: block;
+        width: 32px;
+        height: 32px;
+        margin: -22px 14px -10px auto;
+        position: relative;
+        z-index: 1;
+        padding: 0;
+        border-radius: 50%;
+        border: 1px solid var(--grid);
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 16px;
+        cursor: pointer;
+      }
+      .swap:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+      .zone {
+        margin-top: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .zone summary {
+        cursor: pointer;
+        list-style: none;
+      }
+      .zone summary::-webkit-details-marker {
+        display: none;
+      }
+      .zone-name {
+        color: var(--fg);
+        text-decoration: underline dotted;
+        text-underline-offset: 3px;
+      }
+      .zone input {
+        margin-top: 6px;
+      }
+      .help {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 3px;
+      }
+      button.go {
+        display: block;
+        width: 100%;
         font: inherit;
+        font-size: 16px;
         font-weight: 600;
-        padding: 8px 18px;
-        border-radius: 6px;
+        padding: 11px 18px;
+        margin: 6px 0 14px;
+        border-radius: 10px;
         border: 0;
         background: var(--accent);
         color: #fff;
         cursor: pointer;
       }
-      .station .status {
-        color: var(--ok);
-        font-size: 12px;
-        min-height: 1.45em;
+      button.go:hover {
+        filter: brightness(1.08);
       }
-      .station .status.todo {
+      .fold {
+        border-top: 1px solid var(--grid);
+      }
+      .fold > summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 0;
+        cursor: pointer;
+        font-weight: 600;
+        list-style: none;
+      }
+      .fold > summary::-webkit-details-marker {
+        display: none;
+      }
+      .fold > summary::after {
+        content: "›";
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1;
+        transition: transform 0.15s;
+      }
+      .fold[open] > summary::after {
+        transform: rotate(90deg);
+      }
+      .fold .fold {
+        margin-top: 4px;
+      }
+      .fold .fold > summary {
+        font-weight: 500;
+        color: var(--muted);
+      }
+      .badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+        color: var(--accent);
+      }
+      .fold .field {
+        margin: 0 0 14px;
+      }
+      .fold .field:is(.number, .choice, .text) {
+        display: grid;
+        grid-template-columns: 1fr 120px;
+        column-gap: 16px;
+        align-items: center;
+      }
+      .fold .field:is(.number, .choice, .text) label {
+        margin: 0;
+        font-size: 14px;
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .fold .field:is(.number, .choice, .text) > :is(input, select) {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+      }
+      .fold .field:is(.number, .choice, .text) .help {
+        grid-column: 1;
+        margin: 0;
+      }
+      .fold .field.flag {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: 8px;
+        align-items: center;
+      }
+      .fold .field.flag label {
+        margin: 0;
+        font-size: 14px;
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .fold .field.flag .help {
+        grid-column: 2;
+      }
+      .error {
+        white-space: pre-wrap;
         color: var(--warn);
-      }
-      input.picked {
-        border-color: var(--ok);
+        border: 1px solid var(--warn);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 0 0 14px;
+        font-family: monospace;
+        font-size: 12px;
       }
       .chips {
         display: flex;
@@ -134,36 +276,44 @@
         gap: 4px;
       }
       .chips:not(:empty) {
-        margin-bottom: 4px;
+        margin-bottom: 6px;
       }
       .chip {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        padding: 2px 4px 2px 8px;
-        border: 1px solid var(--ok);
-        border-radius: 12px;
+        padding: 2px 4px 2px 10px;
+        border: 1px solid var(--grid);
+        border-radius: 14px;
         background: var(--bg);
       }
       .chip button {
-        padding: 0 5px;
+        font: inherit;
+        padding: 0 6px;
+        border: 0;
         background: none;
         color: var(--muted);
-        font-weight: normal;
+        cursor: pointer;
       }
       .note {
+        text-align: center;
         color: var(--muted);
         font-size: 12px;
-        margin-top: 10px;
+        margin-top: 14px;
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>umstieg</h1>
-      <p class="lead">Every connection within your limits, including those journey planners hide.</p>
-      <div id="error" class="error" hidden></div>
-      <form id="form" action="/search" method="get"></form>
+      <header>
+        <h1>um<span>stieg</span></h1>
+        <p class="lead">Every connection within your limits, including those journey planners hide.</p>
+      </header>
+      <div class="card">
+        <div id="error" class="error" hidden></div>
+        <form id="form" action="/search" method="get"></form>
+      </div>
+      <p class="note">A search takes from 20 seconds to a few minutes; repeating one within 10 minutes is fast.</p>
     </main>
     <script id="spec" type="application/json">
       /*__DATA__*/

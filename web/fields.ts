@@ -84,18 +84,36 @@ export function initial(f: Field, values: Record<string, string>, now: Date, use
   return value ?? f.default;
 }
 
-// Where fields go: the trip first, then limits, the rest folded away.
-const TRIP = ["from", "to", "at", "time_zone", "window", "via"];
-/** Fields by section: the trip in its fixed order, then limits and advanced in spec order. */
-export function sections(fields: readonly Field[]): { trip: Field[]; limits: Field[]; advanced: Field[] } {
+// Where fields go: the trip up front, the zone with the time, the stops on
+// the way and every option folded away.
+const TRIP = ["from", "to", "at"];
+const PLACED = [...TRIP, "time_zone", "via"];
+/** Fields by section: the trip in its fixed order, then options and advanced ones in spec order. */
+export function sections(fields: readonly Field[]): {
+  trip: Field[];
+  zone: Field | undefined;
+  via: Field | undefined;
+  options: Field[];
+  advanced: Field[];
+} {
+  const first = (name: string): Field | undefined => fields.find((f) => f.name === name);
   const trip = TRIP.flatMap((name) => fields.filter((f) => f.name === name).slice(0, 1));
-  const rest = fields.filter((f) => !TRIP.includes(f.name));
-  return { trip, limits: rest.filter((f) => !f.advanced), advanced: rest.filter((f) => f.advanced) };
+  const rest = fields.filter((f) => !PLACED.includes(f.name));
+  return {
+    trip,
+    zone: first("time_zone"),
+    via: first("via"),
+    options: rest.filter((f) => !f.advanced),
+    advanced: rest.filter((f) => f.advanced),
+  };
 }
 
-/** Advanced settings that differ from the defaults stay visible. */
-export const advancedOpen = (fields: readonly Field[], values: Record<string, string>): boolean =>
-  fields.some((f) => f.advanced && given(values, f.name) !== undefined && given(values, f.name) !== f.default);
+/** How many of `fields` the URL sets to something else than the default: their fold opens. */
+export const changed = (fields: readonly Field[], values: Record<string, string>): number =>
+  fields.filter((f) => {
+    const value = given(values, f.name);
+    return value !== undefined && value !== "" && value !== f.default;
+  }).length;
 
 /**
  * Whether a field's value is left out of the submitted search: only what
