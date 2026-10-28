@@ -252,9 +252,25 @@ function pan(start, full, dx, dy, { W, H, m }) {
   const dv = dy / (H - m.t - m.b) * (start.y1 - start.y0);
   return clampDomain({ t0: start.t0 - dt, t1: start.t1 - dt, y0: start.y0 + dv, y1: start.y1 + dv }, full);
 }
+var PINCH_MIN = 40;
+function pinch(start, full, from, to, g) {
+  const mid = ([a, b]) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const k = (was, now) => Math.abs(was) < PINCH_MIN || Math.abs(now) < PINCH_MIN ? 1 : Math.abs(was) / Math.abs(now);
+  const [m0, m1] = [mid(from), mid(to)];
+  const at = { fx: (m0.x - g.m.l) / (g.W - g.m.l - g.m.r), fy: (m0.y - g.m.t) / (g.H - g.m.t - g.m.b) };
+  const kt = k(from[1].x - from[0].x, to[1].x - to[0].x);
+  const ky = k(from[1].y - from[0].y, to[1].y - to[0].y);
+  const zoomed = zoom(zoom(start, full, at, kt, { time: true, height: false }), full, at, ky, {
+    time: false,
+    height: true
+  });
+  return pan(zoomed, full, m1.x - m0.x, m1.y - m0.y, g);
+}
 var TICK_STEPS = [5, 10, 15, 30, 60, 120, 180, 360].map((mins) => mins * 60000);
-function tickStep(span) {
-  return TICK_STEPS.find((s) => span / s <= 12) ?? item(TICK_STEPS, TICK_STEPS.length - 1);
+var TICK_WIDTH = 50;
+function tickStep(span, width) {
+  const most = Math.min(12, Math.max(2, Math.floor(width / TICK_WIDTH)));
+  return TICK_STEPS.find((s) => span / s <= most) ?? item(TICK_STEPS, TICK_STEPS.length - 1);
 }
 function spreadLabels(ys, gap, bottom) {
   const at = [...ys];
@@ -617,7 +633,18 @@ if (D.back)
 var legend = byId("legend", HTMLDivElement);
 function writeLegend() {
   const metric = item(D.metrics, metricIndex);
-  legend.innerHTML = `x: time (${D.tz}). y: ${metric.description} (${metric.unit}), goal at the bottom.<br>` + `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer, or missed by live data ✗) · dotted: walking.<br>` + `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` + `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` + `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;
+  legend.innerHTML = `x: time (${D.tz}). y: ${metric.description} (${metric.unit}), goal at the bottom.<br>` + `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer, or missed by live data ✗) · dotted: walking.<br>` + `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` + `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` + `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · two fingers: zoom (sideways time, up and down height) · double-click: reset.`;
+}
+function fitText(t, text, width) {
+  t.textContent = text;
+  const whole = t.getComputedTextLength();
+  if (whole <= width)
+    return;
+  let keep = Math.max(1, Math.floor(text.length * width / whole));
+  t.textContent = text.slice(0, keep).trimEnd() + "…";
+  while (keep > 1 && t.getComputedTextLength() > width)
+    t.textContent = text.slice(0, --keep).trimEnd() + "…";
+  el("title", {}, t).textContent = text;
 }
 function el(name, attrs, parent) {
   const e = document.createElementNS(NS, name);
@@ -771,7 +798,7 @@ function render() {
     s.remove();
   });
   const { clientWidth: W, clientHeight: H } = plotEl;
-  const m = { l: 240, r: 16, t: 14, b: 28 };
+  const m = { l: Math.min(240, Math.round(W * 0.4)), r: 16, t: 14, b: 28 };
   geom = { W, H, m };
   const x = (t) => m.l + (t - dom.t0) / (dom.t1 - dom.t0) * (W - m.l - m.r);
   const y = (v) => m.t + (dom.y1 - v) / (dom.y1 - dom.y0 || 1) * (H - m.t - m.b);
@@ -807,7 +834,7 @@ function render() {
       stroke: `hsl(${String(hue(s.i))}, 60%, 50%)`
     }, stations);
     const t = el("text", { x: m.l - 30, y: ak + gap / 3, "text-anchor": "end", "font-size": Math.min(11, gap), class: "station-name" }, stations);
-    t.textContent = s.name.length > 32 ? s.name.slice(0, 31) + "…" : s.name;
+    fitText(t, s.name, m.l - 34);
     t.addEventListener("mousemove", (e) => {
       if (drag)
         return;
@@ -826,7 +853,7 @@ function render() {
     });
   });
   const axis = el("g", { class: "axis" }, svg);
-  const step2 = tickStep(dom.t1 - dom.t0);
+  const step2 = tickStep(dom.t1 - dom.t0, W - m.l - m.r);
   for (let t = Math.ceil(dom.t0 / step2) * step2;t <= dom.t1; t += step2) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
     el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = tickFmt.format(t);
@@ -947,14 +974,42 @@ plotEl.addEventListener("wheel", (e) => {
 }, { passive: false });
 var drag = null;
 var dragged = false;
-plotEl.addEventListener("mousedown", (e) => {
-  if (e.button !== 0)
+var fingers = new Map;
+var pinching = null;
+var inPlot = (e) => {
+  const r = plotEl.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+var two = () => {
+  const [a, b] = fingers.values();
+  return a !== undefined && b !== undefined ? [a, b] : null;
+};
+plotEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse" && e.button !== 0)
     return;
-  drag = { x: e.clientX, y: e.clientY, dom: { ...dom } };
-  dragged = false;
+  fingers.set(e.pointerId, inPlot(e));
+  const pair2 = two();
+  if (pair2) {
+    pinching = { from: pair2, dom: { ...dom } };
+    drag = null;
+    dragged = true;
+    tip.style.display = "none";
+  } else {
+    drag = { x: e.clientX, y: e.clientY, dom: { ...dom } };
+    dragged = false;
+  }
 });
-window.addEventListener("mousemove", (e) => {
-  if (!drag || !geom)
+window.addEventListener("pointermove", (e) => {
+  if (!fingers.has(e.pointerId) || !geom)
+    return;
+  fingers.set(e.pointerId, inPlot(e));
+  const pair2 = two();
+  if (pinching && pair2) {
+    dom = pinch(pinching.dom, full, pinching.from, pair2, geom);
+    scheduleRender();
+    return;
+  }
+  if (!drag)
     return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   if (!dragged && Math.hypot(dx, dy) < 4)
@@ -964,13 +1019,18 @@ window.addEventListener("mousemove", (e) => {
   dom = pan(drag.dom, full, dx, dy, geom);
   scheduleRender();
 });
-window.addEventListener("mouseup", () => {
+var lift = (e) => {
+  if (!fingers.delete(e.pointerId))
+    return;
+  pinching = null;
   drag = null;
-  if (dragged)
+  if (fingers.size === 0 && dragged)
     setTimeout(() => {
       dragged = false;
     }, 0);
-});
+};
+window.addEventListener("pointerup", lift);
+window.addEventListener("pointercancel", lift);
 plotEl.addEventListener("dblclick", () => {
   dom = { ...full };
   scheduleRender();

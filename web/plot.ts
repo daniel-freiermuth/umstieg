@@ -15,12 +15,14 @@ import { parseJson } from "./decode";
 import { byId } from "./dom";
 import {
   type Domain,
+  type Finger,
   type Geom,
   type Pt,
   type XY,
   clipLine,
   distanceToLine,
   pan,
+  pinch,
   spreadLabels,
   tickStep,
   zoom,
@@ -160,7 +162,19 @@ function writeLegend(): void {
     `Coloured: riding, one colour per train · thin grey: waiting (red: below minimum transfer, or missed by live data ✗) · dotted: walking.<br>` +
     `Parallel lines: same route later. Steeper: faster. Dashed: fallbacks of the selection (orange dots: waiting).<br>` +
     `<kbd>↑</kbd> <kbd>↓</kbd> step through listed connections, <kbd>Esc</kbd> clears the selection.<br>` +
-    `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · double-click: reset.`;
+    `Wheel: zoom (<kbd>Shift</kbd> time only, <kbd>Alt</kbd> height only) · drag: pan · two fingers: zoom (sideways time, up and down height) · double-click: reset.`;
+}
+
+/** `text` in `t`, cut with "…" to at most `width` pixels; the whole name as its tooltip. */
+function fitText(t: SVGTextElement, text: string, width: number): void {
+  t.textContent = text;
+  const whole = t.getComputedTextLength();
+  if (whole <= width) return;
+  // Measuring costs a layout: start from the proportional guess, then shorten.
+  let keep = Math.max(1, Math.floor((text.length * width) / whole));
+  t.textContent = text.slice(0, keep).trimEnd() + "…";
+  while (keep > 1 && t.getComputedTextLength() > width) t.textContent = text.slice(0, --keep).trimEnd() + "…";
+  el("title", {}, t).textContent = text;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(
@@ -333,7 +347,8 @@ function render(): void {
   });
   const W = plotEl.clientWidth,
     H = plotEl.clientHeight;
-  const m = { l: 240, r: 16, t: 14, b: 28 };
+  // Station names take up to 40 % of a narrow plot (phones), else 240 px.
+  const m = { l: Math.min(240, Math.round(W * 0.4)), r: 16, t: 14, b: 28 };
   geom = { W, H, m };
   const x = (t: number): number => m.l + ((t - dom.t0) / (dom.t1 - dom.t0)) * (W - m.l - m.r);
   const y = (v: number): number => m.t + ((dom.y1 - v) / (dom.y1 - dom.y0 || 1)) * (H - m.t - m.b);
@@ -392,7 +407,7 @@ function render(): void {
       { x: m.l - 30, y: ak + gap / 3, "text-anchor": "end", "font-size": Math.min(11, gap), class: "station-name" },
       stations,
     );
-    t.textContent = s.name.length > 32 ? s.name.slice(0, 31) + "…" : s.name;
+    fitText(t, s.name, m.l - 34);
     // Like a line in the plot: hovering previews what passes through the
     // station at any time, clicking lists the connections touching it.
     t.addEventListener("mousemove", (e) => {
@@ -413,7 +428,7 @@ function render(): void {
 
   // Time ticks: the coarsest step that still gives about ten labels.
   const axis = el("g", { class: "axis" }, svg);
-  const step = tickStep(dom.t1 - dom.t0);
+  const step = tickStep(dom.t1 - dom.t0, W - m.l - m.r);
   for (let t = Math.ceil(dom.t0 / step) * step; t <= dom.t1; t += step) {
     el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }, axis);
     el("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, axis).textContent = tickFmt.format(t);
@@ -521,7 +536,8 @@ function render(): void {
 }
 
 // Zoom and pan: wheel zooms around the mouse (Shift: time only, Alt: height
-// only), dragging pans, double-click or the button resets.
+// only), dragging pans, two fingers pinch (sideways: time, up and down:
+// height), double-click or the button resets.
 let frame: number | null = null;
 function scheduleRender(): void {
   frame ??= requestAnimationFrame(() => {
@@ -548,13 +564,42 @@ plotEl.addEventListener(
 );
 let drag: { x: number; y: number; dom: Domain } | null = null,
   dragged = false;
-plotEl.addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return;
-  drag = { x: e.clientX, y: e.clientY, dom: { ...dom } };
-  dragged = false;
+/** Pointers down on the plot (mouse, pen or fingers), where they are now. */
+const fingers = new Map<number, Finger>();
+let pinching: { from: [Finger, Finger]; dom: Domain } | null = null;
+const inPlot = (e: PointerEvent): Finger => {
+  const r = plotEl.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+const two = (): [Finger, Finger] | null => {
+  const [a, b] = fingers.values();
+  return a !== undefined && b !== undefined ? [a, b] : null;
+};
+plotEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  fingers.set(e.pointerId, inPlot(e));
+  const pair = two();
+  if (pair) {
+    // A second finger: pinch from here; nothing gets picked when they lift.
+    pinching = { from: pair, dom: { ...dom } };
+    drag = null;
+    dragged = true;
+    tip.style.display = "none";
+  } else {
+    drag = { x: e.clientX, y: e.clientY, dom: { ...dom } };
+    dragged = false;
+  }
 });
-window.addEventListener("mousemove", (e) => {
-  if (!drag || !geom) return;
+window.addEventListener("pointermove", (e) => {
+  if (!fingers.has(e.pointerId) || !geom) return;
+  fingers.set(e.pointerId, inPlot(e));
+  const pair = two();
+  if (pinching && pair) {
+    dom = pinch(pinching.dom, full, pinching.from, pair, geom);
+    scheduleRender();
+    return;
+  }
+  if (!drag) return;
   const dx = e.clientX - drag.x,
     dy = e.clientY - drag.y;
   if (!dragged && Math.hypot(dx, dy) < 4) return;
@@ -563,14 +608,18 @@ window.addEventListener("mousemove", (e) => {
   dom = pan(drag.dom, full, dx, dy, geom);
   scheduleRender();
 });
-window.addEventListener("mouseup", () => {
+const lift = (e: PointerEvent): void => {
+  if (!fingers.delete(e.pointerId)) return;
+  pinching = null;
   drag = null;
   // The click that ends a drag must not select or clear; let it pass first.
-  if (dragged)
+  if (fingers.size === 0 && dragged)
     setTimeout(() => {
       dragged = false;
     }, 0);
-});
+};
+window.addEventListener("pointerup", lift);
+window.addEventListener("pointercancel", lift);
 plotEl.addEventListener("dblclick", () => {
   dom = { ...full };
   scheduleRender();

@@ -131,10 +131,43 @@ export function pan(start: Domain, full: Domain, dx: number, dy: number, { W, H,
   return clampDomain({ t0: start.t0 - dt, t1: start.t1 - dt, y0: start.y0 + dv, y1: start.y1 + dv }, full);
 }
 
+/** Fingers closer than this on an axis (px) don't zoom along it: a vertical pinch keeps the time. */
+const PINCH_MIN = 40;
+export interface Finger {
+  x: number;
+  y: number;
+}
+
+/**
+ * Two fingers from `from` to `to` (pixels in the plot element): each axis
+ * zooms by how much the fingers spread along it, around their first
+ * midpoint, and the content follows the midpoint.
+ */
+export function pinch(start: Domain, full: Domain, from: [Finger, Finger], to: [Finger, Finger], g: Geom): Domain {
+  const mid = ([a, b]: [Finger, Finger]): Finger => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const k = (was: number, now: number): number =>
+    Math.abs(was) < PINCH_MIN || Math.abs(now) < PINCH_MIN ? 1 : Math.abs(was) / Math.abs(now);
+  const [m0, m1] = [mid(from), mid(to)];
+  const at = { fx: (m0.x - g.m.l) / (g.W - g.m.l - g.m.r), fy: (m0.y - g.m.t) / (g.H - g.m.t - g.m.b) };
+  const kt = k(from[1].x - from[0].x, to[1].x - to[0].x);
+  const ky = k(from[1].y - from[0].y, to[1].y - to[0].y);
+  const zoomed = zoom(zoom(start, full, at, kt, { time: true, height: false }), full, at, ky, {
+    time: false,
+    height: true,
+  });
+  return pan(zoomed, full, m1.x - m0.x, m1.y - m0.y, g);
+}
+
 const TICK_STEPS = [5, 10, 15, 30, 60, 120, 180, 360].map((mins) => mins * 60e3);
-/** Time tick step for a visible span (ms): the finest giving at most 12 ticks, else 6 hours. */
-export function tickStep(span: number): number {
-  return TICK_STEPS.find((s) => span / s <= 12) ?? item(TICK_STEPS, TICK_STEPS.length - 1);
+/** Pixels a time label needs: "09:00" and some space. */
+const TICK_WIDTH = 50;
+/**
+ * Time tick step for a visible span (ms) over `width` pixels: the finest
+ * giving at most 12 ticks and no more than fit, else 6 hours.
+ */
+export function tickStep(span: number, width: number): number {
+  const most = Math.min(12, Math.max(2, Math.floor(width / TICK_WIDTH)));
+  return TICK_STEPS.find((s) => span / s <= most) ?? item(TICK_STEPS, TICK_STEPS.length - 1);
 }
 
 /**

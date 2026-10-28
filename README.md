@@ -77,7 +77,9 @@ every fallback using it. Hovering a group (first … last train) highlights it, 
 hides it.
 
 The mouse wheel zooms around the pointer (`Shift`: time only, `Alt`: height
-only), dragging pans, double-click or "Reset zoom" shows everything again.
+only), dragging pans, two fingers on a touch screen zoom (spread sideways: time,
+up and down: height), double-click or "Reset zoom" shows everything again. On a
+phone the plot sits above the lists.
 Station labels and time ticks follow the zoom.
 
 The station height is chosen in the page (`Height`); `--metric` sets the one

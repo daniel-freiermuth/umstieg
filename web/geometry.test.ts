@@ -7,6 +7,7 @@ import {
   clipLine,
   distanceToLine,
   pan,
+  pinch,
   spreadLabels,
   tickStep,
   zoom,
@@ -193,6 +194,63 @@ describe("pan", () => {
   });
 });
 
+describe("pinch", () => {
+  const full: Domain = { t0: 0, t1: 600 * MIN, y0: 0, y1: 1000 };
+  // Plot area 400 × 200 px from (40, 20): its middle is (240, 120).
+  const geom: Geom = { W: 450, H: 260, m: { l: 40, r: 10, t: 20, b: 40 } };
+  const start: Domain = { t0: 100 * MIN, t1: 300 * MIN, y0: 200, y1: 600 };
+  const f = (x: number, y: number): { x: number; y: number } => ({ x, y });
+
+  test("spreading apart sideways zooms the time in around the fingers, the height stays", () => {
+    expect(pinch(start, full, [f(190, 120), f(290, 120)], [f(140, 120), f(340, 120)], geom)).toEqual({
+      ...start,
+      t0: 150 * MIN,
+      t1: 250 * MIN,
+    });
+  });
+
+  test("spreading apart up and down zooms the height in, the time stays", () => {
+    expect(pinch(start, full, [f(240, 70), f(240, 170)], [f(240, 20), f(240, 220)], geom)).toEqual({
+      ...start,
+      y0: 300,
+      y1: 500,
+    });
+  });
+
+  test("diagonally both; pinching together zooms out", () => {
+    expect(pinch(start, full, [f(140, 20), f(340, 220)], [f(190, 70), f(290, 170)], geom)).toEqual({
+      t0: 0,
+      t1: 400 * MIN,
+      y0: 0,
+      y1: 800,
+    });
+  });
+
+  test("moving both fingers alike pans like one", () => {
+    const moved = pinch(start, full, [f(190, 100), f(290, 140)], [f(290, 200), f(390, 240)], geom);
+    expect(moved).toEqual(pan(start, full, 100, 100, geom));
+  });
+
+  test("fingers too close along an axis don't zoom it, however they move", () => {
+    expect(pinch(start, full, [f(230, 120), f(250, 120)], [f(140, 120), f(340, 120)], geom)).toEqual(start);
+    expect(pinch(start, full, [f(140, 120), f(340, 120)], [f(230, 120), f(250, 120)], geom)).toEqual(start);
+  });
+
+  test("40 px apart is far enough, before and after", () => {
+    // 40 → 80 px: the time span halves; 80 → 40 px: it doubles.
+    expect(pinch(start, full, [f(220, 120), f(260, 120)], [f(200, 120), f(280, 120)], geom)).toEqual({
+      ...start,
+      t0: 150 * MIN,
+      t1: 250 * MIN,
+    });
+    expect(pinch(start, full, [f(200, 120), f(280, 120)], [f(220, 120), f(260, 120)], geom)).toEqual({
+      ...start,
+      t0: 0,
+      t1: 400 * MIN,
+    });
+  });
+});
+
 describe("tickStep", () => {
   const cases: [span: number, step: number][] = [
     [0, 5],
@@ -209,8 +267,17 @@ describe("tickStep", () => {
   ];
   for (const [span, step] of cases)
     test(`${String(span)} min → every ${String(step)} min`, () => {
-      expect(tickStep(span * MIN)).toBe(step * MIN);
+      expect(tickStep(span * MIN, 1000)).toBe(step * MIN);
     });
+
+  test("a narrow plot gets as many ticks as labels fit, at least two", () => {
+    // 4 hours over 200 px: 4 labels fit, so hourly; over 199 px only 3.
+    expect(tickStep(240 * MIN, 200)).toBe(60 * MIN);
+    expect(tickStep(240 * MIN, 199)).toBe(120 * MIN);
+    expect(tickStep(240 * MIN, 600)).toBe(30 * MIN);
+    expect(tickStep(240 * MIN, 650)).toBe(30 * MIN);
+    expect(tickStep(60 * MIN, 0)).toBe(30 * MIN);
+  });
 });
 
 describe("spreadLabels", () => {

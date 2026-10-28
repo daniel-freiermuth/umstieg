@@ -89,6 +89,8 @@
         overflow: hidden;
         cursor: grab;
         user-select: none;
+        /* Touch pans and pinches the plot, not the page. */
+        touch-action: none;
       }
       #plot:active {
         cursor: grabbing;
@@ -304,6 +306,27 @@
         border: 1px solid var(--grid);
         border-radius: 3px;
         padding: 0 3px;
+      }
+      /* Phones: the plot over the lists, the page scrolls. */
+      @media (max-width: 760px) {
+        body {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 65vh auto;
+          height: auto;
+        }
+        header {
+          grid-column: 1;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .controls {
+          flex-wrap: wrap;
+        }
+        aside {
+          border-left: 0;
+          border-top: 1px solid var(--grid);
+          overflow: visible;
+        }
       }
     </style>
   </head>
