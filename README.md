@@ -1,4 +1,4 @@
-# umstieg
+# <img src="web/logo.svg" alt="" width="40" align="center"> umstieg
 
 Lists every public transport connection within limits — including the ones
 journey planners hide — grouped by first and last train.

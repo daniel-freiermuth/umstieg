@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='15' fill='%23d97706' /><g fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round'><path d='M10 42 L30 18 M28 50 L52 22' stroke-width='3' opacity='0.35' /><path d='M12 52 L24 36 H38 L52 14' stroke-width='5' /></g><circle cx='24' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /><circle cx='38' cy='36' r='4.5' fill='%23d97706' stroke='%23fff' stroke-width='3' /></svg>"
+    />
     <title>umstieg · search</title>
     <style>
       :root {
@@ -55,7 +59,18 @@
         letter-spacing: -0.02em;
         margin: 0 0 4px;
       }
-      h1 span {
+      h1 {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+      }
+      .logo {
+        width: 44px;
+        height: 44px;
+        filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent) 35%, transparent));
+      }
+      .word span {
         color: var(--accent);
       }
       .lead {
@@ -306,7 +321,17 @@
   <body>
     <main>
       <header>
-        <h1>um<span>stieg</span></h1>
+        <h1>
+          <svg class="logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+            <rect width="64" height="64" rx="15" fill="#d97706" />
+            <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 42 L30 18 M28 50 L52 22" stroke-width="3" opacity="0.35" />
+              <path d="M12 52 L24 36 H38 L52 14" stroke-width="5" />
+            </g>
+            <circle cx="24" cy="36" r="4.5" fill="#d97706" stroke="#fff" stroke-width="3" />
+            <circle cx="38" cy="36" r="4.5" fill="#d97706" stroke="#fff" stroke-width="3" /></svg
+          ><span class="word">um<span>stieg</span></span>
+        </h1>
         <p class="lead">Every connection within your limits, including those journey planners hide.</p>
       </header>
       <div class="card">
