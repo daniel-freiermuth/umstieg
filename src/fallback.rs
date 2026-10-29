@@ -86,22 +86,12 @@ impl<'n> Fallbacks<'n> {
             chain.rides().skip(after_change).map(|(trip, _, alight)| (trip, alight)).collect();
         let arrival = chain.arrival(tt)?;
 
-        // After a change with a walk, the missed train left from where the walk
-        // led; fallbacks start there too (the search doesn't begin with a walk).
-        let mut starts = vec![transfer.station];
-        if let Some((trip, board, _)) = chain.rides().nth(after_change) {
-            let boards_at = tt.call(trip, board)?.station;
-            if boards_at != transfer.station {
-                starts.push(boards_at);
-            }
-        }
         // A change listed although missed (negative buffer): the traveller is
         // there only after the missed train left; nothing leaves before that.
+        // From where the train arrived: after a change with a walk, fallbacks
+        // walk there too, or elsewhere.
         let ready = transfer.ready();
-        let mut candidates: Vec<Chain> = Vec::new();
-        for s in starts {
-            candidates.extend_from_slice(self.candidates(s, transfer.departure, ready)?);
-        }
+        let candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
         let mut ranked = candidates
             .iter()
             .map(|fallback| {

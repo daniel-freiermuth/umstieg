@@ -256,7 +256,11 @@ impl Builder<'_> {
     ) -> Result<Vec<usize>> {
         let tt = self.tt;
         let mut out = Vec::new();
-        let mut here = start;
+        // At the origin when the connection leaves: a walk to the first train starts there.
+        let mut here = match start {
+            Some(start) => Some(start),
+            None => Some((tt.origin, chain.departure(tt)?)),
+        };
         let mut ride = 0_usize;
         for step in &chain.steps {
             match *step {
@@ -275,7 +279,8 @@ impl Builder<'_> {
                     let (b, a) = (tt.call(trip, board)?, tt.call(trip, alight)?);
                     let departure =
                         b.departure_time().with_context(|| format!("{} boarded where it doesn't depart", t.label))?;
-                    if let Some((_, since)) = here {
+                    // No change before a first train walked to: no wait piece.
+                    if let Some((_, since)) = here.filter(|_| ride > 0 || start.is_some()) {
                         let wait = departure.signed_duration_since(since);
                         // A missed change (`--missed-by`) leaves before the arrival: drawn
                         // forward over the gap, red like other too-short changes.

@@ -203,6 +203,19 @@ fn walks_are_drawn_from_the_arrival_and_the_wait_after_them_counts_from_the_walk
 }
 
 #[test]
+fn a_walk_to_the_first_train_starts_at_the_origin_when_the_connection_leaves() {
+    let mut b = testkit::Builder::new();
+    b.walk("A", "A2", 5);
+    let bus = b.trip("Bus 654", &[("A2", "", "07:00"), ("C", "10:25", "")]);
+    let tt = b.build("A", "C");
+    let mut plot = builder(&tt);
+    let pieces = plot.pieces(&Chain { steps: vec![Step::Walk { footpath: 0 }, ride(bus, 0, 1)] }, None, None).unwrap();
+    let kinds: Vec<&str> = pieces.iter().map(|&i| plot.pieces[i].kind).collect();
+    assert_eq!(kinds, ["walk", "ride"], "no change, so no wait before the bus");
+    assert_eq!(plot.pieces[pieces[0]].pts, [pt(&tt, "06:55", "A"), pt(&tt, "07:00", "A2")]);
+}
+
+#[test]
 fn until_cuts_before_the_rejoining_ride_but_keeps_the_wait_for_it() {
     let mut b = testkit::Builder::new();
     let s1 = b.trip("S1", &[("B", "", "12:42"), ("Altona", "12:54", "")]);

@@ -65,9 +65,9 @@ pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, zone: Tz) 
     ))
 }
 
-/// Trains, change stations and buffers on one line, ending with a walk to the
-/// destination if any. Stops at the first train in `rejoin`, marking it as
-/// back on the original plan.
+/// Trains, change stations and buffers on one line, starting with a walk to
+/// the first train and ending with a walk to the destination if any. Stops at
+/// the first train in `rejoin`, marking it as back on the original plan.
 pub fn route(
     tt: &Timetable,
     chain: &Chain,
@@ -77,6 +77,17 @@ pub fn route(
 ) -> Result<String> {
     let transfers = chain.transfers(tt)?;
     let mut parts = Vec::new();
+    let walk = |parts: &mut Vec<String>, footpath: usize| -> Result<()> {
+        let fp = tt.footpath(footpath)?;
+        parts.push(format!("walk {} to {}", duration(fp.duration), tt.station(fp.to)?.name));
+        Ok(())
+    };
+    for step in &chain.steps {
+        match *step {
+            Step::Walk { footpath } => walk(&mut parts, footpath)?,
+            Step::Ride { .. } => break,
+        }
+    }
     for (i, (trip, board, alight)) in chain.rides().enumerate() {
         // The change before this ride: none before the first.
         let transfer = match i.checked_sub(1) {
@@ -110,8 +121,7 @@ pub fn route(
         chain.steps.iter().rposition(|s| matches!(s, Step::Ride { .. })).map_or(0, |i| i.saturating_add(1));
     for step in chain.steps.iter().skip(after_last_ride) {
         if let Step::Walk { footpath } = *step {
-            let fp = tt.footpath(footpath)?;
-            parts.push(format!("walk {} to {}", duration(fp.duration), tt.station(fp.to)?.name));
+            walk(&mut parts, footpath)?;
         }
     }
     Ok(parts.join(" "))

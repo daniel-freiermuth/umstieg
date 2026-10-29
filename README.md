@@ -178,7 +178,9 @@ command line logs nothing unless `RUST_LOG` is set.
    to DB.
 3. **Enumeration**: depth-first over that timetable, deepening by number of
    changes, within these limits:
-   - departure inside `--window`, travel time ≤ fastest + `--extra-hours`,
+   - departure inside `--window`, travel time ≤ fastest + `--extra-hours`;
+     a connection may start with a walk to a nearby stop (Göteborg Central to
+     the bus terminal next door) and then leaves when the walk starts,
    - at most `--max-changes` changes, any transfer time (short ones flagged;
      missed by up to `--missed-by` listed as ✗),
    - no station twice (also not passing through). Riding away from the

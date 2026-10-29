@@ -84,9 +84,23 @@ impl Chain {
         self.rides().count().saturating_sub(1)
     }
 
+    /// When the connection leaves the origin: the first train's departure,
+    /// less a walk to it (Göteborg Central to the bus terminal next door).
     pub fn departure(&self, tt: &Timetable) -> Result<DateTime<Utc>> {
-        let (trip, board, _) = self.rides().next().context("connection without a train")?;
-        tt.call(trip, board)?.departure_time().with_context(|| format!("trip {trip} doesn't depart at call {board}"))
+        let mut walk = TimeDelta::zero();
+        for step in &self.steps {
+            match *step {
+                Step::Walk { footpath } => walk = checked::sum(walk, tt.footpath(footpath)?.duration),
+                Step::Ride { trip, board, .. } => {
+                    let departure = tt
+                        .call(trip, board)?
+                        .departure_time()
+                        .with_context(|| format!("trip {trip} doesn't depart at call {board}"))?;
+                    return Ok(checked::earlier_or_min(departure, walk));
+                }
+            }
+        }
+        anyhow::bail!("connection without a train")
     }
 
     /// Arrival at the destination: the last train's, plus a walk after it.
@@ -160,8 +174,8 @@ fn improve<T: Ord + Copy>(slot: &mut Option<T>, v: T) -> bool {
 
 /// Earliest arrival at every station when leaving `start` at `t0` on a train
 /// departing there by `latest`, with changes of any length, even missed by
-/// up to `missed_by`. As in the enumeration, walks only follow a ride: none
-/// from `start`, never two in a row.
+/// up to `missed_by`. Walks only follow a ride (none from `start`: a walk
+/// from the origin is a separate start), never two in a row.
 pub fn earliest_arrival(
     tt: &Timetable,
     start: usize,
@@ -375,6 +389,9 @@ pub fn fastest_journeys(tt: &Timetable) -> Result<Vec<Option<TimeDelta>>> {
     Ok(best)
 }
 
+/// A train leaving a station: (trip, call, departure).
+type Departure = (usize, usize, DateTime<Utc>);
+
 /// Per-timetable indexes shared by all searches on it (main and fallbacks).
 pub struct Network<'a> {
     pub tt: &'a Timetable,
@@ -444,6 +461,8 @@ struct Search<'a> {
     visited: Vec<bool>,
     used: Vec<bool>,
     steps: Vec<Step>,
+    /// The walk from the origin before the first train, if the chain starts with one.
+    lead: TimeDelta,
     rides: usize,
     /// Rides allowed in the current deepening round.
     max_rides: usize,
@@ -488,13 +507,27 @@ pub fn enumerate(net: &Network<'_>, limits: &Limits) -> Result<Enumeration> {
 pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(Progress)) -> Result<Enumeration> {
     let tt = net.tt;
     let starts = entry(&net.departures, limits.origin, "origin station")?;
+    // Trains from the origin, and from where a walk from it leads (leaving
+    // the origin the walk's time earlier): (station, walk, departures).
+    let mut starts: Vec<(usize, TimeDelta, &[Departure])> = vec![(limits.origin, TimeDelta::zero(), starts)];
+    for &footpath in entry(&net.walks, limits.origin, "origin station")? {
+        let fp = tt.footpath(footpath)?;
+        if fp.to != tt.destination {
+            starts.push((fp.to, fp.duration, entry(&net.departures, fp.to, "station")?));
+        }
+    }
     let fastest_with = |missed_by| -> Result<Option<TimeDelta>> {
         let mut fastest: Option<TimeDelta> = None;
-        for &(_, _, d) in starts.iter().filter(|&&(_, _, d)| (limits.depart_from..=limits.depart_until).contains(&d)) {
-            let arrivals = earliest_arrival(tt, limits.origin, d, limits.depart_until, missed_by)?;
-            if let Some(a) = *entry(&arrivals, tt.destination, "destination station")? {
-                let duration = a.signed_duration_since(d);
-                fastest = Some(fastest.map_or(duration, |f| f.min(duration)));
+        for &(station, walk, departures) in &starts {
+            // Saturating: a window beyond the latest time there is ends there.
+            let (from, until) =
+                (checked::later_or_max(limits.depart_from, walk), checked::later_or_max(limits.depart_until, walk));
+            for &(_, _, d) in departures.iter().filter(|&&(_, _, d)| (from..=until).contains(&d)) {
+                let arrivals = earliest_arrival(tt, station, d, until, missed_by)?;
+                if let Some(a) = *entry(&arrivals, tt.destination, "destination station")? {
+                    let duration = checked::sum(a.signed_duration_since(d), walk);
+                    fastest = Some(fastest.map_or(duration, |f| f.min(duration)));
+                }
             }
         }
         Ok(fastest)
@@ -525,6 +558,7 @@ pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(P
         visited: vec![false; tt.stations.len()],
         used: vec![false; tt.trips.len()],
         steps: Vec::new(),
+        lead: TimeDelta::zero(),
         rides: 0,
         max_rides: 0,
         presence: Vec::new(),
@@ -590,6 +624,39 @@ impl Search<'_> {
         }
         let (tt, departures, walks) = (self.tt, self.departures, self.walks);
 
+        // From the origin, a walk to a nearby station first (Göteborg Central to
+        // the bus terminal next door); then a train, as after any walk.
+        if deadline.is_none() && !walked {
+            for &footpath in entry(walks, station, "station")? {
+                let fp = tt.footpath(footpath)?;
+                let to = fp.to;
+                // Saturating: a walk ending after the latest time there is reaches nothing in time.
+                let ready = checked::later_or_max(self.limits.depart_from, fp.duration);
+                if to == tt.destination || *entry(&self.visited, to, "station")? {
+                    continue;
+                }
+                *entry_mut(&mut self.visited, to, "station")? = true;
+                // The origin, where a train calling there too is boarded instead,
+                // and where the walk leads.
+                self.presence.push(Presence {
+                    station,
+                    arrival: None,
+                    since: self.limits.depart_from,
+                    slack_out: None,
+                });
+                self.presence.push(Presence { station: to, arrival: Some(ready), since: ready, slack_out: None });
+                self.steps.push(Step::Walk { footpath });
+                self.lead = fp.duration;
+                self.explore(to, ready, None, true)?;
+                self.lead = TimeDelta::zero();
+                self.steps.pop();
+                self.presence.truncate(self.presence.len().saturating_sub(2));
+                *entry_mut(&mut self.visited, to, "station")? = false;
+                if self.truncated {
+                    return Ok(());
+                }
+            }
+        }
         if let Some(deadline) = deadline.filter(|_| !walked) {
             for &footpath in entry(walks, station, "station")? {
                 let fp = tt.footpath(footpath)?;
@@ -632,14 +699,16 @@ impl Search<'_> {
                     d
                 }
                 None => {
-                    if departure < self.limits.depart_from {
+                    // Leaving the origin a walk before the train, if there is one.
+                    let leave = checked::earlier_or_min(departure, self.lead);
+                    if leave < self.limits.depart_from {
                         continue;
                     }
-                    if departure > self.limits.depart_until {
+                    if leave > self.limits.depart_until {
                         break;
                     }
                     // Saturating: a deadline after the latest time there is excludes nothing.
-                    checked::later_or_max(departure, self.max_duration)
+                    checked::later_or_max(leave, self.max_duration)
                 }
             };
             let earlier_calls = calls.get(..board).with_context(|| format!("trip {trip} has no call {board}"))?;

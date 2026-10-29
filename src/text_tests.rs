@@ -154,6 +154,20 @@ fn route_lists_trains_changes_and_buffers() {
 }
 
 #[test]
+fn a_walk_to_the_first_train_comes_first_and_the_connection_leaves_before_it() {
+    let mut b = Builder::new();
+    b.walk("Göteborg Central", "Nils Ericsonterminalen", 5);
+    let bus = b.trip("Vy Bus4You 654", &[("Nils Ericsonterminalen", "", "07:00"), ("Malmö", "10:25", "")]);
+    let tt = b.build("Göteborg Central", "Malmö");
+    let chain = Chain { steps: vec![Step::Walk { footpath: 0 }, ride(bus, 0, 1)] };
+    assert_eq!(
+        route(&tt, &chain, MIN, &HashSet::new(), UTC).unwrap(),
+        "walk 5m to Nils Ericsonterminalen 07:00 UTC Vy Bus4You 654 → 10:25 UTC Malmö"
+    );
+    assert_eq!(header(&tt, &chain, MIN, UTC).unwrap(), "06:55 UTC → 10:25 UTC  3h30  0×  direct");
+}
+
+#[test]
 fn route_names_the_change_station_only_when_its_name_differs() {
     let mut b = Builder::new();
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);

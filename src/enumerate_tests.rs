@@ -94,8 +94,9 @@ fn travel_time_is_at_most_fastest_in_window_plus_extra() {
 }
 
 /// `fastest` is a connection the enumeration can list: it leaves inside the
-/// window, takes a train first, and never walks twice in a row. Otherwise
-/// the limit is cut below every real connection and nothing is listed.
+/// window and never walks twice in a row. Otherwise the limit is cut below
+/// every real connection and nothing is listed. A walk to a train first is
+/// such a connection: it leaves when the walk starts.
 #[test]
 fn fastest_is_a_connection_the_search_can_list() {
     let mut wait_for_later_train = Builder::new();
@@ -111,8 +112,16 @@ fn fastest_is_a_connection_the_search_can_list() {
     two_walks.walk("C", "C2", 2);
     two_walks.trip("RE 2", &[("C2", "", "08:30"), ("D", "08:40", "")]);
     two_walks.trip("RE 3", &[("B", "", "08:30"), ("D", "09:00", "")]);
-    let cases =
-        [(wait_for_later_train, 120, "RE 1 A-D"), (walk_first, 60, "RE 1 A-D"), (two_walks, 60, "RE 1 A-B / RE 3 B-D")];
+    let mut walk_too_late = Builder::new();
+    walk_too_late.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
+    walk_too_late.walk("A", "A2", 2);
+    walk_too_late.trip("RE 5", &[("A2", "", "08:01"), ("D", "08:31", "")]); // leaving A at 07:59
+    let cases = [
+        (wait_for_later_train, 120, "RE 1 A-D"),
+        (walk_first, 31, "walk A-A2 / RE 5 A2-D"),
+        (walk_too_late, 60, "RE 1 A-D"),
+        (two_walks, 60, "RE 1 A-B / RE 3 B-D"),
+    ];
     for (b, fastest, only) in cases {
         let tt = b.build("A", "D");
         let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
@@ -787,7 +796,7 @@ impl Oracle<'_> {
             found: HashSet::new(),
         };
         o.visited[limits.origin] = true;
-        o.go(limits.origin, limits.depart_from, None, 0, false);
+        o.go(limits.origin, limits.depart_from, None, 0, false, TimeDelta::zero());
         o.found
     }
 
@@ -798,11 +807,25 @@ impl Oracle<'_> {
         deadline: Option<DateTime<Utc>>,
         rides: usize,
         walked: bool,
+        // The walk from the origin before the first train.
+        lead: TimeDelta,
     ) {
         let tt = self.tt;
         if station == tt.destination {
             self.found.insert(self.steps.clone());
             return;
+        }
+        if deadline.is_none() && !walked {
+            for (i, fp) in tt.footpaths.iter().enumerate().filter(|(_, fp)| fp.from == station) {
+                if self.visited[fp.to] || fp.to == tt.destination {
+                    continue;
+                }
+                self.visited[fp.to] = true;
+                self.steps.push(Step::Walk { footpath: i });
+                self.go(fp.to, ready + fp.duration, None, rides, true, fp.duration);
+                self.steps.pop();
+                self.visited[fp.to] = false;
+            }
         }
         if let Some(deadline) = deadline.filter(|_| !walked) {
             for (i, fp) in tt.footpaths.iter().enumerate().filter(|(_, fp)| fp.from == station) {
@@ -811,7 +834,7 @@ impl Oracle<'_> {
                 }
                 self.visited[fp.to] = true;
                 self.steps.push(Step::Walk { footpath: i });
-                self.go(fp.to, ready + fp.duration, Some(deadline), rides, true);
+                self.go(fp.to, ready + fp.duration, Some(deadline), rides, true, lead);
                 self.steps.pop();
                 self.visited[fp.to] = false;
             }
@@ -829,8 +852,8 @@ impl Oracle<'_> {
                     continue;
                 };
                 let deadline = match deadline {
-                    None if (self.limits.depart_from..=self.limits.depart_until).contains(&departure) => {
-                        departure + self.max_duration
+                    None if (self.limits.depart_from..=self.limits.depart_until).contains(&(departure - lead)) => {
+                        departure - lead + self.max_duration
                     }
                     Some(d) if departure >= ready - self.limits.missed_by => d,
                     _ => continue,
@@ -847,7 +870,7 @@ impl Oracle<'_> {
                     let progress = !self.limits.forward_only || self.lower_bound[c.station] < self.lower_bound[station];
                     if !c.cancelled && progress {
                         self.steps.push(Step::Ride { trip, board, alight });
-                        self.go(c.station, arrival, Some(deadline), rides + 1, false);
+                        self.go(c.station, arrival, Some(deadline), rides + 1, false, lead);
                         self.steps.pop();
                     }
                 }
@@ -1054,4 +1077,52 @@ proptest! {
             prop_assert!(net.bound[s] <= net.lower_bound[s]);
         }
     }
+}
+
+/// A walk from the origin to a nearby stop and a train from there: Göteborg
+/// Central to the bus terminal next door. It leaves when the walk starts, so
+/// the window and the duration count from then; a train that also calls at
+/// the origin is boarded there instead (unless detours are kept).
+#[test]
+fn connections_can_start_with_a_walk() {
+    let mut b = Builder::new();
+    b.walk("A", "T", 5);
+    b.trip("Bus 1", &[("T", "", "08:05"), ("D", "09:00", "")]);
+    b.trip("Bus 2", &[("T", "", "08:04"), ("D", "08:59", "")]); // leaving A at 07:59
+    b.trip("RE 3", &[("A", "", "08:10"), ("T", "08:15", "08:16"), ("D", "09:10", "")]);
+    let tt = b.build("A", "D");
+    let pruned = Limits { keep_detours: false, ..limits(&tt, "08:00", "08:30") };
+    let result = enumerate(&Network::new(&tt).unwrap(), &pruned).unwrap();
+    assert_eq!(shown(&tt, &result), ["RE 3 A-D", "walk A-T / Bus 1 T-D"]);
+    // Walking to RE 3's stop at T: 08:11 to 09:10, a detour, but listable.
+    assert_eq!(result.fastest, Some(min(59)));
+    let walked = result.chains.iter().find(|c| matches!(c.steps[0], Step::Walk { .. })).unwrap();
+    assert_eq!(walked.departure(&tt).unwrap(), at("08:00"));
+
+    // Kept: walking to RE 3's second stop.
+    let kept = enumerate(&Network::new(&tt).unwrap(), &Limits { keep_detours: true, ..pruned }).unwrap();
+    assert_eq!(shown(&tt, &kept), ["RE 3 A-D", "walk A-T / Bus 1 T-D", "walk A-T / RE 3 T-D"]);
+
+    // Only one walk before the first train, and only from the origin: Bus 5
+    // is two walks away (A-T-U), and after RE 3 reaches T at 08:20 a walk
+    // doesn't start the clock again (Bus 5 and Bus 4 have left by then).
+    let mut b = Builder::new();
+    b.walk("A", "T", 5);
+    b.walk("T", "U", 2);
+    b.trip("Bus 5", &[("U", "", "08:10"), ("D", "09:00", "")]);
+    b.trip("RE 3", &[("A", "", "08:10"), ("T", "08:20", ""), ("D2", "09:20", "")]);
+    b.walk("T", "T2", 2);
+    b.trip("Bus 4", &[("T2", "", "08:15"), ("D", "09:05", "")]);
+    b.trip("RE 9", &[("A", "", "08:00"), ("D", "10:00", "")]);
+    let tt = b.build("A", "D");
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:30")).unwrap();
+    assert_eq!(shown(&tt, &result), ["RE 9 A-D"]);
+
+    // A walk straight to the destination is no connection.
+    let mut b = Builder::new();
+    b.walk("A", "D", 5);
+    b.trip("RE 1", &[("A", "", "08:05"), ("D", "09:00", "")]);
+    let tt = b.build("A", "D");
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:30")).unwrap();
+    assert_eq!(shown(&tt, &result), ["RE 1 A-D"]);
 }
