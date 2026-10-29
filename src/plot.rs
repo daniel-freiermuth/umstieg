@@ -247,7 +247,7 @@ impl Builder<'_> {
 
     /// Pieces of `chain`, up to boarding ride `until` (exclusive) if given.
     /// `start`: where and from when the chain's first ride is waited for (a
-    /// fallback, from the missed departure on).
+    /// fallback, from the missed departure on, or from the arrival if later).
     fn pieces(
         &mut self,
         chain: &Chain,
@@ -389,8 +389,11 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             let arrival = chain.arrival(tt)?;
             let mut refs = Vec::new();
             for (change, transfer) in chain.transfers(tt)?.iter().enumerate() {
+                // A missed change (`--missed-by`): waited from the arrival, as
+                // fallbacks are searched from then on.
+                let since = transfer.departure.max(transfer.ready());
                 for fallback in fallbacks.for_change(chain, change)? {
-                    let key = (transfer.station, transfer.departure, fallback.line.clone());
+                    let key = (transfer.station, since, fallback.line.clone());
                     let i = if let Some(&i) = fallback_index.get(&key) {
                         i
                     } else {
@@ -400,7 +403,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
                             pieces: builder.pieces(
                                 &fallback.chain,
                                 fallback.rejoins_at,
-                                Some((transfer.station, transfer.departure)),
+                                Some((transfer.station, since)),
                             )?,
                             line: fallback.line,
                         });

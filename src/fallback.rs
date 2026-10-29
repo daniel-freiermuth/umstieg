@@ -97,7 +97,7 @@ impl<'n> Fallbacks<'n> {
         }
         // A change listed although missed (negative buffer): the traveller is
         // there only after the missed train left; nothing leaves before that.
-        let ready = checked::earlier_or_min(transfer.departure, transfer.slack);
+        let ready = transfer.ready();
         let mut candidates: Vec<Chain> = Vec::new();
         for s in starts {
             candidates.extend_from_slice(self.candidates(s, transfer.departure, ready)?);
