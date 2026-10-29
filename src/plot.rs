@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::checked;
 use crate::enumerate::{self, Chain, Group, Network, Step};
-use crate::fallback::Fallbacks;
+use crate::fallback::{Fallback, Fallbacks};
 use crate::page;
 use crate::text;
 use crate::timetable::{Timetable, meters};
@@ -344,27 +344,58 @@ pub struct Plot<'a> {
     pub progress: &'a dyn Fn(usize, usize),
 }
 
-/// The plot of all connections in `plot.groups`, with fallbacks per change, as
-/// an HTML page, and the connections' details.
-#[expect(clippy::too_many_lines, reason = "the page's data, part after part")]
-pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<Rendered> {
-    let tt = net.tt;
+/// Every metric that can be computed, and the index of `requested` among them:
+/// only the requested metric must work; others are offered if they do.
+fn metrics(net: &Network<'_>, requested: Metric) -> Result<(Vec<MetricOut>, usize)> {
     let mut metrics = Vec::new();
     let mut shown = 0;
     for &m in Metric::value_variants() {
         let heights = match heights(net, m) {
             Ok(h) => h,
-            // Only the requested metric must work; others are offered if they do.
-            Err(e) if m == plot.metric => return Err(e),
+            Err(e) if m == requested => return Err(e),
             Err(_) => continue,
         };
-        if m == plot.metric {
+        if m == requested {
             shown = metrics.len();
         }
         let id = m.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
         let heights = heights.into_iter().map(|h| h.map(|h| (h * 100.0).round() / 100.0)).collect();
         metrics.push(MetricOut { id, unit: m.unit(), description: m.description(), heights });
     }
+    Ok((metrics, shown))
+}
+
+/// Index of `fallback` (taken when `transfer` is missed) in `out`, added once
+/// per (station, start of the wait, line).
+fn intern_fallback(
+    out: &mut Vec<FallbackOut>,
+    index: &mut HashMap<(usize, DateTime<Utc>, String), usize>,
+    builder: &mut Builder<'_>,
+    transfer: &enumerate::Transfer,
+    fallback: Fallback,
+) -> Result<usize> {
+    // A missed change (`--missed-by`): waited from the arrival, as fallbacks
+    // are searched from then on.
+    let since = transfer.departure.max(transfer.ready());
+    let key = (transfer.station, since, fallback.line.clone());
+    if let Some(&i) = index.get(&key) {
+        return Ok(i);
+    }
+    let i = out.len();
+    out.push(FallbackOut {
+        at: builder.tt.station(transfer.station)?.name.clone(),
+        pieces: builder.pieces(&fallback.chain, fallback.rejoins_at, Some((transfer.station, since)))?,
+        line: fallback.line,
+    });
+    index.insert(key, i);
+    Ok(i)
+}
+
+/// The plot of all connections in `plot.groups`, with fallbacks per change, as
+/// an HTML page, and the connections' details.
+pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>) -> Result<Rendered> {
+    let tt = net.tt;
+    let (metrics, shown) = metrics(net, plot.metric)?;
     let mut builder = Builder {
         tt,
         min_transfer: plot.min_transfer,
@@ -389,29 +420,10 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             let arrival = chain.arrival(tt)?;
             let mut refs = Vec::new();
             for (change, transfer) in chain.transfers(tt)?.iter().enumerate() {
-                // A missed change (`--missed-by`): waited from the arrival, as
-                // fallbacks are searched from then on.
-                let since = transfer.departure.max(transfer.ready());
                 for fallback in fallbacks.for_change(chain, change)? {
-                    let key = (transfer.station, since, fallback.line.clone());
-                    let i = if let Some(&i) = fallback_index.get(&key) {
-                        i
-                    } else {
-                        let i = fallback_out.len();
-                        fallback_out.push(FallbackOut {
-                            at: tt.station(transfer.station)?.name.clone(),
-                            pieces: builder.pieces(
-                                &fallback.chain,
-                                fallback.rejoins_at,
-                                Some((transfer.station, since)),
-                            )?,
-                            line: fallback.line,
-                        });
-                        fallback_index.insert(key, i);
-                        i
-                    };
                     let late = fallback.lands.signed_duration_since(arrival).max(TimeDelta::zero());
                     let arrive = format!("{} (+{})", text::clock(fallback.lands, plot.zone), text::duration(late));
+                    let i = intern_fallback(&mut fallback_out, &mut fallback_index, &mut builder, transfer, fallback)?;
                     refs.push((i, arrive));
                 }
             }
