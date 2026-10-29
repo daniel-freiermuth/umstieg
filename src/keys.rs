@@ -47,7 +47,7 @@ fn values(text: &str) -> HashMap<String, String> {
 
 /// The file `name` in the config directory; empty if there is none.
 fn read(name: &str) -> Result<String> {
-    let Some(path) = dir().map(|d| d.join(name)) else { return Ok(String::new()) };
+    let Some(path) = xdg_dir("XDG_CONFIG_HOME", ".config").map(|d| d.join(name)) else { return Ok(String::new()) };
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -55,11 +55,11 @@ fn read(name: &str) -> Result<String> {
     }
 }
 
-/// `$XDG_CONFIG_HOME/umstieg`, falling back to `~/.config/umstieg`.
-fn dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+/// `$<var>/umstieg`, falling back to `~/<fallback>/umstieg`.
+pub fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
+    let base = std::env::var_os(var)
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))?;
     Some(base.join("umstieg"))
 }
 
