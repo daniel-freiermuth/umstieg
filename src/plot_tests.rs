@@ -383,6 +383,41 @@ fn rendered_data_is_consistent() {
 }
 
 #[test]
+fn a_missed_changes_fallback_waits_from_the_arrival() {
+    let mut b = testkit::Builder::new();
+    let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:04", "")]);
+    let re = b.trip("RE 2", &[("B", "", "09:00"), ("C", "10:00", "")]);
+    b.trip("RE 6", &[("B", "", "09:10"), ("C", "10:30", "")]);
+    let tt = b.build("A", "C");
+    let net = Network::new(&tt).unwrap();
+    // Listed although missed by four minutes (`--missed-by`).
+    let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }]).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let plot = Plot {
+        title: String::new(),
+        subtitle: String::new(),
+        groups: &groups,
+        metric: Metric::RemainingTime,
+        min_transfer: MIN,
+        zone: Berlin,
+        back: None,
+        details_url: None,
+        progress: &|_, _| {},
+    };
+    let data = embedded_json(&render(&net, &mut fallbacks, &plot).unwrap().html, "data");
+    let fallbacks = data["fallbacks"].as_array().unwrap();
+    assert_eq!(fallbacks.len(), 1);
+    let first = &data["pieces"][indexes(&fallbacks[0]["pieces"])[0]];
+    assert_eq!(
+        (first["kind"].as_str(), first["info"].as_str()),
+        (Some("wait"), Some("6m at B after the missed train"))
+    );
+    // From when the traveller is at B, not from RE 2's departure at 09:00.
+    let from = serde_json::json!([at("09:04").timestamp().div_euclid(60), station(&tt, "B")]);
+    assert_eq!(first["pts"][0], from);
+}
+
+#[test]
 fn only_the_requested_metric_must_be_computable() {
     let mut tt = located();
     tt.stations[tt.origin].position = None;
