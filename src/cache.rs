@@ -24,10 +24,7 @@ pub fn root() -> Option<PathBuf> {
         Some(ROOT.clone())
     }
     #[cfg(not(test))]
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .map(|d| d.join("umstieg"))
+    crate::keys::xdg_dir("XDG_CACHE_HOME", ".cache")
 }
 
 /// Writes `contents` to `path` (creating its directory) through a temporary
