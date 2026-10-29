@@ -252,6 +252,7 @@ fn app(api: &str) -> Arc<App> {
         api: api.to_owned(),
         db_api: "http://127.0.0.1:9".to_owned(),
         trafikverket_api: "http://127.0.0.1:9".to_owned(),
+        sj: String::new(),
         contact: "test".to_owned(),
     };
     Arc::new(App::new(1, endpoints, || Ok(crate::keys::Keys::default()), 1).unwrap())

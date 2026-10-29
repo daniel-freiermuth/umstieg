@@ -516,6 +516,8 @@ impl StandIn {
             api: self.base.clone(),
             db_api: format!("{}/db", self.base),
             trafikverket_api: format!("{}/trafikverket", self.base),
+            // Not asked: no Swedish stops here (a request would 404 and warn).
+            sj: format!("{}/sj", self.base),
             contact: "e2e@example.org".to_owned(),
         }
     }

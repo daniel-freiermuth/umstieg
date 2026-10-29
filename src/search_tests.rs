@@ -69,6 +69,7 @@ fn the_user_agent_names_umstieg_its_version_and_the_contact() {
         api: String::new(),
         db_api: String::new(),
         trafikverket_api: String::new(),
+        sj: String::new(),
         contact: "mailto:me@example.org".to_owned(),
     };
     assert_eq!(endpoints.user_agent(), format!("umstieg/{} (mailto:me@example.org)", env!("CARGO_PKG_VERSION")));
@@ -165,6 +166,7 @@ fn report(tt: crate::timetable::Timetable) -> String {
         hubs: Vec::new(),
         requests: "0 Transitous requests".to_owned(),
         with_db: false,
+        with_sj: false,
         zone: UTC,
         time: at("08:00"),
         depart_until: at("09:00"),
@@ -231,9 +233,60 @@ fn progress_counts_the_requests_per_service_asked() {
     let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
     let db = crate::db::Db::new("http://unused.test", credentials, "t").unwrap();
     let tv = crate::trafikverket::Trafikverket::new("http://unused.test", "key", "t").unwrap();
-    assert_eq!(super::requests_so_far(&motis, None, None, None), "0 requests to Transitous");
+    let sj = crate::sj::Sj::new("http://unused.test", "t").unwrap();
+    let none = super::Feeds { efa: None, db: None, tv: None, sj: None };
+    assert_eq!(none.so_far(&motis), "0 requests to Transitous");
+    assert_eq!(none.summary(&motis), "0 Transitous requests");
+    let all = super::Feeds { efa: Some(efa), db: Some(db), tv: Some(tv), sj: Some(sj) };
+    assert_eq!(all.so_far(&motis), "0 requests to Transitous, 0 to EFA, 0 to DB, 0 to Trafikverket, 0 to SJ");
     assert_eq!(
-        super::requests_so_far(&motis, Some(&efa), Some(&db), Some(&tv)),
-        "0 requests to Transitous, 0 to EFA, 0 to DB, 0 to Trafikverket"
+        all.summary(&motis),
+        "0 Transitous requests, 0 EFA requests, 0 DB requests, 0 Trafikverket requests, 0 SJ requests"
     );
+}
+
+#[tokio::test]
+async fn sj_adds_rough_routes_only_through_sweden_and_its_failures_are_warnings() {
+    use axum::routing::{get, post};
+
+    let answer = include_str!("../testdata/sj/departures.json");
+    let router = axum::Router::new()
+        .route("/search", post(|| async { r#"{"departureSearchId":"x"}"# }))
+        .route("/departures/search/{id}", get(move || async move { answer }));
+    let working = testkit::serve(router).await;
+    let refusing =
+        testkit::serve(axum::Router::new().fallback(|| async { (axum::http::StatusCode::FORBIDDEN, "no") })).await;
+    let feeds =
+        |url: &str| super::Feeds { efa: None, db: None, tv: None, sj: Some(crate::sj::Sj::new(url, "t").unwrap()) };
+    let stop = |id: &str| crate::motis::Stop { id: id.to_owned(), name: id.to_owned(), position: None };
+    let query = |from: &str, to: &str| crate::rough::Query {
+        origin: stop(from),
+        destination: stop(to),
+        time: DateTime::parse_from_rfc3339("2026-10-30T06:00:00+01:00").unwrap().to_utc(),
+        window: TimeDelta::hours(2),
+        vias: Vec::new(),
+        auto_hubs: 0,
+    };
+    let empty = || crate::rough::Rough { itineraries: Vec::new(), hubs: Vec::new(), warnings: Vec::new() };
+    let sweden = query("se-Trafiklab_740000002", "se-Trafiklab_740000073");
+
+    let (events, asked) = (|_: Event<'_>| {}, String::new);
+    let mut rough = empty();
+    assert!(super::with_sj(&feeds(&working), &sweden, &mut rough, &events, asked).await);
+    assert_eq!((rough.itineraries.len(), rough.warnings.len()), (2, 0));
+
+    let germany = feeds(&working);
+    let mut rough = empty();
+    assert!(!super::with_sj(&germany, &query("de-DELFI_a", "de-DELFI_b"), &mut rough, &events, asked).await);
+    assert_eq!((rough.itineraries.len(), germany.sj.as_ref().unwrap().request_count()), (0, 0), "not asked");
+
+    // Another search: the one above is cached.
+    let mut rough = empty();
+    let elsewhere = query("se-Trafiklab_740000002", "se-Trafiklab_740000077");
+    assert!(!super::with_sj(&feeds(&refusing), &elsewhere, &mut rough, &events, asked).await);
+    assert!(rough.itineraries.is_empty());
+    assert!(rough.warnings.len() == 1 && rough.warnings[0].starts_with("SJ: "), "{:?}", rough.warnings);
+
+    let off = super::Feeds { efa: None, db: None, tv: None, sj: None };
+    assert!(!super::with_sj(&off, &sweden, &mut empty(), &events, asked).await);
 }

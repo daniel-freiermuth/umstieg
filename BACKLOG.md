@@ -58,7 +58,10 @@ the single hub. Both trains are in Transitous.
 - **Send all form values in links**, not only those differing from the
   defaults, so a changed default doesn't change old links.
 - **Via without an id** (an older link): `via=Hamburg+Hbf` showed no chip.
-- **Connections that start with a walk**.
+- **Connections that start with a walk**: SJ's Vy Bus4You buses from
+  Göteborg leave from Nils Ericsonterminalen next to Göteborg Central; the
+  bus and the walk to it are in the timetable, but a connection can't start
+  with a walk yet.
 
 ## Running it
 

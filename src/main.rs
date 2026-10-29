@@ -12,6 +12,7 @@ mod plot;
 mod rough;
 mod search;
 mod serve;
+mod sj;
 mod sync;
 mod text;
 mod timetable;

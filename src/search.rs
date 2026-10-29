@@ -16,6 +16,7 @@ use crate::enumerate::{self, Chain, Limits, Network, REPORT_EVERY, Step};
 use crate::fallback::{self, Fallbacks};
 use crate::keys::Keys;
 use crate::motis::{Motis, Stop};
+use crate::sj::{self, Sj};
 use crate::text::{buffer, clock, duration, header, route, timed, window};
 use crate::trafikverket::{self, Trafikverket};
 use crate::{checked, complete, db, efa, plot, rough, timetable};
@@ -167,6 +168,9 @@ pub struct Endpoints {
     /// Trafikverket open API URL.
     #[arg(long, default_value = trafikverket::API)]
     pub trafikverket_api: String,
+    /// SJ's booking API, asked for connections through Sweden (empty: not asked).
+    #[arg(long, default_value = sj::API)]
+    pub sj: String,
     /// Contact sent in the User-Agent, as the Transitous usage policy requires.
     #[arg(long, env = "UMSTIEG_CONTACT", default_value = "https://github.com/daniel-freiermuth")]
     pub contact: String,
@@ -223,8 +227,8 @@ pub async fn run(
     };
     let user_agent = endpoints.user_agent();
     let motis = Motis::new(&endpoints.api, &user_agent)?;
-    let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;
-    let (db, tv) = boards(args, endpoints, keys, &user_agent, events)?;
+    let feeds = Feeds::new(args, endpoints, keys, &user_agent, events)?;
+    let (efa, db, tv) = (feeds.efa.as_ref(), feeds.db.as_ref(), feeds.tv.as_ref());
 
     let zone = match args.time_zone {
         Some(zone) => zone,
@@ -240,21 +244,15 @@ pub async fn run(
     let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
     let (origin, destination, vias) = stations(&motis, args).await?;
-    let asked = || requests_so_far(&motis, efa.as_ref(), db.as_ref(), tv.as_ref());
+    let asked = || feeds.so_far(&motis);
 
     events(Event::Stage("Asking Transitous and EFA for rough routes"));
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: args.hubs };
-    let rough = ticking(rough::collect(&motis, efa.as_ref(), &query), events, asked).await?;
+    let mut rough = ticking(rough::collect(&motis, efa, &query), events, asked).await?;
+    let with_sj = with_sj(&feeds, &query, &mut rough, events, asked).await;
     events(Event::Stage("Building the timetable from station boards (DB, Trafikverket)"));
-    let boards = timetable::build(
-        &motis,
-        db.as_ref(),
-        tv.as_ref(),
-        &rough.itineraries,
-        &query.origin,
-        &query.destination,
-        args.all_stops,
-    );
+    let boards =
+        timetable::build(&motis, db, tv, &rough.itineraries, &query.origin, &query.destination, args.all_stops);
     let mut built = ticking(boards, events, asked).await;
     if args.planned {
         built.timetable.ignore_delays();
@@ -287,20 +285,15 @@ pub async fn run(
     })
     .await?;
     ticking(complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events), events, asked).await;
-    let requests = format!(
-        "{} Transitous requests{}{}{}",
-        motis.request_count(),
-        efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
-        db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
-        tv.as_ref().map(|tv| format!(", {} Trafikverket requests", tv.request_count())).unwrap_or_default(),
-    );
+    let requests = feeds.summary(&motis);
     // What the search cost the services, for the operator (Transitous asks to keep the load light).
     tracing::info!(
         transitous = motis.request_count(),
-        efa = efa.as_ref().map(efa::Efa::request_count),
-        db = db.as_ref().map(db::Db::request_count),
-        trafikverket = tv.as_ref().map(Trafikverket::request_count),
-        db_quota_wait = ?db.as_ref().map(db::Db::waited),
+        efa = efa.map(efa::Efa::request_count),
+        db = db.map(db::Db::request_count),
+        trafikverket = tv.map(Trafikverket::request_count),
+        sj = feeds.sj.as_ref().map(Sj::request_count),
+        db_quota_wait = ?db.map(db::Db::waited),
         "requests sent"
     );
     let report = Report {
@@ -311,6 +304,7 @@ pub async fn run(
         hubs: rough.hubs,
         requests,
         with_db: db.is_some(),
+        with_sj,
         zone,
         time,
         depart_until,
@@ -430,44 +424,100 @@ async fn ticking<T>(
     }
 }
 
-/// "38 requests to Transitous, 6 to EFA, 80 to DB · waiting 40 s more for DB's limit of 60 requests per minute".
-fn requests_so_far(motis: &Motis, efa: Option<&efa::Efa>, db: Option<&db::Db>, tv: Option<&Trafikverket>) -> String {
-    let efa = efa.map(|efa| format!(", {} to EFA", efa.request_count())).unwrap_or_default();
-    let db = db
-        .map(|db| {
-            let quota = db.waiting().map_or_else(String::new, |left| {
-                format!(" · waiting {} s more for DB's limit of 60 requests per minute", left.as_secs())
-            });
-            format!(", {} to DB{quota}", db.request_count())
-        })
-        .unwrap_or_default();
-    let tv = tv.map(|tv| format!(", {} to Trafikverket", tv.request_count())).unwrap_or_default();
-    format!("{} requests to Transitous{efa}{db}{tv}", motis.request_count())
+/// The services a search may ask besides Transitous; each `None` when off.
+struct Feeds {
+    efa: Option<efa::Efa>,
+    db: Option<db::Db>,
+    tv: Option<Trafikverket>,
+    sj: Option<Sj>,
 }
 
-/// The station board feeds the search may ask: those with a key, unless switched off.
-fn boards(
-    args: &SearchArgs,
-    endpoints: &Endpoints,
-    keys: Keys,
-    user_agent: &str,
+impl Feeds {
+    /// EFA and SJ unless their endpoint is empty; DB and Trafikverket with a
+    /// key, unless switched off.
+    fn new(
+        args: &SearchArgs,
+        endpoints: &Endpoints,
+        keys: Keys,
+        user_agent: &str,
+        events: &(dyn Fn(Event<'_>) + Sync),
+    ) -> Result<Self> {
+        let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, user_agent)).transpose()?;
+        let db = match (args.no_db, keys.db) {
+            (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, user_agent)?),
+            (false, None) => {
+                events(Event::Warning(
+                    "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
+                ));
+                None
+            }
+            (true, _) => None,
+        };
+        let tv = match (args.no_trafikverket, keys.trafikverket) {
+            (false, Some(key)) => Some(Trafikverket::new(&endpoints.trafikverket_api, &key, user_agent)?),
+            _ => None,
+        };
+        let sj = (!endpoints.sj.is_empty()).then(|| Sj::new(&endpoints.sj, user_agent)).transpose()?;
+        Ok(Self { efa, db, tv, sj })
+    }
+
+    /// "38 requests to Transitous, 6 to EFA, 80 to DB · waiting 40 s more for DB's limit of 60 requests per minute".
+    fn so_far(&self, motis: &Motis) -> String {
+        let efa = self.efa.as_ref().map(|efa| format!(", {} to EFA", efa.request_count())).unwrap_or_default();
+        let db = self
+            .db
+            .as_ref()
+            .map(|db| {
+                let quota = db.waiting().map_or_else(String::new, |left| {
+                    format!(" · waiting {} s more for DB's limit of 60 requests per minute", left.as_secs())
+                });
+                format!(", {} to DB{quota}", db.request_count())
+            })
+            .unwrap_or_default();
+        let tv = self.tv.as_ref().map(|tv| format!(", {} to Trafikverket", tv.request_count())).unwrap_or_default();
+        let sj = self.sj.as_ref().map(|sj| format!(", {} to SJ", sj.request_count())).unwrap_or_default();
+        format!("{} requests to Transitous{efa}{db}{tv}{sj}", motis.request_count())
+    }
+
+    /// "12 Transitous requests, 3 EFA requests, …", for the report.
+    fn summary(&self, motis: &Motis) -> String {
+        let count = |n: Option<usize>, name: &str| n.map(|n| format!(", {n} {name} requests")).unwrap_or_default();
+        format!(
+            "{} Transitous requests{}{}{}{}",
+            motis.request_count(),
+            count(self.efa.as_ref().map(efa::Efa::request_count), "EFA"),
+            count(self.db.as_ref().map(db::Db::request_count), "DB"),
+            count(self.tv.as_ref().map(Trafikverket::request_count), "Trafikverket"),
+            count(self.sj.as_ref().map(Sj::request_count), "SJ"),
+        )
+    }
+}
+
+/// SJ's connections through Sweden added to the rough routes; `true` if
+/// there are any. A failure is a warning: SJ is an extra source.
+async fn with_sj(
+    feeds: &Feeds,
+    query: &rough::Query,
+    rough: &mut rough::Rough,
     events: &(dyn Fn(Event<'_>) + Sync),
-) -> Result<(Option<db::Db>, Option<Trafikverket>)> {
-    let db = match (args.no_db, keys.db) {
-        (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, user_agent)?),
-        (false, None) => {
-            events(Event::Warning(
-                "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
-            ));
-            None
+    asked: impl Fn() -> String,
+) -> bool {
+    let Some(sj) = &feeds.sj else { return false };
+    if sj::swedish_ends(query, &rough.itineraries).is_none() {
+        return false;
+    }
+    events(Event::Stage("Asking SJ for connections through Sweden"));
+    match ticking(sj::rough(sj, feeds.tv.as_ref(), query, &rough.itineraries), events, asked).await {
+        Ok(found) => {
+            let any = !found.is_empty();
+            rough.itineraries.extend(found);
+            any
         }
-        (true, _) => None,
-    };
-    let tv = match (args.no_trafikverket, keys.trafikverket) {
-        (false, Some(key)) => Some(Trafikverket::new(&endpoints.trafikverket_api, &key, user_agent)?),
-        _ => None,
-    };
-    Ok((db, tv))
+        Err(e) => {
+            rough.warnings.push(format!("SJ: {e:#}"));
+            false
+        }
+    }
 }
 
 /// `--extra-hours` as a duration, negative meaning none.
@@ -490,6 +540,8 @@ struct Report {
     /// "12 Transitous requests, 3 EFA requests, …".
     requests: String,
     with_db: bool,
+    /// SJ's connections are among the rough routes.
+    with_sj: bool,
     /// Where every time is shown in: --time-zone, else the machine's.
     zone: Tz,
     time: DateTime<Utc>,
@@ -510,6 +562,7 @@ impl Report {
             hubs,
             requests,
             with_db,
+            with_sj,
             zone,
             time,
             depart_until,
@@ -565,6 +618,9 @@ impl Report {
         }
         if built.trafikverket {
             writeln!(out, "      Trafikverket open data (CC0).")?;
+        }
+        if with_sj {
+            writeln!(out, "      SJ's connection search (sj.se).")?;
         }
 
         let rendered = match plot {

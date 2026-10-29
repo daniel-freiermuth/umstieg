@@ -1,0 +1,389 @@
+{
+ "travels": [
+  {
+   "departures": [
+    {
+     "departureDateTime": "2026-10-30T04:55:00+01:00",
+     "arrivalDateTime": "2026-10-30T11:21:00+01:00",
+     "legs": [
+      {
+       "origin": {
+        "uicStationCode": "740000002",
+        "name": "Göteborg Central",
+        "shortName": "Göteborg C"
+       },
+       "destination": {
+        "uicStationCode": "740001579",
+        "name": "Falkenberg station",
+        "shortName": "Falkenberg stn"
+       },
+       "departureDateTime": "2026-10-30T04:55:00+01:00",
+       "arrivalDateTime": "2026-10-30T05:47:00+01:00",
+       "serviceName": "1031",
+       "serviceIdentifier": "GA5FERCBJ5CHYMJQGMYXYWCPKJCVGVKOIRJVIQKHPQZDAMRWFUYTALJTGB6DEMBSGYWTCMBNGMYFIMBUHI2TK7BSGAZDMLJRGAWTGMCUGA2TUNBXPQ3TIMBQGAYDAMBSPQ3TIMBQGAYTKNZZ",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740001579",
+        "name": "Falkenberg station",
+        "shortName": "Falkenberg stn"
+       },
+       "destination": {
+        "uicStationCode": "740001603",
+        "name": "Båstad station",
+        "shortName": "Båstad stn"
+       },
+       "departureDateTime": "2026-10-30T06:00:00+01:00",
+       "arrivalDateTime": "2026-10-30T07:20:00+01:00",
+       "serviceName": "6804",
+       "serviceIdentifier": "GA5FERCBJ5CHYNRYGA2HYWCPKJCVGVKOIRJVIQKHL5BFKU34GIYDENRNGEYC2MZQPQZDAMRWFUYTALJTGBKDANR2GAYHYMRQGI3C2MJQFUZTAVBQG45DEMD4G42DAMBQGE2TOOL4G42DAMBQGE3DAMY",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "BUS",
+       "serviceType": {
+        "code": "XORESUNDSTAG_BUS",
+        "name": "Öresundståg buss",
+        "modality": "BUS",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740001603",
+        "name": "Båstad station",
+        "shortName": "Båstad stn"
+       },
+       "destination": {
+        "uicStationCode": "740000120",
+        "name": "Lund Central",
+        "shortName": "Lund C"
+       },
+       "departureDateTime": "2026-10-30T07:32:00+01:00",
+       "arrivalDateTime": "2026-10-30T08:36:00+01:00",
+       "serviceName": "51039",
+       "serviceIdentifier": "GA5FERCBJ5CHYNJRGAZTS7CYJ5JEKU2VJZCFGVCBI56DEMBSGYWTCMBNGMYHYMRQGI3C2MJQFUZTAVBQG45DGMT4GIYDENRNGEYC2MZQKQYDQORTGZ6DONBQGAYDCNRQGN6DONBQGAYDAMJSGA",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740000120",
+        "name": "Lund Central",
+        "shortName": "Lund C"
+       },
+       "destination": {
+        "uicStationCode": "740000073",
+        "name": "Karlshamn Resecentrum",
+        "shortName": "Karlshamn RC"
+       },
+       "departureDateTime": "2026-10-30T09:41:00+01:00",
+       "arrivalDateTime": "2026-10-30T11:21:00+01:00",
+       "serviceName": "1036",
+       "serviceIdentifier": "GA5FERCBJ5CHYMJQGM3HYWCPKJCVGVKOIRJVIQKHPQZDAMRWFUYTALJTGB6DEMBSGYWTCMBNGMYFIMBZHI2DC7BSGAZDMLJRGAWTGMCUGEYTUMRRPQ3TIMBQGAYDCMRQPQ3TIMBQGAYDANZT",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      }
+     ],
+     "origin": {
+      "uicStationCode": "740000002",
+      "name": "Göteborg Central"
+     },
+     "destination": {
+      "uicStationCode": "740000073",
+      "name": "Karlshamn Resecentrum"
+     }
+    },
+    {
+     "departureDateTime": "2026-10-30T06:04:00+01:00",
+     "arrivalDateTime": "2026-10-30T11:36:00+01:00",
+     "legs": [
+      {
+       "origin": {
+        "uicStationCode": "740000002",
+        "name": "Göteborg Central",
+        "shortName": "Göteborg C"
+       },
+       "destination": {
+        "uicStationCode": "740000096",
+        "name": "Emmaboda station",
+        "shortName": "Emmaboda stn"
+       },
+       "departureDateTime": "2026-10-30T06:04:00+01:00",
+       "arrivalDateTime": "2026-10-30T09:27:00+01:00",
+       "serviceName": "319",
+       "serviceIdentifier": "GA5FERCBJ5CHYMZRHF6FGSSSIVDXYMRQGI3C2MJQFUZTA7BSGAZDMLJRGAWTGMCUGA3DUMBUPQZDAMRWFUYTALJTGBKDAOJ2GI3XYNZUGAYDAMBQGAZHYNZUGAYDAMBQHE3A",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "SJREG",
+        "name": "SJ Regional",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "SJ Regional",
+        "operatorName": "SJ"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740000096",
+        "name": "Emmaboda station",
+        "shortName": "Emmaboda stn"
+       },
+       "destination": {
+        "uicStationCode": "740001537",
+        "name": "Bergåsa station",
+        "shortName": "Bergåsa stn"
+       },
+       "departureDateTime": "2026-10-30T09:34:00+01:00",
+       "arrivalDateTime": "2026-10-30T10:12:00+01:00",
+       "serviceName": "8625",
+       "serviceIdentifier": "GA5FERCBJ5CHYOBWGI2XYWCLKJHVGQKUIFDUKTS7JRKHYMRQGI3C2MJQFUZTA7BSGAZDMLJRGAWTGMCUGA4TUMZUPQZDAMRWFUYTALJTGBKDCMB2GEZHYNZUGAYDAMBQHE3HYNZUGAYDAMJVGM3Q",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XKROSATAGEN_LT",
+        "name": "Krösatågen Öst",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Krösatågen Öst",
+        "operatorName": "Krösatågen Öst"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740001537",
+        "name": "Bergåsa station",
+        "shortName": "Bergåsa stn"
+       },
+       "destination": {
+        "uicStationCode": "740000073",
+        "name": "Karlshamn Resecentrum",
+        "shortName": "Karlshamn RC"
+       },
+       "departureDateTime": "2026-10-30T10:51:00+01:00",
+       "arrivalDateTime": "2026-10-30T11:36:00+01:00",
+       "serviceName": "1077",
+       "serviceIdentifier": "GA5FERCBJ5CHYMJQG43XYWCPKJCVGVKOIRJVIQKHPQZDAMRWFUYTALJTGB6DEMBSGYWTCMBNGMYFIMJQHI2TC7BSGAZDMLJRGAWTGMCUGEYTUMZWPQ3TIMBQGAYTKMZXPQ3TIMBQGAYDANZT",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      }
+     ],
+     "origin": {
+      "uicStationCode": "740000002",
+      "name": "Göteborg Central"
+     },
+     "destination": {
+      "uicStationCode": "740000073",
+      "name": "Karlshamn Resecentrum"
+     }
+    },
+    {
+     "departureDateTime": "2026-10-30T07:00:00+01:00",
+     "arrivalDateTime": "2026-10-30T13:21:00+01:00",
+     "legs": [
+      {
+       "origin": {
+        "uicStationCode": "740020483",
+        "name": "Göteborg Nils Ericsonterminal",
+        "shortName": "Göteborg Nils E"
+       },
+       "destination": {
+        "uicStationCode": "740072050",
+        "name": "Malmö C Norra Vallgatan",
+        "shortName": "Malmö N Vallgat"
+       },
+       "departureDateTime": "2026-10-30T07:00:00+01:00",
+       "arrivalDateTime": "2026-10-30T10:25:00+01:00",
+       "serviceName": "654",
+       "serviceIdentifier": "GA5FERCBJ5CHYNRVGR6FQVSZII2FSX2FLBIHYMRQGI3C2MJQFUZTA7BSGAZDMLJRGAWTGMCUGA3TUMBQPQZDAMRWFUYTALJTGBKDCMB2GI2XYNZUGAYDEMBUHAZXYNZUGAYDOMRQGUYA",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "EXPRESSBUS",
+       "serviceType": {
+        "code": "XVYB4Y_EXP",
+        "name": "Vy Bus4You Expressbuss",
+        "modality": "EXPRESS_BUS_SERVICE",
+        "description": "Vy Bus4You",
+        "operatorName": "Vy Bus4You"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740000003",
+        "name": "Malmö Central",
+        "shortName": "Malmö C"
+       },
+       "destination": {
+        "uicStationCode": "740000073",
+        "name": "Karlshamn Resecentrum",
+        "shortName": "Karlshamn RC"
+       },
+       "departureDateTime": "2026-10-30T11:27:00+01:00",
+       "arrivalDateTime": "2026-10-30T13:21:00+01:00",
+       "serviceName": "1052",
+       "serviceIdentifier": "GA5FERCBJ5CHYMJQGUZHYWCPKJCVGVKOIRJVIQKHPQZDAMRWFUYTALJTGB6DEMBSGYWTCMBNGMYFIMJRHIZDO7BSGAZDMLJRGAWTGMCUGEZTUMRRPQ3TIMBQGAYDAMBTPQ3TIMBQGAYDANZT",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      }
+     ],
+     "origin": {
+      "uicStationCode": "740000002",
+      "name": "Göteborg Central"
+     },
+     "destination": {
+      "uicStationCode": "740000073",
+      "name": "Karlshamn Resecentrum"
+     }
+    },
+    {
+     "departureDateTime": "2026-10-30T23:45:00+01:00",
+     "arrivalDateTime": "2026-10-31T09:21:00+01:00",
+     "legs": [
+      {
+       "origin": {
+        "uicStationCode": "740030117",
+        "name": "Göteborg Drottningtorget",
+        "shortName": "Gbg Drottningt"
+       },
+       "destination": {
+        "uicStationCode": "740025606",
+        "name": "Angered centrum",
+        "shortName": "Angered centrum"
+       },
+       "departureDateTime": "2026-10-30T23:45:00+01:00",
+       "arrivalDateTime": "2026-10-31T00:10:00+01:00",
+       "serviceName": "8",
+       "serviceIdentifier": "GA5FERCBJ5CHYOD4LBIFIQK7J5PVIUSBJV6DEMBSGYWTCMBNGMYHYMRQGI3C2MJQFUZTAVBSGM5DINL4GIYDENRNGEYC2MZRKQYDAORRGB6DONBQGAZTAMJRG56DONBQGAZDKNRQGY",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "TRAM",
+       "serviceType": {
+        "code": "XPTA_O_TRAM",
+        "name": "Västtrafik spårvagn",
+        "modality": "TRAM_SERVICE",
+        "description": "Västtrafik",
+        "operatorName": "Västtrafik"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740025606",
+        "name": "Angered centrum",
+        "shortName": "Angered centrum"
+       },
+       "destination": {
+        "uicStationCode": "740000580",
+        "name": "Kungälv resecentrum",
+        "shortName": "Kungälv resecen"
+       },
+       "departureDateTime": "2026-10-31T01:05:00+01:00",
+       "arrivalDateTime": "2026-10-31T01:40:00+01:00",
+       "serviceName": "401",
+       "serviceIdentifier": "GA5FERCBJ5CHYNBQGF6FQUCUIFPU6X2CKVJXYMRQGI3C2MJQFUZTC7BSGAZDMLJRGAWTGMKUGAYTUMBVPQZDAMRWFUYTALJTGFKDAMJ2GQYHYNZUGAYDENJWGA3HYNZUGAYDAMBVHAYA",
+       "serviceScheduleDate": "2026-10-31",
+       "transportMethod": "BUS",
+       "serviceType": {
+        "code": "XPTA_O_BUS",
+        "name": "Västtrafik buss",
+        "modality": "BUS",
+        "description": "Västtrafik",
+        "operatorName": "Västtrafik"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740000580",
+        "name": "Kungälv resecentrum",
+        "shortName": "Kungälv resecen"
+       },
+       "destination": {
+        "uicStationCode": "740072050",
+        "name": "Malmö C Norra Vallgatan",
+        "shortName": "Malmö N Vallgat"
+       },
+       "departureDateTime": "2026-10-31T02:07:00+01:00",
+       "arrivalDateTime": "2026-10-31T06:05:00+01:00",
+       "serviceName": "676",
+       "serviceIdentifier": "GA5FERCBJ5CHYNRXGZ6FQVSZII2FSX2FLBIHYMRQGI3C2MJQFUZTA7BSGAZDMLJRGAWTGMKUGAZDUMBXPQZDAMRWFUYTALJTGFKDANR2GA2XYNZUGAYDAMBVHAYHYNZUGAYDOMRQGUYA",
+       "serviceScheduleDate": "2026-10-30",
+       "transportMethod": "EXPRESSBUS",
+       "serviceType": {
+        "code": "XVYB4Y_EXP",
+        "name": "Vy Bus4You Expressbuss",
+        "modality": "EXPRESS_BUS_SERVICE",
+        "description": "Vy Bus4You",
+        "operatorName": "Vy Bus4You"
+       }
+      },
+      {
+       "origin": {
+        "uicStationCode": "740000003",
+        "name": "Malmö Central",
+        "shortName": "Malmö C"
+       },
+       "destination": {
+        "uicStationCode": "740000073",
+        "name": "Karlshamn Resecentrum",
+        "shortName": "Karlshamn RC"
+       },
+       "departureDateTime": "2026-10-31T07:27:00+01:00",
+       "arrivalDateTime": "2026-10-31T09:21:00+01:00",
+       "serviceName": "1020",
+       "serviceIdentifier": "GA5FERCBJ5CHYMJQGIYHYWCPKJCVGVKOIRJVIQKHPQZDAMRWFUYTALJTGF6DEMBSGYWTCMBNGMYVIMBXHIZDO7BSGAZDMLJRGAWTGMKUGA4TUMRRPQ3TIMBQGAYDAMBTPQ3TIMBQGAYDANZT",
+       "serviceScheduleDate": "2026-10-31",
+       "transportMethod": "TRAIN",
+       "serviceType": {
+        "code": "XORESUNDSTAG",
+        "name": "Öresundståg",
+        "modality": "REGIONAL_RAIL_SERVICE",
+        "description": "Öresundståg",
+        "operatorName": "Öresundståg"
+       }
+      }
+     ],
+     "origin": {
+      "uicStationCode": "740000002",
+      "name": "Göteborg Central"
+     },
+     "destination": {
+      "uicStationCode": "740000073",
+      "name": "Karlshamn Resecentrum"
+     }
+    }
+   ]
+  }
+ ]
+}

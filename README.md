@@ -241,6 +241,17 @@ Requests stay under 60 per minute. Planned boards and station lookups are cached
 in `~/.cache/umstieg/`; live changes are fetched on every run. `--no-db` skips
 DB.
 
+When a search passes through Sweden (its origin or destination, or a rough
+route's stop, has a Swedish id), SJ's connection search, the one sj.se uses,
+is asked too: from the origin, or where the rough routes enter Sweden, to the
+destination, or where they leave it. Two requests per day searched, cached
+for 10 minutes; `--sj ''` disables it. Its connections cover every Swedish
+operator, trains and long-distance buses, and combinations no other planner
+offers (SJ Regional 319 to Emmaboda for the Krösatåg to Karlskrona); they
+are rough routes like Transitous's, so their stations get Trafikverket's
+boards. It is not an open API but sj.se's own, with sj.se's key: when it
+fails or refuses, the search goes on without it, with a warning.
+
 Swedish data comes from Trafikverket's
 [open API](https://www.trafiklab.se/api/trafiklab-apis/trafikverket/) (CC0;
 free key from [data.trafikverket.se](https://data.trafikverket.se)). The key
