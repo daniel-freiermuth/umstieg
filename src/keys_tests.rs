@@ -9,22 +9,18 @@ fn db(keys: &Keys) -> String {
 }
 
 #[test]
-fn keys_from_files_and_environment() {
-    let file = "# DB API\nexport DB_CLIENT_ID=\"abc\"\n  DB_API_KEY = k=ey  \n";
-    let tv = "TRAFIKVERKET_KEY=\"t-key\"\n";
-    let both = Keys::parse(file, tv, NO_ENV);
-    assert_eq!((db(&both), both.trafikverket.as_deref()), ("abc/k=ey".to_owned(), Some("t-key")));
+fn keys_from_the_file_and_the_environment() {
+    let file = "# DB API\nexport DB_CLIENT_ID=\"abc\"\n  DB_API_KEY = k=ey  \n\nTRAFIKVERKET_KEY=\"t-key\"\n";
+    let all = Keys::parse(file, NO_ENV);
+    assert_eq!((db(&all), all.trafikverket.as_deref()), ("abc/k=ey".to_owned(), Some("t-key")));
 
     let env = |key: &str| (key == "DB_API_KEY" || key == "TRAFIKVERKET_KEY").then(|| "from-env".to_owned());
-    let mixed = Keys::parse(file, tv, env);
+    let mixed = Keys::parse(file, env);
     assert_eq!((db(&mixed), mixed.trafikverket.as_deref()), ("abc/from-env".to_owned(), Some("from-env")));
 
-    let half = Keys::parse("DB_CLIENT_ID=abc\n", "", NO_ENV);
+    let half = Keys::parse("DB_CLIENT_ID=abc\n", NO_ENV);
     assert_eq!((db(&half), half.trafikverket), ("-".to_owned(), None), "DB needs both values");
-    // Each key from its own file: DB's file doesn't set Trafikverket's.
-    let wrong_file = Keys::parse("TRAFIKVERKET_KEY=x\n", "DB_CLIENT_ID=a\nDB_API_KEY=b\n", NO_ENV);
-    assert_eq!((db(&wrong_file), wrong_file.trafikverket), ("-".to_owned(), None));
-    let only_env = Keys::parse("", "", |key: &str| Some(format!("{key}!")));
+    let only_env = Keys::parse("", |key: &str| Some(format!("{key}!")));
     assert_eq!(db(&only_env), "DB_CLIENT_ID!/DB_API_KEY!");
     assert_eq!(only_env.trafikverket.as_deref(), Some("TRAFIKVERKET_KEY!"));
 }
@@ -47,15 +43,14 @@ fn keys_load_from_the_config_directory_or_the_environment() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config");
     std::fs::create_dir_all(config.join("umstieg")).unwrap();
-    std::fs::write(config.join("umstieg/db.env"), "DB_CLIENT_ID=abc\nDB_API_KEY=key\n").unwrap();
-    std::fs::write(config.join("umstieg/trafikverket.env"), "TRAFIKVERKET_KEY=tv\n").unwrap();
+    std::fs::write(config.join("umstieg/keys.env"), "DB_CLIENT_ID=abc\nDB_API_KEY=key\nTRAFIKVERKET_KEY=tv\n").unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/umstieg")).unwrap();
-    std::fs::write(home.join(".config/umstieg/db.env"), "DB_CLIENT_ID=home\nDB_API_KEY=key\n").unwrap();
+    std::fs::write(home.join(".config/umstieg/keys.env"), "DB_CLIENT_ID=home\nDB_API_KEY=key\n").unwrap();
     let empty = dir.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
     let unreadable = dir.path().join("unreadable");
-    std::fs::create_dir_all(unreadable.join("umstieg/trafikverket.env")).unwrap();
+    std::fs::create_dir_all(unreadable.join("umstieg/keys.env")).unwrap();
 
     let test = "keys::tests::keys_load_from_the_config_directory_or_the_environment";
     let run = |vars: &[(&str, &str)], expect: &str| {

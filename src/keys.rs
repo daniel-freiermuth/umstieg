@@ -1,6 +1,6 @@
 //! The user's keys for the APIs that need one. Each comes from the environment,
-//! else from a `KEY=value` file in `$XDG_CONFIG_HOME/umstieg/` (or
-//! `~/.config/umstieg/`): `db.env`, `trafikverket.env`.
+//! else from `keys.env` (`KEY=value` lines) in `$XDG_CONFIG_HOME/umstieg/`
+//! (or `~/.config/umstieg/`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::db;
+
+/// The file in the config directory with every key.
+const FILE: &str = "keys.env";
 
 #[derive(Default)]
 pub struct Keys {
@@ -19,20 +22,20 @@ pub struct Keys {
 
 impl Keys {
     pub fn load() -> Result<Self> {
-        Ok(Self::parse(&read("db.env")?, &read("trafikverket.env")?, |key| std::env::var(key).ok()))
+        Ok(Self::parse(&read(FILE)?, |key| std::env::var(key).ok()))
     }
 
-    /// Keys from the files' text, each overridden by `env(KEY)`; DB's only if
+    /// Keys from the file's text, each overridden by `env(KEY)`; DB's only if
     /// both of its values are set.
-    fn parse(db: &str, trafikverket: &str, env: impl Fn(&str) -> Option<String>) -> Self {
-        let (db, trafikverket) = (values(db), values(trafikverket));
-        let get = |file: &HashMap<String, String>, key: &str| env(key).or_else(|| file.get(key).cloned());
+    fn parse(file: &str, env: impl Fn(&str) -> Option<String>) -> Self {
+        let file = values(file);
+        let get = |key: &str| env(key).or_else(|| file.get(key).cloned());
         Self {
-            db: match (get(&db, "DB_CLIENT_ID"), get(&db, "DB_API_KEY")) {
+            db: match (get("DB_CLIENT_ID"), get("DB_API_KEY")) {
                 (Some(client_id), Some(api_key)) => Some(db::Credentials { client_id, api_key }),
                 _ => None,
             },
-            trafikverket: get(&trafikverket, "TRAFIKVERKET_KEY"),
+            trafikverket: get("TRAFIKVERKET_KEY"),
         }
     }
 }

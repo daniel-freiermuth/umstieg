@@ -238,7 +238,8 @@ cached in `~/.cache/umstieg/efa/` for 10 minutes. DB's own journey planners
 
 DB data comes from the [Timetables API](https://developers.deutschebahn.com)
 (free plan; subscribe your application to it). Credentials come from
-`DB_CLIENT_ID`/`DB_API_KEY` or `~/.config/umstieg/db.env` (`KEY=value` lines).
+`DB_CLIENT_ID`/`DB_API_KEY` or `~/.config/umstieg/keys.env` (`KEY=value`
+lines; all keys go in this one file).
 Requests stay under 60 per minute. Planned boards and station lookups are cached
 in `~/.cache/umstieg/`; live changes are fetched on every run. `--no-db` skips
 DB.
@@ -257,7 +258,7 @@ fails or refuses, the search goes on without it, with a warning.
 Swedish data comes from Trafikverket's
 [open API](https://www.trafiklab.se/api/trafiklab-apis/trafikverket/) (CC0;
 free key from [data.trafikverket.se](https://data.trafikverket.se)). The key
-comes from `TRAFIKVERKET_KEY` or `~/.config/umstieg/trafikverket.env`. There
+comes from `TRAFIKVERKET_KEY` or `~/.config/umstieg/keys.env`. There
 is no quota; a search through Sweden makes 20–40 requests, four at a time.
 The station list is cached in `~/.cache/umstieg/trafikverket/` for a week —
 with a key, it is also what tells whether a search passes through Sweden.

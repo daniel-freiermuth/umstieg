@@ -355,8 +355,9 @@ async fn search_runs_as_a_job_reporting_progress_and_failure() {
     let log = log(&status);
     assert!(!log.iter().any(|l| l.contains("Waiting")), "nothing else running: {log:?}");
     assert!(
-        log.iter().any(|l| l
-            .ends_with("warning: no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only")),
+        log.iter().any(|l| l.ends_with(
+            "warning: no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/keys.env); using Transitous only"
+        )),
         "{log:?}"
     );
     assert!(log.last().unwrap().ends_with("Failed"), "{log:?}");

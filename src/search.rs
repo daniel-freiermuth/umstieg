@@ -447,7 +447,7 @@ impl Feeds {
             (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, user_agent)?),
             (false, None) => {
                 events(Event::Warning(
-                    "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
+                    "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/keys.env); using Transitous only",
                 ));
                 None
             }

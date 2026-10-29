@@ -64,5 +64,5 @@ the single hub. Both trains are in Transitous.
 - **Deploy on entrop**: no Node/Bun there, so build from the committed
   `web/dist`; systemd unit `ExecStart=/usr/local/bin/umstieg serve --addr
   127.0.0.1:8765 --parallel 1 --contact …`; Caddy `umstieg.freiermuth.dev`
-  with basic auth; copy `db.env`.
+  with basic auth; copy `keys.env`.
 - **Drop `--html`** (static file output) once the server covers it.
