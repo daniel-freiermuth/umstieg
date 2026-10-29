@@ -36,6 +36,8 @@ const TV_SAME_STATION_METERS: f64 = 600.0;
 /// Stations Trafikverket's runs share (junctions such as Alvesta) whose boards
 /// are fetched too, at most.
 const MAX_TV_DISCOVERED: usize = 12;
+/// Termini of Trafikverket's runs whose boards are fetched too, at most.
+const MAX_TV_TERMINI: usize = 6;
 /// A station trains reach from this many directions is a junction.
 const JUNCTION_DIRECTIONS: usize = 3;
 /// Neighbours whose bearings differ by at most this lie in one direction.
@@ -924,17 +926,15 @@ async fn swedish(
 
     let line =
         stations.list.get(ends.0).and_then(|s| s.position).zip(stations.list.get(ends.1).and_then(|s| s.position));
-    let second = junctions(&runs, &by_sig, line, &first);
+    let second = change_points(&runs, &by_sig, line, &first);
     let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != 'S', warnings).await;
     match tv.runs(&keys).await {
         Ok(found) => runs.extend(found),
         Err(e) => warnings.push(format!("Trafikverket runs: {e:#}")),
     }
-    for sig in more.keys() {
-        if let Some(station) = by_sig.get(sig.as_str()) {
-            discovered.push(station.name.clone());
-        }
-    }
+    let mut found: Vec<String> = more.keys().filter_map(|sig| Some(by_sig.get(sig.as_str())?.name.clone())).collect();
+    found.sort();
+    discovered.extend(found);
     listed.extend(more);
 
     let trips = runs.iter().map(|run| fed_trip(run, &by_sig, stations)).collect();
@@ -952,24 +952,40 @@ async fn swedish(
     Swedish { trips, coverage }
 }
 
-type Neighbours<'a> = (HashSet<&'a str>, DateTime<Utc>, DateTime<Utc>);
+/// What long-distance and regional runs show of a station.
+struct Sighted<'a> {
+    /// The stations runs come from or go to.
+    neighbours: HashSet<&'a str>,
+    /// Some run starts or ends here.
+    terminus: bool,
+    first: DateTime<Utc>,
+    last: DateTime<Utc>,
+}
 
-/// Junctions on long-distance and regional `runs`: stations where they come
-/// from or go to in at least `JUNCTION_DIRECTIONS` directions, off the boards
-/// so far (`boarded`) and near the `line` between the ends. A station on one
-/// line has two directions however many trains stop (an express's neighbours
-/// lie further along the same ones); Alvesta has four. The most directions
-/// first, at most `MAX_TV_DISCOVERED`; each with the span to fetch its board
-/// for: from the first run there to `TV_ONWARD` after the last.
-fn junctions(
+/// Change points on long-distance and regional `runs`, off the boards so far
+/// (`boarded`) and near the `line` between the ends:
+/// - junctions, where runs come from or go to in at least
+///   `JUNCTION_DIRECTIONS` directions. A station on one line has two
+///   however many trains stop (an express's neighbours lie further along the
+///   same ones); Alvesta has four;
+/// - termini, where runs start or end: other lines' trains go on from there.
+///   Karlskrona, where the Öresundståg from Karlshamn ends, has the Krösatåg
+///   from Emmaboda, which no other board lists.
+///
+/// Junctions with the most directions first, at most `MAX_TV_DISCOVERED`, and
+/// termini nearest the destination first, at most `MAX_TV_TERMINI` (near the
+/// origin, Transitous's answers and the boards there cover what goes on).
+/// Each with the span to fetch its board for: from the first run there to
+/// `TV_ONWARD` after the last.
+fn change_points(
     runs: &[trafikverket::Run],
     by_sig: &HashMap<&str, &trafikverket::Station>,
     line: Option<((f64, f64), (f64, f64))>,
     boarded: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
 ) -> HashMap<String, (DateTime<Utc>, DateTime<Utc>)> {
-    // Per station: the stations runs come from or go to, and when they are there.
-    let mut seen: HashMap<&str, Neighbours<'_>> = HashMap::new();
+    let mut seen: HashMap<&str, Sighted<'_>> = HashMap::new();
     for run in runs.iter().filter(|r| r.class != 'S') {
+        let last = run.stops.len().saturating_sub(1);
         for (k, stop) in run.stops.iter().enumerate() {
             let Some(t) = stop.arrival.or(stop.departure).map(|m| m.planned) else { continue };
             let Some(station) = by_sig.get(stop.signature.as_str()) else { continue };
@@ -980,18 +996,24 @@ fn junctions(
             if station.country != "SE" || !near_line || boarded.contains_key(&stop.signature) {
                 continue;
             }
-            let entry = seen.entry(stop.signature.as_str()).or_insert_with(|| (HashSet::new(), t, t));
+            let entry = seen.entry(stop.signature.as_str()).or_insert_with(|| Sighted {
+                neighbours: HashSet::new(),
+                terminus: false,
+                first: t,
+                last: t,
+            });
             let neighbours = [k.checked_sub(1), k.checked_add(1)].into_iter().flatten();
-            entry.0.extend(neighbours.filter_map(|n| run.stops.get(n)).map(|s| s.signature.as_str()));
-            (entry.1, entry.2) = (entry.1.min(t), entry.2.max(t));
+            entry.neighbours.extend(neighbours.filter_map(|n| run.stops.get(n)).map(|s| s.signature.as_str()));
+            entry.terminus |= k == 0 || k == last;
+            (entry.first, entry.last) = (entry.first.min(t), entry.last.max(t));
         }
     }
     let mut ranked: Vec<_> = seen
         .into_iter()
-        .filter_map(|(sig, (neighbours, lo, hi))| {
+        .filter_map(|(sig, seen)| {
             let here = by_sig.get(sig)?.position?;
             let mut bearings: Vec<f64> =
-                neighbours.iter().filter_map(|n| Some(bearing(here, by_sig.get(n)?.position?))).collect();
+                seen.neighbours.iter().filter_map(|n| Some(bearing(here, by_sig.get(n)?.position?))).collect();
             bearings.sort_by(f64::total_cmp);
             let mut directions: Vec<f64> = Vec::new();
             for b in bearings {
@@ -999,12 +1021,20 @@ fn junctions(
                     directions.push(b);
                 }
             }
-            (directions.len() >= JUNCTION_DIRECTIONS).then_some((sig, directions.len(), lo, hi))
+            let to_go = line.map_or(0.0, |(_, d)| meters(here, d));
+            Some((sig, directions.len(), seen.terminus, to_go, seen.first, seen.last))
         })
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    ranked.truncate(MAX_TV_DISCOVERED);
-    ranked.into_iter().map(|(sig, _, lo, hi)| (sig.to_owned(), (lo, checked::later_or_max(hi, TV_ONWARD)))).collect()
+    let span = |(sig, _, _, _, lo, hi): (&str, usize, bool, f64, DateTime<Utc>, DateTime<Utc>)| {
+        (sig.to_owned(), (lo, checked::later_or_max(hi, TV_ONWARD)))
+    };
+    let mut junctions: Vec<_> = ranked.iter().copied().filter(|s| s.1 >= JUNCTION_DIRECTIONS).collect();
+    junctions.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    junctions.truncate(MAX_TV_DISCOVERED);
+    ranked.retain(|s| s.1 < JUNCTION_DIRECTIONS && s.2);
+    ranked.sort_by(|a, b| a.3.total_cmp(&b.3).then(a.0.cmp(b.0)));
+    ranked.truncate(MAX_TV_TERMINI);
+    junctions.into_iter().chain(ranked).map(span).collect()
 }
 
 /// Compass bearing from `a` to `b` in degrees, 0 north, 90 east.

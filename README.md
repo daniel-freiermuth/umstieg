@@ -164,11 +164,13 @@ command line logs nothing unless `RUST_LOG` is set.
    every train with planned, forecast and actual times, and a train's whole
    run in one request. Its boards are fetched for the corridor's Swedish
    stations (matched by position, < 600 m), then the runs of every train on
-   them. Stations where those long-distance and regional runs come from three
-   or more directions, near the line between origin and destination, are
-   junctions (Alvesta, Emmaboda; up to 12): their boards and their trains'
-   runs come too. Göteborg → Karlshamn then has SJ Regional 319 via Alvesta,
-   which no planner answer shows. Trafikverket's runs count like DB's: their
+   them. Near the line between origin and destination, stations where those
+   long-distance and regional runs come from three or more directions
+   (junctions such as Alvesta; up to 12) and where they start or end (termini,
+   nearest the destination first; up to 6) get their boards and their trains'
+   runs too: Karlskrona, where the Öresundståg from Karlshamn ends, brings the
+   Krösatåg from Emmaboda. Göteborg → Karlshamn then has SJ Regional 319 via
+   Alvesta or Emmaboda, which no planner answer shows. Trafikverket's runs count like DB's: their
    times win, Transitous's copies are merged into them, German stops are left
    to DB.
 3. **Enumeration**: depth-first over that timetable, deepening by number of

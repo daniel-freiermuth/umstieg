@@ -6,8 +6,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
 use super::{
-    Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, angle_between, bearing, db_places, finish,
-    footpaths, from_motis, hours, junctions, merge, meters, propagate_delays, swedish, tv_station, whole_seconds,
+    Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, angle_between, bearing, change_points, db_places,
+    finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station, whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Place, Stop};
@@ -1385,17 +1385,20 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let found = swedish(&tv, &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings).await;
 
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert_eq!(discovered, ["Emmaboda"]);
+    // Emmaboda, a junction; the runs' ends: Nybro, Alvesta, Karlskrona.
+    assert_eq!(discovered, ["Alvesta", "Emmaboda", "Karlskrona C", "Nybro"]);
     let mut log = world.log();
     log[1..3].sort();
+    log[4..8].sort();
     assert_eq!(log[..3], ["stations", "board G", "board Kh"]);
-    assert_eq!(log[4], "board Em");
-    // Emmaboda's commuter train is not fetched; all runs of the first boards are.
+    assert_eq!(log[4..8], ["board Av", "board Cr", "board Em", "board Ny"]);
+    // All runs of the first boards; then the new ones, but not Emmaboda's
+    // and Nybro's commuter train.
     assert!(
         log[3].starts_with("runs ") && log[3].contains("319") && log[3].contains("7100") && log[3].contains("1060")
     );
-    assert_eq!(log[5], "runs 7200");
-    assert_eq!(log.len(), 6);
+    assert_eq!(log[8], "runs 7200");
+    assert_eq!(log.len(), 9);
 
     let tv_of = |i: usize| stations.list[i].tv.clone();
     assert_eq!((tv_of(origin), tv_of(destination)), (Some("G".to_owned()), Some("Kh".to_owned())));
@@ -1418,9 +1421,10 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     assert_eq!(route, &HashSet::from(["Göteborg C", "Lessebo", "Emmaboda", "Nybro"].map(str::to_owned)));
     // The boards' stations cover every class in the hours they list trains.
     let emmaboda = index_of(&stations, "Emmaboda");
-    let mut covered: Vec<usize> = found.coverage.iter().map(|(i, _)| *i).collect();
+    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
     covered.sort_unstable();
-    assert_eq!(covered, [origin, destination, emmaboda]);
+    let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamn Resecentrum", "Karlskrona C", "Nybro"];
+    assert_eq!(covered, boarded);
     let (_, at_emmaboda) = found.coverage.iter().find(|(i, _)| *i == emmaboda).unwrap();
     assert!(['F', 'N', 'S'].iter().all(|&c| at_emmaboda.covers(at("09:40"), c)));
     assert!(!at_emmaboda.covers(at("12:40"), 'N'), "an hour without trains");
@@ -1552,58 +1556,100 @@ fn tv_run(ident: &str, class: char, stops: &[&str]) -> crate::trafikverket::Run 
     }
 }
 
+type Spans = HashMap<String, (DateTime<Utc>, DateTime<Utc>)>;
+
+/// Trafikverket stations named by signature, at (lat, lon).
+fn tv_stations(list: &[(&str, (f64, f64))]) -> Vec<crate::trafikverket::Station> {
+    list.iter()
+        .map(|&(sig, position)| crate::trafikverket::Station {
+            signature: sig.to_owned(),
+            name: sig.to_owned(),
+            country: "SE".to_owned(),
+            position: Some(position),
+        })
+        .collect()
+}
+
 #[test]
 fn junctions_are_stations_runs_reach_from_three_directions() {
     // A star around J: north N, east E, south S, west W; T a through station
-    // on the north–south line; F far off the line between O and D.
-    let at_ = |lat: f64, lon: f64| (lat, lon);
-    let j = at_(56.5, 15.0);
-    let stations: Vec<crate::trafikverket::Station> = [
-        ("J", j),
-        ("N", at_(56.8, 15.0)),
-        ("NN", at_(56.9, 15.02)),
-        ("E", at_(56.5, 15.5)),
-        ("S", at_(56.2, 15.0)),
-        ("W", at_(56.5, 14.5)),
-        ("T", at_(56.65, 15.0)),
-        ("O", at_(57.5, 15.0)),
-        ("D", at_(55.5, 15.0)),
-        ("F", at_(56.5, 19.0)),
-        ("FE", at_(56.5, 19.5)),
-        ("FN", at_(56.8, 19.0)),
-        ("FS", at_(56.2, 19.0)),
-    ]
-    .into_iter()
-    .map(|(sig, position)| crate::trafikverket::Station {
-        signature: sig.to_owned(),
-        name: sig.to_owned(),
-        country: "SE".to_owned(),
-        position: Some(position),
-    })
-    .collect();
+    // on the north–south line; F far off the line between O and D. The runs'
+    // ends are boarded already: only junctions are left to find.
+    let stations = tv_stations(&[
+        ("J", (56.5, 15.0)),
+        ("N", (56.8, 15.0)),
+        ("NN", (56.9, 15.02)),
+        ("E", (56.5, 15.5)),
+        ("S", (56.2, 15.0)),
+        ("W", (56.5, 14.5)),
+        ("T", (56.65, 15.0)),
+        ("F", (56.5, 19.0)),
+        ("FE", (56.5, 19.5)),
+        ("FN", (56.8, 19.0)),
+        ("FS", (56.2, 19.0)),
+    ]);
     let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
-    let line = Some((at_(57.5, 15.0), at_(55.5, 15.0)));
-    let none = HashMap::new();
-    let found = |runs: &[crate::trafikverket::Run], boarded: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>| {
-        let mut sigs: Vec<String> = junctions(runs, &by_sig, line, boarded).into_keys().collect();
+    let line = Some(((57.5, 15.0), (55.5, 15.0)));
+    let ends: Spans = ["N", "NN", "E", "S", "W", "FE", "FN", "FS"]
+        .into_iter()
+        .map(|sig| (sig.to_owned(), (at("08:00"), at("08:00"))))
+        .collect();
+    let found = |runs: &[crate::trafikverket::Run], boarded: &Spans| {
+        let mut sigs: Vec<String> = change_points(runs, &by_sig, line, boarded).into_keys().collect();
         sigs.sort();
         sigs
     };
     // North–south through T, plus an express skipping T: two directions at T.
     let line_runs = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("2", 'F', &["NN", "J", "S"])];
-    assert_eq!(found(&line_runs, &none), Vec::<String>::new(), "J and T: north and south only");
+    assert_eq!(found(&line_runs, &ends), Vec::<String>::new(), "J and T: north and south only");
     let star = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("3", 'N', &["W", "J", "E"])];
-    assert_eq!(found(&star, &none), ["J"]);
+    assert_eq!(found(&star, &ends), ["J"]);
     let commuter = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("3", 'S', &["W", "J", "E"])];
-    assert_eq!(found(&commuter, &none), Vec::<String>::new(), "commuter trains don't count");
-    let boarded = HashMap::from([("J".to_owned(), (at("08:00"), at("08:00")))]);
+    assert_eq!(found(&commuter, &ends), Vec::<String>::new(), "commuter trains don't count");
+    let mut boarded = ends.clone();
+    boarded.insert("J".to_owned(), (at("08:00"), at("08:00")));
     assert_eq!(found(&star, &boarded), Vec::<String>::new(), "J's board is fetched already");
     let far = [tv_run("4", 'N', &["FN", "F", "FS"]), tv_run("5", 'N', &["F", "FE"])];
-    assert_eq!(found(&far, &none), Vec::<String>::new(), "F is far off the line");
+    assert_eq!(found(&far, &ends), Vec::<String>::new(), "F is far off the line");
 
     // The span: from the first run there to two hours after the last.
-    let spans = junctions(&star, &by_sig, line, &none);
+    let spans = change_points(&star, &by_sig, line, &ends);
     assert_eq!(spans["J"], (at("08:10"), at("10:20")));
+}
+
+#[test]
+fn termini_nearest_the_destination_come_after_the_junctions() {
+    // From O in the north to D in the south; runs end at stations along the way.
+    let stations = tv_stations(&[
+        ("O", (57.5, 15.0)),
+        ("T1", (57.3, 15.0)),
+        ("T2", (57.1, 15.0)),
+        ("T3", (56.9, 15.0)),
+        ("T4", (56.7, 15.0)),
+        ("T5", (56.5, 15.0)),
+        ("T6", (56.3, 15.0)),
+        ("T7", (56.1, 15.0)),
+        ("Far", (56.5, 19.0)),
+        ("J", (56.0, 15.0)),
+        ("JW", (56.0, 14.5)),
+        ("JE", (56.0, 15.5)),
+        ("JS", (55.8, 15.0)),
+    ]);
+    let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
+    let line = Some(((57.5, 15.0), (55.5, 15.0)));
+    let boarded: Spans = HashMap::from([("O".to_owned(), (at("08:00"), at("08:00")))]);
+    let mut runs: Vec<crate::trafikverket::Run> =
+        ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Far"].iter().map(|t| tv_run(t, 'N', &["O", t])).collect();
+    runs.push(tv_run("S", 'S', &["O", "JS"]));
+    // J: three directions (west, east, north), and an end too; as a junction
+    // it takes none of the termini's places.
+    runs.push(tv_run("j1", 'N', &["JW", "J", "JE"]));
+    runs.push(tv_run("j2", 'N', &["T7", "J"]));
+    let mut found: Vec<String> = change_points(&runs, &by_sig, line, &boarded).into_keys().collect();
+    found.sort();
+    // J; then six termini, nearest D first: JE, JW, T7, T6, T5, T4. Not Far
+    // (off the line), not JS (only a commuter train ends there), not T1–T3.
+    assert_eq!(found, ["J", "JE", "JW", "T4", "T5", "T6", "T7"]);
 }
 
 #[test]
