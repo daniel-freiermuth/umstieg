@@ -35,6 +35,7 @@ use clap::Parser;
 use serde_json::{Value, json};
 
 use crate::db::Credentials;
+use crate::keys::Keys;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
 use crate::testkit;
 
@@ -504,6 +505,7 @@ impl StandIn {
             efa: if self.world.efa == Efa::Off { String::new() } else { self.base.clone() },
             api: self.base.clone(),
             db_api: format!("{}/db", self.base),
+            trafikverket_api: format!("{}/trafikverket", self.base),
             contact: "e2e@example.org".to_owned(),
         }
     }
@@ -693,9 +695,14 @@ fn credentials() -> Credentials {
     Credentials { client_id: CLIENT_ID.to_owned(), api_key: API_KEY.to_owned() }
 }
 
-#[expect(clippy::unnecessary_wraps, reason = "the signature serve expects of a credentials loader")]
-fn fake_credentials() -> anyhow::Result<Option<Credentials>> {
-    Ok(Some(credentials()))
+/// DB's credentials only: the stand-in world is German.
+fn keys(with_credentials: bool) -> Keys {
+    Keys { db: with_credentials.then(credentials), trafikverket: None }
+}
+
+#[expect(clippy::unnecessary_wraps, reason = "the signature serve expects of a key loader")]
+fn fake_keys() -> anyhow::Result<Keys> {
+    Ok(keys(true))
 }
 
 struct Searched {
@@ -714,7 +721,7 @@ async fn search(stand_in: &StandIn, extra: &[&str], with_credentials: bool, plot
     let outcome = search::run(
         &args(extra),
         &stand_in.endpoints(),
-        with_credentials.then(credentials),
+        keys(with_credentials),
         plot.then_some(PlotPage { back: None, details_url: None }),
         &events,
     )
@@ -753,7 +760,7 @@ async fn live_search_lists_every_connection_with_delays_and_markers() {
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     assert!(text.starts_with("Amsel → Zielhafen Hbf, departing "), "{text}");
     assert!(text.contains("rough routes via Bergstadt Hbf ·"), "{text}");
-    assert!(text.contains("\nstations found via DB train paths: Kreuzhausen\n"), "{text}");
+    assert!(text.contains("\nstations found along trains' routes: Kreuzhausen\n"), "{text}");
     assert!(
         summary(text).starts_with(
             "fastest 2h01 · limits: ≤ 5h01 travel time, ≤ 15 changes · 6 connections in 6 groups, \
@@ -976,10 +983,8 @@ async fn unknown_station_fails_the_search() {
     let stand_in = StandIn::start(Efa::Working).await;
     let mut args = args(&[]);
     args.to = "Atlantis".to_owned();
-    let error = search::run(&args, &stand_in.endpoints(), Some(credentials()), None, &|_| {})
-        .await
-        .err()
-        .expect("no such station");
+    let error =
+        search::run(&args, &stand_in.endpoints(), keys(true), None, &|_| {}).await.err().expect("no such station");
     assert!(format!("{error:#}").starts_with("no stop named like \"Atlantis\" found"), "{error:#}");
 }
 
@@ -994,7 +999,7 @@ async fn search_runs_on_a_current_thread_runtime() {
         }
     };
     let plot = Some(PlotPage { back: None, details_url: None });
-    let outcome = search::run(&args(&[]), &stand_in.endpoints(), Some(credentials()), plot, &events).await.unwrap();
+    let outcome = search::run(&args(&[]), &stand_in.endpoints(), keys(true), plot, &events).await.unwrap();
     assert!(summary(&outcome.text).starts_with("fastest 2h01 "), "{}", outcome.text);
     assert!(outcome.plot.is_some());
     let stages = stages.into_inner().unwrap();
@@ -1010,7 +1015,8 @@ async fn out_of_range_limits_set_in_code_fail_the_search_before_asking() {
     let mut extra = args(&[]);
     extra.extra_hours = f64::INFINITY;
     for (args, option) in [(window, "--window"), (extra, "--extra-hours")] {
-        let error = search::run(&args, &stand_in.endpoints(), None, None, &|_| {}).await.err().expect("out of range");
+        let error =
+            search::run(&args, &stand_in.endpoints(), keys(false), None, &|_| {}).await.err().expect("out of range");
         assert!(format!("{error:#}").starts_with(option), "{error:#}");
     }
 }
@@ -1143,7 +1149,7 @@ async fn start_search(http: &reqwest::Client, site: &str, form: &[(&str, &str)])
 async fn web_front_end_runs_a_search_to_its_plot() {
     let _serial = SERIAL.lock().await;
     let stand_in = StandIn::start(Efa::Working).await;
-    let router = crate::serve::test_router(1, stand_in.endpoints(), fake_credentials).unwrap();
+    let router = crate::serve::test_router(1, stand_in.endpoints(), fake_keys).unwrap();
     let site = testkit::serve(router).await;
     let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
@@ -1202,7 +1208,7 @@ async fn web_front_end_runs_a_search_to_its_plot() {
 async fn web_front_end_reports_bad_input() {
     let _serial = SERIAL.lock().await;
     let stand_in = StandIn::start(Efa::Working).await;
-    let router = crate::serve::test_router(1, stand_in.endpoints(), fake_credentials).unwrap();
+    let router = crate::serve::test_router(1, stand_in.endpoints(), fake_keys).unwrap();
     let site = testkit::serve(router).await;
     let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
@@ -1391,4 +1397,22 @@ async fn effort_cap_and_group_size_are_reported() {
     assert!(lines[group + 1].ends_with("‖50m‖ 09:30 CET ICE 203 → 10:49 CET (+4) Zielhafen Hbf"), "{text}");
     assert_eq!(lines[group + 2], "    … 1 more", "{text}");
     assert_eq!(connection_lines(text).len(), 6, "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trafikverket_only_looks_whether_a_search_passes_through_sweden() {
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::start(Efa::Working).await;
+    let sweden = testkit::TvWorld::new(vec![("G", "Göteborg C", "SE", 57.709, 11.974)], Vec::new());
+    let endpoints = Endpoints { trafikverket_api: testkit::serve_trafikverket(&sweden).await, ..stand_in.endpoints() };
+    let with_key = || Keys { db: Some(credentials()), trafikverket: Some("key".to_owned()) };
+    let outcome = search::run(&args(&[]), &endpoints, with_key(), None, &|_| {}).await.unwrap();
+    // The station list (cached from now on) says this German search doesn't: no board asked, no credit.
+    assert_eq!(sweden.log(), ["stations"]);
+    assert!(outcome.text.contains(", 1 Trafikverket requests"), "{}", outcome.text);
+    assert!(!outcome.text.contains("Trafikverket open data"), "{}", outcome.text);
+
+    let outcome = search::run(&args(&["--no-trafikverket"]), &endpoints, with_key(), None, &|_| {}).await.unwrap();
+    assert!(!outcome.text.contains("Trafikverket"), "{}", outcome.text);
+    assert_eq!(sweden.log(), ["stations"]);
 }

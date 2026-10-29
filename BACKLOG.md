@@ -2,11 +2,13 @@
 
 Ideas and deferred work, roughly grouped. Not promises.
 
-## Finding trains the planner hides, outside Germany
+## Finding trains the planner hides, outside Germany and Sweden
 
-In Germany DB's station boards bring every train at a corridor station into the
-timetable. Elsewhere it only holds the trains of Transitous's answers, and the
-planner drops a departure a better one dominates. Göteborg → Karlshamn on
+In Germany DB's station boards, in Sweden Trafikverket's (with whole runs and
+junction boards), bring every train at a corridor station into the timetable.
+Elsewhere it only holds the trains of Transitous's answers, and the planner
+drops a departure a better one dominates. Example from before Trafikverket was
+used: Göteborg → Karlshamn on
 2026-10-29, 06:00–08:00: SJ lists SJ Regional 319 at 06:04 (→ Alvesta, Krösatåg,
 Öresundståg) and SJ 3000 481 at 06:49; we find only the Öresundståg via Lund,
 the single hub. Both trains are in Transitous.
@@ -25,12 +27,6 @@ the single hub. Both trains are in Transitous.
 
 ## More railways' data
 
-- **Sweden: Trafikverket open API** (waiting for a key from
-  data.trafikverket.se, to go in `~/.config/umstieg/trafikverket.env` as
-  `TRAFIKVERKET_KEY`). `TrainAnnouncement` boards for every train on the
-  Swedish network with planned, forecast and actual times; a train's whole
-  route by number and date in one request (covers C for Sweden); `TrainStation`
-  for codes and coordinates. No quota, CC0.
 - **Denmark: Rejseplanen API 2.0** (key requested). `departureBoard` and
   `journeyDetail` with live times for all Danish trains; 50,000 calls a month.
 - **Denmark without a key**: live times of cross-border trains at Danish stops

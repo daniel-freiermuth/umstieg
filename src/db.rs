@@ -30,50 +30,10 @@ const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Dura
 /// Station lookups, `name\teva\tdb name` per line (empty eva: DB doesn't know it).
 const STATION_CACHE: &str = "stations.tsv";
 
+/// DB API Marketplace app credentials (see `keys`).
 pub struct Credentials {
     pub client_id: String,
     pub api_key: String,
-}
-
-impl Credentials {
-    /// `DB_CLIENT_ID`/`DB_API_KEY` from the environment, else from
-    /// `$XDG_CONFIG_HOME/umstieg/db.env` (`KEY=value` lines).
-    pub fn load() -> Result<Option<Self>> {
-        let mut text = String::new();
-        if let Some(path) = xdg_dir("XDG_CONFIG_HOME", ".config").map(|d| d.join("db.env")) {
-            match std::fs::read_to_string(&path) {
-                Ok(read) => text = read,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-            }
-        }
-        Ok(Self::parse(&text, |key| std::env::var(key).ok()))
-    }
-
-    /// Credentials from `KEY=value` lines (maybe `export`ed, values maybe in
-    /// double quotes), each overridden by `env(KEY)`; `None` unless both are set.
-    fn parse(text: &str, env: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        let mut values: HashMap<String, String> = HashMap::new();
-        for line in text.lines() {
-            let line = line.trim().trim_start_matches("export ");
-            if let Some((k, v)) = line.split_once('=') {
-                values.insert(k.trim().to_owned(), v.trim().trim_matches('"').to_owned());
-            }
-        }
-        let get = |key: &str| env(key).or_else(|| values.get(key).cloned());
-        match (get("DB_CLIENT_ID"), get("DB_API_KEY")) {
-            (Some(client_id), Some(api_key)) => Some(Self { client_id, api_key }),
-            _ => None,
-        }
-    }
-}
-
-/// `$VAR/umstieg`, falling back to `~/<fallback>/umstieg`.
-fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
-    let base = std::env::var_os(var)
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))?;
-    Some(base.join("umstieg"))
 }
 
 #[derive(Debug, Clone)]
@@ -448,8 +408,7 @@ impl Coverage {
         self.0.iter().any(|(s, c)| *s == slot && *c == class)
     }
 
-    /// Coverage of the given (time, class) pairs, for tests.
-    #[cfg(test)]
+    /// Coverage of the given (time, class) pairs: a board's trains.
     pub fn of(entries: &[(DateTime<Utc>, char)]) -> Self {
         Self(entries.iter().map(|&(t, c)| (slot(t), c)).collect())
     }

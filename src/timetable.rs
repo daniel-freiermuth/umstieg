@@ -1,5 +1,6 @@
 //! A small timetable for the corridor of one search: trains from MOTIS rough
-//! routes, overridden and extended by DB station boards where available.
+//! routes, overridden and extended by DB station boards in Germany and
+//! Trafikverket's train runs in Sweden where available.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -10,6 +11,7 @@ use futures::future::join_all;
 use crate::checked;
 use crate::db::{self, Coverage, Db, Event, Visit};
 use crate::motis::{Itinerary, Leg, Motis, Place, Stop};
+use crate::trafikverket::{self, Trafikverket};
 
 /// Same train number within this time difference at a shared station = same train.
 const MERGE_TOLERANCE: TimeDelta = TimeDelta::minutes(60);
@@ -29,6 +31,23 @@ const SAME_STATION_METERS: f64 = 300.0;
 const NEARBY_WALK: TimeDelta = TimeDelta::minutes(5);
 /// DB boards cover German stations; elsewhere they are empty.
 const DB_TIME_ZONE: &str = "Europe/Berlin";
+/// A stop of another feed this close to a Trafikverket station is that station.
+const TV_SAME_STATION_METERS: f64 = 600.0;
+/// Stations Trafikverket's runs share (junctions such as Alvesta) whose boards
+/// are fetched too, at most.
+const MAX_TV_DISCOVERED: usize = 12;
+/// A station trains reach from this many directions is a junction.
+const JUNCTION_DIRECTIONS: usize = 3;
+/// Neighbours whose bearings differ by at most this lie in one direction.
+const SAME_DIRECTION_DEGREES: f64 = 60.0;
+/// Discovered stations further off the line between origin and destination
+/// than this detour (via it / straight) are left out.
+const MAX_DETOUR: f64 = 1.5;
+/// At a discovered station, onward trains are looked for this long after the
+/// last train of a run found there.
+const TV_ONWARD: TimeDelta = TimeDelta::hours(2);
+/// Countries whose stops Trafikverket's runs keep; German stops are DB's.
+const TV_COUNTRIES: [&str; 3] = ["SE", "DK", "NO"];
 /// Categories of long-distance trains, for feeds that give no product class or
 /// a generic one: EFA files ICE 273 under "Zug", DB gives `FlixTrain` none.
 const LONG_DISTANCE: [&str; 11] = ["ICE", "IC", "EC", "ECE", "EN", "NJ", "RJ", "RJX", "TGV", "FLX", "ICD"];
@@ -66,7 +85,9 @@ pub struct Call {
     pub departure: Option<Time>,
     pub platform: Option<String>,
     pub cancelled: bool,
-    pub from_db: bool,
+    /// Times from a station board feed (DB, Trafikverket): live data is
+    /// authoritative there, elsewhere the last known delay is carried forward.
+    pub from_board: bool,
 }
 
 impl Call {
@@ -92,7 +113,7 @@ pub struct Trip {
     pub headsign: Option<String>,
     pub calls: Vec<Call>,
     /// Whether Transitous or EFA knows its stops: it came from a rough route
-    /// or one was merged into it. Otherwise only DB boards know it.
+    /// or one was merged into it. Otherwise only board feeds know it.
     pub transitous: bool,
 }
 
@@ -106,8 +127,11 @@ impl Trip {
 pub struct Station {
     pub name: String,
     pub eva: Option<String>,
-    /// Name in DB's data, as used in train paths.
-    pub db_name: Option<String>,
+    /// Trafikverket's station signature ("G" for Göteborg C).
+    pub tv: Option<String>,
+    /// Name in the board feed's data (DB's, or Trafikverket's in Sweden), as
+    /// used in train routes.
+    pub board_name: Option<String>,
     pub tz: Option<String>,
     pub position: Option<(f64, f64)>,
     /// Transitous (MOTIS) station id, for asking about trains there.
@@ -163,9 +187,11 @@ impl Timetable {
 
 pub struct Build {
     pub timetable: Timetable,
-    /// Stations added from DB train paths.
+    /// Stations added from DB train paths and Trafikverket's runs.
     pub discovered: Vec<String>,
     pub warnings: Vec<String>,
+    /// Trains from Trafikverket are in the timetable (its data is credited).
+    pub trafikverket: bool,
 }
 
 /// What is known about a station when it is first seen.
@@ -173,7 +199,8 @@ pub struct Build {
 struct Sighting<'a> {
     name: &'a str,
     eva: Option<&'a str>,
-    db_name: Option<&'a str>,
+    tv: Option<&'a str>,
+    board_name: Option<&'a str>,
     tz: Option<&'a str>,
     position: Option<(f64, f64)>,
     motis_id: Option<&'a str>,
@@ -191,37 +218,60 @@ impl Stations {
         let mut by_key = HashMap::new();
         for (i, s) in list.iter().enumerate() {
             by_key.insert(format!("name:{}", db::fold(&s.name)), i);
-            if let Some(name) = &s.db_name {
+            if let Some(name) = &s.board_name {
                 by_key.insert(format!("name:{}", db::fold(name)), i);
             }
             if let Some(eva) = &s.eva {
                 by_key.insert(format!("eva:{eva}"), i);
             }
+            if let Some(tv) = &s.tv {
+                by_key.insert(format!("tv:{tv}"), i);
+            }
         }
         Self { list, by_key }
     }
 
-    /// One index per physical station, unified by EVA number, folded name or
-    /// proximity. Nearby stations with different EVA numbers stay separate
-    /// (S-Bahn vs. long-distance station) and get a footpath instead.
+    /// Station `idx` is Trafikverket's `station`: its trains from there on.
+    fn claim(&mut self, idx: usize, station: &trafikverket::Station) {
+        let Some(st) = self.list.get_mut(idx) else { return };
+        st.tv = Some(station.signature.clone());
+        if st.board_name.is_none() {
+            st.board_name = Some(station.name.clone());
+        }
+        if st.position.is_none() {
+            st.position = station.position;
+        }
+        self.by_key.insert(format!("tv:{}", station.signature), idx);
+        self.by_key.insert(format!("name:{}", db::fold(&station.name)), idx);
+    }
+
+    /// One index per physical station, unified by EVA number, Trafikverket
+    /// signature, folded name or proximity. Nearby stations with different EVA
+    /// numbers or signatures stay separate (S-Bahn vs. long-distance station)
+    /// and get a footpath instead.
     fn intern(&mut self, s: Sighting<'_>) -> usize {
         let name_key = format!("name:{}", db::fold(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
-        let found =
-            eva_key.as_ref().and_then(|k| self.by_key.get(k)).or_else(|| self.by_key.get(&name_key)).copied().or_else(
-                || {
-                    let here = s.position?;
-                    self.list.iter().position(|st| {
-                        let compatible = st.eva.is_none() || s.eva.is_none();
-                        compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
-                    })
-                },
-            );
+        let tv_key = s.tv.map(|t| format!("tv:{t}"));
+        let found = [&eva_key, &tv_key]
+            .into_iter()
+            .flatten()
+            .find_map(|k| self.by_key.get(k))
+            .or_else(|| self.by_key.get(&name_key))
+            .copied()
+            .or_else(|| {
+                let here = s.position?;
+                self.list.iter().position(|st| {
+                    let compatible = (st.eva.is_none() || s.eva.is_none()) && (st.tv.is_none() || s.tv.is_none());
+                    compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
+                })
+            });
         let idx = found.unwrap_or_else(|| {
             self.list.push(Station {
                 name: s.name.to_owned(),
                 eva: None,
-                db_name: None,
+                tv: None,
+                board_name: None,
                 tz: None,
                 position: None,
                 motis_id: None,
@@ -229,7 +279,7 @@ impl Stations {
             self.list.len().saturating_sub(1)
         });
         self.by_key.insert(name_key, idx);
-        if let Some(k) = eva_key {
+        for k in [eva_key, tv_key].into_iter().flatten() {
             self.by_key.insert(k, idx);
         }
         // `idx` came from the list itself, so the station is always there.
@@ -237,8 +287,11 @@ impl Stations {
         if station.eva.is_none() {
             station.eva = s.eva.map(str::to_owned);
         }
-        if station.db_name.is_none() {
-            station.db_name = s.db_name.map(str::to_owned);
+        if station.tv.is_none() {
+            station.tv = s.tv.map(str::to_owned);
+        }
+        if station.board_name.is_none() {
+            station.board_name = s.board_name.map(str::to_owned);
         }
         if station.tz.is_none() {
             station.tz = s.tz.map(str::to_owned);
@@ -262,7 +315,15 @@ fn sighting<'a>(
     motis_id: Option<&'a str>,
 ) -> Sighting<'a> {
     let db = resolved.get(name);
-    Sighting { name, eva: db.map(|s| s.eva.as_str()), db_name: db.map(|s| s.name.as_str()), tz, position, motis_id }
+    Sighting {
+        name,
+        eva: db.map(|s| s.eva.as_str()),
+        tv: None,
+        board_name: db.map(|s| s.name.as_str()),
+        tz,
+        position,
+        motis_id,
+    }
 }
 
 /// Great-circle distance between (lat, lon) pairs.
@@ -280,6 +341,7 @@ pub fn meters(a: (f64, f64), b: (f64, f64)) -> f64 {
 pub async fn build(
     motis: &Motis,
     db: Option<&Db>,
+    tv: Option<&Trafikverket>,
     itineraries: &[Itinerary],
     origin: &Stop,
     destination: &Stop,
@@ -309,12 +371,26 @@ pub async fn build(
     let rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
 
     let mut discovered = Vec::new();
-    let trips = match db {
-        Some(db) => {
-            let boards = fetch_boards(motis, db, &mut stations, &rough.corridor, &mut discovered, &mut warnings).await;
-            merge(&stations.list, &boards, rough.trips)
+    let mut boards = match db {
+        Some(db) => fetch_boards(motis, db, &mut stations, &rough.corridor, &mut discovered, &mut warnings).await,
+        None => Boards::new(),
+    };
+    let swedish = match tv {
+        Some(tv) => {
+            let ends = (origin_idx, destination_idx);
+            let found = swedish(tv, &mut stations, &rough.corridor, ends, &mut discovered, &mut warnings).await;
+            for (idx, coverage) in found.coverage {
+                boards.entry(idx).or_insert((Vec::new(), coverage));
+            }
+            found.trips
         }
-        None => rough.trips.into_values().collect(),
+        None => Vec::new(),
+    };
+    let from_trafikverket = !swedish.is_empty();
+    let trips = if db.is_none() && tv.is_none() {
+        rough.trips.into_values().collect()
+    } else {
+        merge(&stations.list, &boards, rough.trips, swedish)
     };
 
     Build {
@@ -327,6 +403,7 @@ pub async fn build(
         },
         discovered,
         warnings,
+        trafikverket: from_trafikverket,
     }
 }
 
@@ -498,10 +575,10 @@ fn propagate_delays(calls: &mut [Call]) {
     let mut previous: Option<Time> = None;
     let mut left: Option<Time> = None;
     for call in calls {
-        let from_db = call.from_db;
+        let from_board = call.from_board;
         let mut first = true;
         for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
-            if !(from_db || time.actual != time.planned) {
+            if !(from_board || time.actual != time.planned) {
                 // Only absurd feed delays reach past representable time; such a
                 // stop is then later than anything, i.e. unreachable.
                 time.actual = checked::later_or_max(time.planned, delay.max(TimeDelta::zero()));
@@ -553,7 +630,7 @@ fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut 
             departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
             platform: p.track.clone(),
             cancelled: p.cancelled,
-            from_db: false,
+            from_board: false,
         })
         // Stops passed without times (Limburg Süd for ICE 616) can't be used.
         .filter(|c| c.arrival.is_some() || c.departure.is_some())
@@ -658,7 +735,7 @@ async fn fetch_boards(
     let mut boards = load_boards(db, wanted, warnings).await;
 
     let by_db_name: HashMap<String, usize> =
-        boards.keys().filter_map(|&idx| Some((stations.list.get(idx)?.db_name.clone()?, idx))).collect();
+        boards.keys().filter_map(|&idx| Some((stations.list.get(idx)?.board_name.clone()?, idx))).collect();
     let mut between: HashMap<String, (usize, DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     for (visits, _) in boards.values() {
         for visit in visits.iter().filter(|v| v.class == Some('F')) {
@@ -705,7 +782,8 @@ async fn fetch_boards(
                 let idx = stations.intern(Sighting {
                     name: &station.name,
                     eva: Some(&station.eva),
-                    db_name: Some(&station.name),
+                    tv: None,
+                    board_name: Some(&station.name),
                     tz: Some(DB_TIME_ZONE),
                     position: stop.as_ref().and_then(|s| s.position),
                     motis_id: stop.as_ref().map(|s| s.id.as_str()),
@@ -723,6 +801,267 @@ async fn fetch_boards(
     boards
 }
 
+/// A train known in full from a board feed, with its route's station names.
+type Fed = (Trip, HashSet<String>);
+
+/// What Trafikverket contributes: its trains, and per boarded station which
+/// classes its board lists by the hour.
+#[derive(Default)]
+struct Swedish {
+    trips: Vec<Fed>,
+    coverage: Vec<(usize, Coverage)>,
+}
+
+/// The Trafikverket station at `position` (or named `name`), Swedish only:
+/// Trafikverket's foreign stations list only Swedish trains.
+fn tv_station<'a>(
+    list: &'a [trafikverket::Station],
+    position: Option<(f64, f64)>,
+    name: &str,
+) -> Option<&'a trafikverket::Station> {
+    let swedish = list.iter().filter(|s| s.country == "SE");
+    let near = position.and_then(|here| {
+        swedish
+            .clone()
+            .filter_map(|s| Some((s, meters(s.position?, here))))
+            .filter(|&(_, m)| m <= TV_SAME_STATION_METERS)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(s, _)| s)
+    });
+    near.or_else(|| swedish.clone().find(|s| db::fold(&s.name) == db::fold(name)))
+}
+
+/// Board hours from `lo` to `hi` widened by `BOARD_MARGIN`, at most `MAX_HOURS_PER_STATION`.
+fn board_span(lo: DateTime<Utc>, hi: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+    let from = checked::earlier_or_min(lo, BOARD_MARGIN);
+    let longest = TimeDelta::hours(i64::try_from(MAX_HOURS_PER_STATION).unwrap_or(i64::MAX));
+    let until = checked::later_or_max(hi, BOARD_MARGIN).min(checked::later_or_max(from, longest));
+    (from, until)
+}
+
+/// Trains at the boards of `wanted` (signature → span): per signature what it
+/// lists, and the runs not in `known` yet (in `known` from then on).
+async fn tv_boards(
+    tv: &Trafikverket,
+    wanted: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    known: &mut HashSet<trafikverket::RunKey>,
+    keep: impl Fn(&trafikverket::Seen) -> bool,
+    warnings: &mut Vec<String>,
+) -> (HashMap<String, Vec<trafikverket::Seen>>, Vec<trafikverket::RunKey>) {
+    let fetches = wanted.iter().map(|(sig, &(lo, hi))| async move {
+        let (from, until) = board_span(lo, hi);
+        (sig.clone(), tv.board(sig, from, until).await)
+    });
+    let mut listed = HashMap::new();
+    let mut new = Vec::new();
+    for (sig, result) in join_all(fetches).await {
+        match result {
+            Ok(seen) => {
+                for s in seen.iter().filter(|s| keep(s)) {
+                    if known.insert(s.run.clone()) {
+                        new.push(s.run.clone());
+                    }
+                }
+                listed.insert(sig, seen);
+            }
+            Err(e) => warnings.push(format!("Trafikverket board {sig}: {e:#}")),
+        }
+    }
+    new.sort();
+    (listed, new)
+}
+
+/// Trains in Sweden from Trafikverket: the whole runs of every train at the
+/// corridor's Swedish stations; then the boards of stations those runs share
+/// (junctions such as Alvesta or Emmaboda, by how many long-distance and
+/// regional runs call there, near the line between the ends), and the runs of
+/// their long-distance and regional trains. A planner's answers name neither.
+async fn swedish(
+    tv: &Trafikverket,
+    stations: &mut Stations,
+    corridor: &HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
+    ends: (usize, usize),
+    discovered: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Swedish {
+    if corridor.is_empty() {
+        return Swedish::default();
+    }
+    // Which corridor stations are Swedish only the station list tells (cached
+    // for a week): Transitous gives Göteborg the time zone Europe/Berlin.
+    let mut corridor: Vec<_> = corridor.iter().collect();
+    corridor.sort_by_key(|(idx, _)| **idx);
+    let list = match tv.stations().await {
+        Ok(list) => list,
+        Err(e) => {
+            warnings.push(format!("Trafikverket stations: {e:#}"));
+            return Swedish::default();
+        }
+    };
+    let by_sig: HashMap<&str, &trafikverket::Station> = list.iter().map(|s| (s.signature.as_str(), s)).collect();
+    let mut first: HashMap<String, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut boarded: HashMap<String, usize> = HashMap::new();
+    for (&idx, &(lo, hi)) in corridor {
+        let Some(st) = stations.list.get(idx) else { continue };
+        let Some(found) = tv_station(&list, st.position, &st.name) else { continue };
+        stations.claim(idx, found);
+        boarded.insert(found.signature.clone(), idx);
+        let span = first.entry(found.signature.clone()).or_insert((lo, hi));
+        *span = (span.0.min(lo), span.1.max(hi));
+    }
+    if first.is_empty() {
+        return Swedish::default();
+    }
+    let mut known = HashSet::new();
+    let (mut listed, keys) = tv_boards(tv, &first, &mut known, |_| true, warnings).await;
+    let mut runs = match tv.runs(&keys).await {
+        Ok(runs) => runs,
+        Err(e) => {
+            warnings.push(format!("Trafikverket runs: {e:#}"));
+            Vec::new()
+        }
+    };
+
+    let line =
+        stations.list.get(ends.0).and_then(|s| s.position).zip(stations.list.get(ends.1).and_then(|s| s.position));
+    let second = junctions(&runs, &by_sig, line, &first);
+    let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != 'S', warnings).await;
+    match tv.runs(&keys).await {
+        Ok(found) => runs.extend(found),
+        Err(e) => warnings.push(format!("Trafikverket runs: {e:#}")),
+    }
+    for sig in more.keys() {
+        if let Some(station) = by_sig.get(sig.as_str()) {
+            discovered.push(station.name.clone());
+        }
+    }
+    listed.extend(more);
+
+    let trips = runs.iter().map(|run| fed_trip(run, &by_sig, stations)).collect();
+    let mut coverage = Vec::new();
+    for (sig, seen) in &listed {
+        let idx = boarded.get(sig).copied().or_else(|| stations.by_key.get(&format!("tv:{sig}")).copied());
+        if let Some(idx) = idx {
+            // Trafikverket announces every train: an hour its board has any
+            // covers all classes, whatever class another feed gives a train.
+            let entries: Vec<(DateTime<Utc>, char)> =
+                seen.iter().flat_map(|s| ['F', 'N', 'S'].map(|class| (s.planned, class))).collect();
+            coverage.push((idx, Coverage::of(&entries)));
+        }
+    }
+    Swedish { trips, coverage }
+}
+
+type Neighbours<'a> = (HashSet<&'a str>, DateTime<Utc>, DateTime<Utc>);
+
+/// Junctions on long-distance and regional `runs`: stations where they come
+/// from or go to in at least `JUNCTION_DIRECTIONS` directions, off the boards
+/// so far (`boarded`) and near the `line` between the ends. A station on one
+/// line has two directions however many trains stop (an express's neighbours
+/// lie further along the same ones); Alvesta has four. The most directions
+/// first, at most `MAX_TV_DISCOVERED`; each with the span to fetch its board
+/// for: from the first run there to `TV_ONWARD` after the last.
+fn junctions(
+    runs: &[trafikverket::Run],
+    by_sig: &HashMap<&str, &trafikverket::Station>,
+    line: Option<((f64, f64), (f64, f64))>,
+    boarded: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+) -> HashMap<String, (DateTime<Utc>, DateTime<Utc>)> {
+    // Per station: the stations runs come from or go to, and when they are there.
+    let mut seen: HashMap<&str, Neighbours<'_>> = HashMap::new();
+    for run in runs.iter().filter(|r| r.class != 'S') {
+        for (k, stop) in run.stops.iter().enumerate() {
+            let Some(t) = stop.arrival.or(stop.departure).map(|m| m.planned) else { continue };
+            let Some(station) = by_sig.get(stop.signature.as_str()) else { continue };
+            let near_line = match (line, station.position) {
+                (Some((o, d)), Some(p)) => meters(o, p) + meters(p, d) <= MAX_DETOUR * meters(o, d),
+                _ => true,
+            };
+            if station.country != "SE" || !near_line || boarded.contains_key(&stop.signature) {
+                continue;
+            }
+            let entry = seen.entry(stop.signature.as_str()).or_insert_with(|| (HashSet::new(), t, t));
+            let neighbours = [k.checked_sub(1), k.checked_add(1)].into_iter().flatten();
+            entry.0.extend(neighbours.filter_map(|n| run.stops.get(n)).map(|s| s.signature.as_str()));
+            (entry.1, entry.2) = (entry.1.min(t), entry.2.max(t));
+        }
+    }
+    let mut ranked: Vec<_> = seen
+        .into_iter()
+        .filter_map(|(sig, (neighbours, lo, hi))| {
+            let here = by_sig.get(sig)?.position?;
+            let mut bearings: Vec<f64> =
+                neighbours.iter().filter_map(|n| Some(bearing(here, by_sig.get(n)?.position?))).collect();
+            bearings.sort_by(f64::total_cmp);
+            let mut directions: Vec<f64> = Vec::new();
+            for b in bearings {
+                if directions.iter().all(|&d| angle_between(b, d) > SAME_DIRECTION_DEGREES) {
+                    directions.push(b);
+                }
+            }
+            (directions.len() >= JUNCTION_DIRECTIONS).then_some((sig, directions.len(), lo, hi))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    ranked.truncate(MAX_TV_DISCOVERED);
+    ranked.into_iter().map(|(sig, _, lo, hi)| (sig.to_owned(), (lo, checked::later_or_max(hi, TV_ONWARD)))).collect()
+}
+
+/// Compass bearing from `a` to `b` in degrees, 0 north, 90 east.
+pub fn bearing(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, la2, dlo) = (a.0.to_radians(), b.0.to_radians(), (b.1 - a.1).to_radians());
+    let y = dlo.sin() * la2.cos();
+    let x = la1.cos().mul_add(la2.sin(), -(la1.sin() * la2.cos() * dlo.cos()));
+    y.atan2(x).to_degrees().rem_euclid(360.0)
+}
+
+/// The smaller angle between two bearings, 0–180 degrees.
+fn angle_between(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(360.0);
+    d.min(360.0 - d)
+}
+
+/// A Trafikverket run as a train, its stops interned; stops in countries
+/// other feeds' boards cover (Germany) are left out.
+fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Station>, stations: &mut Stations) -> Fed {
+    let time =
+        |m: Option<trafikverket::Moment>| m.map(|m| Time { planned: m.planned, actual: m.live.unwrap_or(m.planned) });
+    let mut calls = Vec::new();
+    let mut route = HashSet::new();
+    for stop in &run.stops {
+        let Some(station) = by_sig.get(stop.signature.as_str()) else { continue };
+        if !TV_COUNTRIES.contains(&station.country.as_str()) {
+            continue;
+        }
+        let idx = stations.intern(Sighting {
+            name: &station.name,
+            tv: Some(&station.signature),
+            board_name: Some(&station.name),
+            position: station.position,
+            ..Sighting::default()
+        });
+        route.insert(station.name.clone());
+        calls.push(Call {
+            station: idx,
+            arrival: time(stop.arrival),
+            departure: time(stop.departure),
+            platform: stop.track.clone(),
+            cancelled: [stop.arrival, stop.departure].into_iter().flatten().any(|m| m.cancelled),
+            from_board: true,
+        });
+    }
+    let headsign = run.stops.last().and_then(|s| by_sig.get(s.signature.as_str())).map(|s| s.name.clone());
+    let trip = Trip {
+        label: run.label(),
+        numbers: run.number().into_iter().collect(),
+        class: Some(run.class),
+        headsign,
+        calls,
+        transitous: false,
+    };
+    (trip, route)
+}
+
 /// Whole seconds of a float, rounded and clamped to what a timetable needs.
 #[expect(clippy::cast_possible_truncation, reason = "rounded and clamped to a range i64 holds")]
 pub const fn whole_seconds(s: f64) -> i64 {
@@ -734,12 +1073,13 @@ type Signature = Vec<(usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
 /// A train seen at a station: (trip, planned arrival, planned departure).
 type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
-/// DB trains from the boards, MOTIS trains merged into them by number. DB wins
-/// where it has data: a MOTIS stop is dropped if the DB train's route omits the
-/// station, or the station's board lists other trains of that class for the hour.
-/// Without DB, copies of one train from several feeds become one, EFA's times winning.
+/// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
+/// merged into them by number. The boards win where they have data: a MOTIS
+/// stop is dropped if the board train's route omits the station, or the
+/// station's board lists other trains of that class for the hour. Without
+/// boards, copies of one train from several feeds become one, EFA's times winning.
 #[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
-fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> Vec<Trip> {
+fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed: Vec<Fed>) -> Vec<Trip> {
     let mut runs: HashMap<&str, Vec<(usize, &Visit)>> = HashMap::new();
     for (&idx, (visits, _)) in boards {
         for v in visits {
@@ -755,7 +1095,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
         calls.sort_by_key(|(_, v)| v.seq);
         let mut route = HashSet::new();
         for &(idx, v) in &calls {
-            route.extend(stations.get(idx).and_then(|s| s.db_name.clone()));
+            route.extend(stations.get(idx).and_then(|s| s.board_name.clone()));
             for e in [&v.arrival, &v.departure].into_iter().flatten() {
                 route.extend(e.path().iter().cloned());
             }
@@ -790,11 +1130,15 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
                         .or_else(|| v.arrival.as_ref().and_then(Event::platform))
                         .map(str::to_owned),
                     cancelled: [&v.arrival, &v.departure].into_iter().flatten().any(|e| e.cancelled),
-                    from_db: true,
+                    from_board: true,
                 })
                 .collect(),
             transitous: false,
         });
+        routes.push(route);
+    }
+    for (trip, route) in fed {
+        trips.push(trip);
         routes.push(route);
     }
     // Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
@@ -905,12 +1249,12 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
             // So is one at the very time of the first or last call: a train
             // can't be at two stations at once.
-            let db_times = trip.calls.iter().filter(|c| c.from_db).filter_map(Call::planned);
+            let db_times = trip.calls.iter().filter(|c| c.from_board).filter_map(Call::planned);
             let span = db_times.clone().min().zip(db_times.max());
             // Into another feed's copy, a stop is only taken where the copies
             // agree on the stops around it: Transitous' ICE 273 is 10 minutes
             // off at Karlsruhe, so its Mannheim time would be too.
-            let from_feed = !trip.calls.iter().any(|c| c.from_db);
+            let from_feed = !trip.calls.iter().any(|c| c.from_board);
             let anchors: Vec<(DateTime<Utc>, bool)> = motis
                 .calls
                 .iter()
@@ -930,7 +1274,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>) -> V
             };
             let mut added = Vec::new();
             for call in motis.calls {
-                let name = stations.get(call.station).and_then(|s| s.db_name.as_ref());
+                let name = stations.get(call.station).and_then(|s| s.board_name.as_ref());
                 let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
                 let unknown_inside = name.is_none()
                     && !route.is_empty()

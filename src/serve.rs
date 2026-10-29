@@ -18,7 +18,7 @@ use clap::{ArgAction, CommandFactory, Parser};
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
-use crate::db;
+use crate::keys::Keys;
 use crate::motis::Motis;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
 use crate::sync::lock;
@@ -31,7 +31,7 @@ const KEEP_JOBS: usize = 20;
 const NOT_IN_FORM: [&str; 9] =
     ["html", "detail", "per_group", "metric", "help", "version", "from_id", "to_id", "via_id"];
 /// Options shown folded under "Advanced".
-const ADVANCED: [&str; 4] = ["hubs", "max_nodes", "no_db", "all_stops"];
+const ADVANCED: [&str; 5] = ["hubs", "max_nodes", "no_db", "no_trafikverket", "all_stops"];
 
 /// The search options as a command line, for validation and defaults.
 #[derive(Parser)]
@@ -75,25 +75,20 @@ struct App {
     motis: Motis,
     /// Used by every search, whatever the form says.
     endpoints: Endpoints,
-    /// DB credentials, read when a search starts.
-    credentials: fn() -> Result<Option<db::Credentials>>,
+    /// The API keys, read when a search starts.
+    keys: fn() -> Result<Keys>,
 }
 
 impl App {
     /// `first_job`: the first search's id; see [`first_job`].
-    fn new(
-        parallel: usize,
-        endpoints: Endpoints,
-        credentials: fn() -> Result<Option<db::Credentials>>,
-        first_job: u64,
-    ) -> Result<Self> {
+    fn new(parallel: usize, endpoints: Endpoints, keys: fn() -> Result<Keys>, first_job: u64) -> Result<Self> {
         Ok(Self {
             jobs: Mutex::new(HashMap::new()),
             next: AtomicU64::new(first_job),
             permits: Semaphore::new(parallel.max(1)),
             motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
             endpoints,
-            credentials,
+            keys,
         })
     }
 }
@@ -105,22 +100,18 @@ fn first_job() -> u64 {
 }
 
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
-    let app = Arc::new(App::new(parallel, endpoints, db::Credentials::load, first_job())?);
+    let app = Arc::new(App::new(parallel, endpoints, Keys::load, first_job())?);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("route planner on http://{addr}/");
     axum::serve(listener, router(app)).await?;
     Ok(())
 }
 
-/// The server's routes with `credentials` instead of the user's, for tests
+/// The server's routes with `keys` instead of the user's, for tests
 /// against stand-in services.
 #[cfg(test)]
-pub fn test_router(
-    parallel: usize,
-    endpoints: Endpoints,
-    credentials: fn() -> Result<Option<db::Credentials>>,
-) -> Result<Router> {
-    Ok(router(Arc::new(App::new(parallel, endpoints, credentials, 1)?)))
+pub fn test_router(parallel: usize, endpoints: Endpoints, keys: fn() -> Result<Keys>) -> Result<Router> {
+    Ok(router(Arc::new(App::new(parallel, endpoints, keys, 1)?)))
 }
 
 fn router(app: Arc<App>) -> Router {
@@ -348,13 +339,13 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
         Event::Warning(warning) => note(&format!("warning: {warning}"), false),
         Event::Progress(line) => note(line, true),
     };
-    // The server's services and credentials, whatever the URL says.
-    let result = match (app.credentials)() {
-        Ok(credentials) => {
+    // The server's services and keys, whatever the URL says.
+    let result = match (app.keys)() {
+        Ok(keys) => {
             search::run(
                 &args,
                 &app.endpoints,
-                credentials,
+                keys,
                 Some(PlotPage { back, details_url: Some(format!("/job/{id}/chains")) }),
                 &events,
             )

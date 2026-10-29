@@ -68,6 +68,7 @@ fn the_user_agent_names_umstieg_its_version_and_the_contact() {
         efa: String::new(),
         api: String::new(),
         db_api: String::new(),
+        trafikverket_api: String::new(),
         contact: "mailto:me@example.org".to_owned(),
     };
     assert_eq!(endpoints.user_agent(), format!("umstieg/{} (mailto:me@example.org)", env!("CARGO_PKG_VERSION")));
@@ -153,7 +154,12 @@ fn report(tt: crate::timetable::Timetable) -> String {
     let enumeration = enumerate::enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
     let report = Report {
         args,
-        built: crate::timetable::Build { timetable: tt, discovered: Vec::new(), warnings: Vec::new() },
+        built: crate::timetable::Build {
+            timetable: tt,
+            discovered: Vec::new(),
+            warnings: Vec::new(),
+            trafikverket: false,
+        },
         enumeration,
         limits,
         hubs: Vec::new(),
@@ -224,6 +230,10 @@ fn progress_counts_the_requests_per_service_asked() {
     let efa = crate::efa::Efa::new("http://unused.test", "t").unwrap();
     let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
     let db = crate::db::Db::new("http://unused.test", credentials, "t").unwrap();
-    assert_eq!(super::requests_so_far(&motis, None, None), "0 requests to Transitous");
-    assert_eq!(super::requests_so_far(&motis, Some(&efa), Some(&db)), "0 requests to Transitous, 0 to EFA, 0 to DB");
+    let tv = crate::trafikverket::Trafikverket::new("http://unused.test", "key", "t").unwrap();
+    assert_eq!(super::requests_so_far(&motis, None, None, None), "0 requests to Transitous");
+    assert_eq!(
+        super::requests_so_far(&motis, Some(&efa), Some(&db), Some(&tv)),
+        "0 requests to Transitous, 0 to EFA, 0 to DB, 0 to Trafikverket"
+    );
 }

@@ -60,7 +60,8 @@ impl Builder {
         self.stations.push(Station {
             name: name.to_owned(),
             eva: None,
-            db_name: None,
+            tv: None,
+            board_name: None,
             tz: None,
             position: None,
             motis_id: None,
@@ -79,7 +80,7 @@ impl Builder {
                 departure: time(departure),
                 platform: None,
                 cancelled: false,
-                from_db: true,
+                from_board: true,
             })
             .collect();
         let digits: String = label.chars().filter(char::is_ascii_digit).collect();
@@ -344,7 +345,7 @@ pub fn timetable(spec: &Spec) -> Timetable {
                 departure: departure.filter(|_| !(middle && stop.missing == 1)),
                 platform: None,
                 cancelled: stop.cancelled,
-                from_db: true,
+                from_board: true,
             });
         }
         b.trips.push(Trip {
@@ -361,4 +362,132 @@ pub fn timetable(spec: &Spec) -> Timetable {
     }
     let destination = format!("S{}", spec.stations - 1);
     b.build("S0", &destination)
+}
+
+// ---------------------------------------------------------------- Trafikverket stand-in
+
+/// A station of the Trafikverket stand-in: (signature, name, country, lat, lon).
+pub type TvStation = (&'static str, &'static str, &'static str, f64, f64);
+
+/// A train run of the Trafikverket stand-in: number, product ("" none),
+/// traffic ("Tåg", "Pendeltåg", "Buss") and stops (signature, arrival,
+/// departure) in testkit times ("09:02+5"; "" none).
+pub struct TvRun {
+    pub ident: &'static str,
+    pub product: &'static str,
+    pub traffic: &'static str,
+    pub stops: Vec<(&'static str, &'static str, &'static str)>,
+}
+
+/// The day every stand-in run starts, as Trafikverket writes it.
+pub const TV_DATE: &str = "2026-10-24T00:00:00.000+02:00";
+
+/// What the Trafikverket stand-in knows, and the requests it answered
+/// ("stations", "board G", "runs 319,1036").
+pub struct TvWorld {
+    pub stations: Vec<TvStation>,
+    pub runs: Vec<TvRun>,
+    pub log: std::sync::Mutex<Vec<String>>,
+}
+
+impl TvWorld {
+    pub fn new(stations: Vec<TvStation>, runs: Vec<TvRun>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { stations, runs, log: std::sync::Mutex::new(Vec::new()) })
+    }
+
+    pub fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn announcements(&self) -> Vec<(&TvRun, &'static str, &'static str, Time)> {
+        self.runs
+            .iter()
+            .flat_map(|run| {
+                run.stops.iter().flat_map(move |&(sig, arr, dep)| {
+                    [("Ankomst", arr), ("Avgang", dep)]
+                        .into_iter()
+                        .filter_map(move |(activity, t)| Some((run, sig, activity, time(t)?)))
+                })
+            })
+            .collect()
+    }
+}
+
+/// Every `value="…"` following `name="<name>"` in a request body.
+fn tv_values(body: &str, name: &str) -> Vec<String> {
+    let marker = format!("name=\"{name}\" value=\"");
+    body.match_indices(&marker)
+        .filter_map(|(i, _)| {
+            let rest = body.get(i + marker.len()..)?;
+            Some(rest.split('"').next()?.to_owned())
+        })
+        .collect()
+}
+
+async fn tv_answer(axum::extract::State(world): axum::extract::State<std::sync::Arc<TvWorld>>, body: String) -> String {
+    let note = |line: String| world.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line);
+    if !body.contains("authenticationkey=\"key\"") {
+        return r#"{"RESPONSE":{"RESULT":[{"ERROR":{"SOURCE":"Security","MESSAGE":"Invalid authentication"}}]}}"#
+            .to_owned();
+    }
+    if body.contains("objecttype=\"TrainStation\"") {
+        note("stations".to_owned());
+        let stations: Vec<serde_json::Value> = world
+            .stations
+            .iter()
+            .map(|&(sig, name, country, lat, lon)| {
+                serde_json::json!({
+                    "LocationSignature": sig, "AdvertisedLocationName": name, "CountryCode": country,
+                    "Geometry": { "WGS84": format!("POINT ({lon} {lat})") },
+                })
+            })
+            .collect();
+        return serde_json::json!({ "RESPONSE": { "RESULT": [{ "TrainStation": stations }] } }).to_string();
+    }
+    let idents = tv_values(&body, "AdvertisedTrainIdent");
+    let signature = tv_values(&body, "LocationSignature").into_iter().next();
+    // A board's span: from the first time given, until the second.
+    let span = tv_values(&body, "AdvertisedTimeAtLocation");
+    let parse = |k: usize| span.get(k).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.to_utc());
+    let (from, until) = (parse(0), parse(1));
+    if idents.is_empty() {
+        note(format!("board {}", signature.clone().unwrap_or_default()));
+    } else {
+        note(format!("runs {}", idents.join(",")));
+    }
+    let announcements: Vec<serde_json::Value> = world
+        .announcements()
+        .into_iter()
+        .filter(|(run, sig, _, t)| {
+            if idents.is_empty() {
+                signature.as_deref() == Some(*sig)
+                    && from.is_none_or(|f| t.planned >= f)
+                    && until.is_none_or(|u| t.planned < u)
+            } else {
+                idents.iter().any(|i| i == run.ident)
+            }
+        })
+        .map(|(run, sig, activity, t)| {
+            let mut a = serde_json::json!({
+                "AdvertisedTrainIdent": run.ident, "ScheduledDepartureDateTime": TV_DATE,
+                "LocationSignature": sig, "ActivityType": activity,
+                "AdvertisedTimeAtLocation": t.planned.to_rfc3339(),
+                "Canceled": false, "TrackAtLocation": "1",
+                "TypeOfTraffic": [{ "Code": "x", "Description": run.traffic }],
+            });
+            if !run.product.is_empty() {
+                a["ProductInformation"] = serde_json::json!([{ "Code": "p", "Description": run.product }]);
+            }
+            if t.actual != t.planned {
+                a["EstimatedTimeAtLocation"] = serde_json::json!(t.actual.to_rfc3339());
+            }
+            a
+        })
+        .collect();
+    serde_json::json!({ "RESPONSE": { "RESULT": [{ "TrainAnnouncement": announcements }] } }).to_string()
+}
+
+/// Serves `world` as Trafikverket's API; returns its URL. The key is "key".
+pub async fn serve_trafikverket(world: &std::sync::Arc<TvWorld>) -> String {
+    serve(axum::Router::new().fallback(tv_answer).with_state(world.clone())).await
 }

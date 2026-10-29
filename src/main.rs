@@ -5,6 +5,7 @@ mod db;
 mod efa;
 mod enumerate;
 mod fallback;
+mod keys;
 mod motis;
 mod page;
 mod plot;
@@ -14,6 +15,7 @@ mod serve;
 mod sync;
 mod text;
 mod timetable;
+mod trafikverket;
 
 #[cfg(test)]
 mod e2e_tests;
@@ -80,7 +82,7 @@ async fn main() -> Result<()> {
         }
     };
     let plot = args.html.as_ref().map(|_| search::PlotPage { back: None, details_url: None });
-    let outcome = search::run(&args, &cli.endpoints, db::Credentials::load()?, plot, &events).await?;
+    let outcome = search::run(&args, &cli.endpoints, keys::Keys::load()?, plot, &events).await?;
     print!("{}", outcome.text);
     if let (Some(path), Some(plot)) = (&args.html, &outcome.plot) {
         std::fs::write(path, &plot.html).with_context(|| format!("writing {}", path.display()))?;

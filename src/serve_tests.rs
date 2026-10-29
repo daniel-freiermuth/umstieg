@@ -57,6 +57,7 @@ fn form_fields_are_the_search_options_minus_text_only_ones() {
             "forward_only",
             "max_nodes",
             "no_db",
+            "no_trafikverket",
             "all_stops",
             "planned"
         ]
@@ -250,9 +251,10 @@ fn app(api: &str) -> Arc<App> {
         efa: String::new(),
         api: api.to_owned(),
         db_api: "http://127.0.0.1:9".to_owned(),
+        trafikverket_api: "http://127.0.0.1:9".to_owned(),
         contact: "test".to_owned(),
     };
-    Arc::new(App::new(1, endpoints, || Ok(None), 1).unwrap())
+    Arc::new(App::new(1, endpoints, || Ok(crate::keys::Keys::default()), 1).unwrap())
 }
 
 async fn get_page(app: &Arc<App>, uri: &str) -> (StatusCode, HashMap<String, String>, String) {

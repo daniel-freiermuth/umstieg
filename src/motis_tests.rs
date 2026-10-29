@@ -70,6 +70,22 @@ fn train_numbers_are_the_trailing_digits() {
 }
 
 #[test]
+fn a_train_without_trip_name_has_its_route_names_number() {
+    // Trafiklab's Öresundståg 1036: route "1036", no trip name, mode LONG_DISTANCE.
+    let cases = [
+        (json!({ "mode": "LONG_DISTANCE", "routeShortName": "1036", "tripShortName": "" }), Some(1036)),
+        (json!({ "mode": "REGIONAL_RAIL", "routeShortName": "1036" }), Some(1036)),
+        (json!({ "mode": "LONG_DISTANCE", "routeShortName": "1036", "tripShortName": "ICE 5" }), Some(5)),
+        (json!({ "mode": "BUS", "routeShortName": "150" }), None),
+        (json!({ "mode": "REGIONAL_RAIL", "routeShortName": "RE7" }), None),
+        (json!({ "mode": "REGIONAL_RAIL", "routeShortName": "" }), None),
+    ];
+    for (fields, expected) in cases {
+        assert_eq!(leg(&fields).train_number(), expected, "{fields}");
+    }
+}
+
+#[test]
 fn classes_follow_db_product_classes() {
     let cases = [
         ("HIGHSPEED_RAIL", Some('F')),

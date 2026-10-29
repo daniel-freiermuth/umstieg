@@ -96,9 +96,16 @@ impl Leg {
         label
     }
 
-    /// Train number, e.g. 378 for "ICE 378" or "011174".
+    /// Train number, e.g. 378 for "ICE 378" or "011174". Swedish trains have
+    /// no trip name but their number as the route's ("1036"); a bus's bare
+    /// route name is a line, not a number.
     pub fn train_number(&self) -> Option<u32> {
-        let name = self.trip_short_name.as_deref()?;
+        let bare = || {
+            let route =
+                self.route_short_name.as_deref().filter(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()));
+            self.class().and(route)
+        };
+        let name = self.trip_short_name.as_deref().filter(|n| !n.is_empty()).or_else(bare)?;
         let digits = name.rsplit(|c: char| !c.is_ascii_digit()).next()?;
         digits.parse().ok().filter(|&n| n > 0)
     }

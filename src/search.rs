@@ -14,8 +14,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::enumerate::{self, Chain, Limits, Network, REPORT_EVERY, Step};
 use crate::fallback::{self, Fallbacks};
+use crate::keys::Keys;
 use crate::motis::{Motis, Stop};
 use crate::text::{buffer, clock, duration, header, route, timed, window};
+use crate::trafikverket::{self, Trafikverket};
 use crate::{checked, complete, db, efa, plot, rough, timetable};
 
 /// Upper limit of the options in minutes (`--window`, `--min-transfer`,
@@ -133,6 +135,9 @@ pub struct SearchArgs {
     /// Don't use DB's station boards even if credentials are configured.
     #[arg(long)]
     pub no_db: bool,
+    /// Don't use Trafikverket's train announcements (Sweden) even if a key is configured.
+    #[arg(long)]
+    pub no_trafikverket: bool,
     /// Fetch DB boards for every stop of the rough routes' trains, not only where
     /// they start or end: more change points, ~3× the DB requests on a cold cache.
     #[arg(long)]
@@ -159,6 +164,9 @@ pub struct Endpoints {
     /// DB Timetables API base URL.
     #[arg(long, default_value = db::API)]
     pub db_api: String,
+    /// Trafikverket open API URL.
+    #[arg(long, default_value = trafikverket::API)]
+    pub trafikverket_api: String,
     /// Contact sent in the User-Agent, as the Transitous usage policy requires.
     #[arg(long, env = "UMSTIEG_CONTACT", default_value = "https://github.com/daniel-freiermuth")]
     pub contact: String,
@@ -195,13 +203,14 @@ pub struct PlotPage {
     pub details_url: Option<String>,
 }
 
-/// Runs a search; with `plot`, also renders the plot page. Without
-/// `credentials` (or with `--no-db`), only Transitous and EFA are asked.
+/// Runs a search; with `plot`, also renders the plot page. DB and Trafikverket
+/// are asked if `keys` has theirs (and `--no-db`/`--no-trafikverket` don't
+/// say otherwise).
 #[tracing::instrument(name = "search", skip_all, fields(from = %args.from, to = %args.to))]
 pub async fn run(
     args: &SearchArgs,
     endpoints: &Endpoints,
-    credentials: Option<db::Credentials>,
+    keys: Keys,
     plot: Option<PlotPage>,
     events: &(dyn Fn(Event<'_>) + Sync),
 ) -> Result<Outcome> {
@@ -215,16 +224,7 @@ pub async fn run(
     let user_agent = endpoints.user_agent();
     let motis = Motis::new(&endpoints.api, &user_agent)?;
     let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, &user_agent)).transpose()?;
-    let db = match (args.no_db, credentials) {
-        (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, &user_agent)?),
-        (false, None) => {
-            events(Event::Warning(
-                "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
-            ));
-            None
-        }
-        (true, _) => None,
-    };
+    let (db, tv) = boards(args, endpoints, keys, &user_agent, events)?;
 
     let zone = match args.time_zone {
         Some(zone) => zone,
@@ -240,14 +240,21 @@ pub async fn run(
     let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
     let (origin, destination, vias) = stations(&motis, args).await?;
-    let asked = || requests_so_far(&motis, efa.as_ref(), db.as_ref());
+    let asked = || requests_so_far(&motis, efa.as_ref(), db.as_ref(), tv.as_ref());
 
     events(Event::Stage("Asking Transitous and EFA for rough routes"));
     let query = rough::Query { origin, destination, time, window, vias, auto_hubs: args.hubs };
     let rough = ticking(rough::collect(&motis, efa.as_ref(), &query), events, asked).await?;
-    events(Event::Stage("Building the timetable from DB station boards"));
-    let boards =
-        timetable::build(&motis, db.as_ref(), &rough.itineraries, &query.origin, &query.destination, args.all_stops);
+    events(Event::Stage("Building the timetable from station boards (DB, Trafikverket)"));
+    let boards = timetable::build(
+        &motis,
+        db.as_ref(),
+        tv.as_ref(),
+        &rough.itineraries,
+        &query.origin,
+        &query.destination,
+        args.all_stops,
+    );
     let mut built = ticking(boards, events, asked).await;
     if args.planned {
         built.timetable.ignore_delays();
@@ -281,16 +288,18 @@ pub async fn run(
     .await?;
     ticking(complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events), events, asked).await;
     let requests = format!(
-        "{} Transitous requests{}{}",
+        "{} Transitous requests{}{}{}",
         motis.request_count(),
         efa.as_ref().map(|efa| format!(", {} EFA requests", efa.request_count())).unwrap_or_default(),
         db.as_ref().map(|db| format!(", {} DB requests", db.request_count())).unwrap_or_default(),
+        tv.as_ref().map(|tv| format!(", {} Trafikverket requests", tv.request_count())).unwrap_or_default(),
     );
     // What the search cost the services, for the operator (Transitous asks to keep the load light).
     tracing::info!(
         transitous = motis.request_count(),
         efa = efa.as_ref().map(efa::Efa::request_count),
         db = db.as_ref().map(db::Db::request_count),
+        trafikverket = tv.as_ref().map(Trafikverket::request_count),
         db_quota_wait = ?db.as_ref().map(db::Db::waited),
         "requests sent"
     );
@@ -422,7 +431,7 @@ async fn ticking<T>(
 }
 
 /// "38 requests to Transitous, 6 to EFA, 80 to DB · waiting 40 s more for DB's limit of 60 requests per minute".
-fn requests_so_far(motis: &Motis, efa: Option<&efa::Efa>, db: Option<&db::Db>) -> String {
+fn requests_so_far(motis: &Motis, efa: Option<&efa::Efa>, db: Option<&db::Db>, tv: Option<&Trafikverket>) -> String {
     let efa = efa.map(|efa| format!(", {} to EFA", efa.request_count())).unwrap_or_default();
     let db = db
         .map(|db| {
@@ -432,7 +441,33 @@ fn requests_so_far(motis: &Motis, efa: Option<&efa::Efa>, db: Option<&db::Db>) -
             format!(", {} to DB{quota}", db.request_count())
         })
         .unwrap_or_default();
-    format!("{} requests to Transitous{efa}{db}", motis.request_count())
+    let tv = tv.map(|tv| format!(", {} to Trafikverket", tv.request_count())).unwrap_or_default();
+    format!("{} requests to Transitous{efa}{db}{tv}", motis.request_count())
+}
+
+/// The station board feeds the search may ask: those with a key, unless switched off.
+fn boards(
+    args: &SearchArgs,
+    endpoints: &Endpoints,
+    keys: Keys,
+    user_agent: &str,
+    events: &(dyn Fn(Event<'_>) + Sync),
+) -> Result<(Option<db::Db>, Option<Trafikverket>)> {
+    let db = match (args.no_db, keys.db) {
+        (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, user_agent)?),
+        (false, None) => {
+            events(Event::Warning(
+                "no DB_CLIENT_ID/DB_API_KEY (env or ~/.config/umstieg/db.env); using Transitous only",
+            ));
+            None
+        }
+        (true, _) => None,
+    };
+    let tv = match (args.no_trafikverket, keys.trafikverket) {
+        (false, Some(key)) => Some(Trafikverket::new(&endpoints.trafikverket_api, &key, user_agent)?),
+        _ => None,
+    };
+    Ok((db, tv))
 }
 
 /// `--extra-hours` as a duration, negative meaning none.
@@ -512,7 +547,7 @@ impl Report {
             },
         )?;
         if !built.discovered.is_empty() {
-            writeln!(out, "stations found via DB train paths: {}", built.discovered.join(", "))?;
+            writeln!(out, "stations found along trains' routes: {}", built.discovered.join(", "))?;
         }
         let Some(fastest) = result.fastest else {
             writeln!(out, "\nNo connection found.")?;
@@ -527,6 +562,9 @@ impl Report {
         writeln!(out, "Data: Transitous, https://transitous.org/sources/ — {times}.")?;
         if with_db {
             writeln!(out, "      Deutsche Bahn Timetables API.")?;
+        }
+        if built.trafikverket {
+            writeln!(out, "      Trafikverket open data (CC0).")?;
         }
 
         let rendered = match plot {
@@ -659,9 +697,9 @@ fn write_detail(
                 let (b, a) = (tt.call(trip, board)?, tt.call(trip, alight)?);
                 let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
                 let platform = |p: &Option<String>| p.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default();
-                let source = if b.from_db && a.from_db {
+                let source = if b.from_board && a.from_board {
                     "DB"
-                } else if b.from_db || a.from_db {
+                } else if b.from_board || a.from_board {
                     "DB/T"
                 } else {
                     "T"

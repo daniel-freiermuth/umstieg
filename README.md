@@ -157,8 +157,20 @@ command line logs nothing unless `RUST_LOG` is set.
    abroad), copies of a train from Transitous and EFA become one by number;
    EFA's times win, and the other copy only adds stops where both agree on the
    stops around them (Transitous had ICE 273 22 minutes late at Mannheim).
-   Stations from different feeds are unified by EVA number, name or distance
-   (< 300 m).
+   Stations from different feeds are unified by EVA number, Trafikverket
+   signature, name or distance (< 300 m).
+
+   In Sweden, [Trafikverket](https://api.trafikinfo.trafikverket.se) has
+   every train with planned, forecast and actual times, and a train's whole
+   run in one request. Its boards are fetched for the corridor's Swedish
+   stations (matched by position, < 600 m), then the runs of every train on
+   them. Stations where those long-distance and regional runs come from three
+   or more directions, near the line between origin and destination, are
+   junctions (Alvesta, Emmaboda; up to 12): their boards and their trains'
+   runs come too. Göteborg → Karlshamn then has SJ Regional 319 via Alvesta,
+   which no planner answer shows. Trafikverket's runs count like DB's: their
+   times win, Transitous's copies are merged into them, German stops are left
+   to DB.
 3. **Enumeration**: depth-first over that timetable, deepening by number of
    changes, within these limits:
    - departure inside `--window`, travel time ≤ fastest + `--extra-hours`,
@@ -192,8 +204,8 @@ command line logs nothing unless `RUST_LOG` is set.
    agree on the times; the search has run already, so changes there aren't
    offered.
 
-Without DB credentials, the DB part of step 2 is skipped and the timetable consists
-of the MOTIS trains only.
+Without DB credentials or a Trafikverket key, that part of step 2 is skipped;
+without both, the timetable consists of the MOTIS trains only.
 
 ## Data
 
@@ -224,6 +236,15 @@ Requests stay under 60 per minute. Planned boards and station lookups are cached
 in `~/.cache/umstieg/`; live changes are fetched on every run. `--no-db` skips
 DB.
 
+Swedish data comes from Trafikverket's
+[open API](https://www.trafiklab.se/api/trafiklab-apis/trafikverket/) (CC0;
+free key from [data.trafikverket.se](https://data.trafikverket.se)). The key
+comes from `TRAFIKVERKET_KEY` or `~/.config/umstieg/trafikverket.env`. There
+is no quota; a search through Sweden makes 20–40 requests, four at a time.
+The station list is cached in `~/.cache/umstieg/trafikverket/` for a week —
+with a key, it is also what tells whether a search passes through Sweden.
+`--no-trafikverket` skips it.
+
 ## Limits
 
 - Connections through stations outside the corridor are not found. The
@@ -232,8 +253,8 @@ DB.
   `--all-stops`.
 - Minimum transfer times per station are not available from these APIs; one
   global `--min-transfer` is used for flagging.
-- DB boards cover German stations (and a few abroad); elsewhere times come from
-  Transitous.
+- DB boards cover German stations (and a few abroad), Trafikverket Swedish
+  ones; elsewhere times come from Transitous.
 
 ## Development
 

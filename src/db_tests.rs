@@ -433,66 +433,6 @@ fn station_cache_lines() {
     assert_eq!(cache.len(), 3);
 }
 
-#[test]
-fn credentials_from_file_and_environment() {
-    let no_env = |_: &str| None;
-    let file = "# DB API\nexport DB_CLIENT_ID=\"abc\"\n  DB_API_KEY = k=ey  \n";
-    let both = Credentials::parse(file, no_env).unwrap();
-    assert_eq!((both.client_id.as_str(), both.api_key.as_str()), ("abc", "k=ey"));
-
-    let env = |key: &str| (key == "DB_API_KEY").then(|| "from-env".to_owned());
-    let mixed = Credentials::parse(file, env).unwrap();
-    assert_eq!((mixed.client_id.as_str(), mixed.api_key.as_str()), ("abc", "from-env"), "environment wins");
-
-    assert!(Credentials::parse("DB_CLIENT_ID=abc\n", no_env).is_none(), "both are needed");
-    assert!(Credentials::parse("", no_env).is_none());
-    let only_env = Credentials::parse("", |key: &str| Some(format!("{key}!"))).unwrap();
-    assert_eq!((only_env.client_id.as_str(), only_env.api_key.as_str()), ("DB_CLIENT_ID!", "DB_API_KEY!"));
-}
-
-/// `Credentials::load` as `"client/key"`, `"none"` or `"error"`.
-fn loaded() -> String {
-    match Credentials::load() {
-        Ok(Some(c)) => format!("{}/{}", c.client_id, c.api_key),
-        Ok(None) => "none".to_owned(),
-        Err(_) => "error".to_owned(),
-    }
-}
-
-#[test]
-fn credentials_load_from_the_config_directory_or_the_environment() {
-    const EXPECT: &str = "UMSTIEG_TEST_EXPECT";
-    if testkit::in_child() {
-        assert_eq!(loaded(), std::env::var(EXPECT).unwrap());
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("config");
-    std::fs::create_dir_all(config.join("umstieg")).unwrap();
-    std::fs::write(config.join("umstieg/db.env"), "DB_CLIENT_ID=abc\nDB_API_KEY=key\n").unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".config/umstieg")).unwrap();
-    std::fs::write(home.join(".config/umstieg/db.env"), "DB_CLIENT_ID=home\nDB_API_KEY=key\n").unwrap();
-    let empty = dir.path().join("empty");
-    std::fs::create_dir_all(&empty).unwrap();
-    let unreadable = dir.path().join("unreadable");
-    std::fs::create_dir_all(unreadable.join("umstieg/db.env")).unwrap();
-
-    let test = "db::tests::credentials_load_from_the_config_directory_or_the_environment";
-    let run = |vars: &[(&str, &str)], expect: &str| {
-        let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![(EXPECT, expect.as_ref()), ("HOME", home.as_os_str())];
-        env.extend(vars.iter().map(|&(k, v)| (k, v.as_ref())));
-        testkit::rerun_with_env(test, &env);
-    };
-    let (config, empty, unreadable) = (config.to_str().unwrap(), empty.to_str().unwrap(), unreadable.to_str().unwrap());
-    run(&[("XDG_CONFIG_HOME", config)], "abc/key");
-    run(&[], "home/key");
-    run(&[("XDG_CONFIG_HOME", empty)], "none");
-    run(&[("XDG_CONFIG_HOME", empty), ("DB_CLIENT_ID", "id"), ("DB_API_KEY", "env")], "id/env");
-    run(&[("XDG_CONFIG_HOME", config), ("DB_API_KEY", "env")], "abc/env");
-    run(&[("XDG_CONFIG_HOME", unreadable)], "error");
-}
-
 // ---- client ----
 
 #[tokio::test]
