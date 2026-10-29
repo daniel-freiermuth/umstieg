@@ -64,6 +64,13 @@ pub struct Transfer {
     pub slack: TimeDelta,
 }
 
+impl Transfer {
+    /// When the traveller is there for the next train: the arrival plus the walk.
+    pub fn ready(&self) -> DateTime<Utc> {
+        checked::earlier_or_min(self.departure, self.slack)
+    }
+}
+
 impl Chain {
     pub fn rides(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
         self.steps.iter().filter_map(|s| match *s {
