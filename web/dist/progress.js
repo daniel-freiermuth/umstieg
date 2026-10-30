@@ -61,6 +61,7 @@ var decodeStatus = (v, path) => {
     now: field(o, "now", nullable(string), path),
     done: field(o, "done", boolean, path),
     error: field(o, "error", nullable(string), path),
+    no_connection: field(o, "no_connection", nullable(string), path),
     back: field(o, "back", string, path)
   };
 };
@@ -70,7 +71,11 @@ var decodeProgress = (v, path) => ({
 function next(status) {
   if (!status.done)
     return { poll: true };
-  return status.error === null ? { plot: true } : { error: status.error };
+  if (status.error !== null)
+    return { error: status.error };
+  if (status.no_connection !== null)
+    return { noConnection: status.no_connection };
+  return { plot: true };
 }
 
 // progress.ts
@@ -109,8 +114,8 @@ async function poll() {
     return;
   }
   document.body.classList.add("over");
-  title.textContent = "No plot";
-  const error = Object.assign(document.createElement("pre"), { className: "error", textContent: then.error });
-  log.after(error);
+  const [heading, className, text] = "error" in then ? ["No plot", "error", then.error] : ["No connection found", "report", then.noConnection];
+  title.textContent = heading;
+  log.after(Object.assign(document.createElement("pre"), { className, textContent: text }));
 }
 poll();
