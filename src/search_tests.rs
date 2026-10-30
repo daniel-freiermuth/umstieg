@@ -3,7 +3,10 @@ use chrono_tz::Europe::Berlin;
 use chrono_tz::UTC;
 use clap::Parser;
 
-use super::{Endpoints, Event, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, time_zone};
+use super::{
+    Endpoints, Event, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, ride_source,
+    time_zone,
+};
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{self, Builder, at};
 
@@ -332,4 +335,26 @@ fn the_drawn_network_holds_the_fallbacks_too() {
     let drawn = super::drawn(&tt, &[chain], &mut fallbacks, TimeDelta::minutes(5)).unwrap();
     let trips: Vec<usize> = drawn.rides.iter().map(|r| r.trip).collect();
     assert_eq!(trips, [re1, re2, re3]);
+}
+
+#[test]
+fn ride_source_names_the_board_feed_the_times_come_from() {
+    let call = |from_board, trafikverket| crate::timetable::Call {
+        station: 0,
+        arrival: None,
+        departure: None,
+        platform: None,
+        cancelled: false,
+        from_board,
+        trafikverket,
+    };
+    let (db, tv, t) = (call(true, false), call(true, true), call(false, false));
+    assert_eq!(ride_source(&db, &db), "DB");
+    assert_eq!(ride_source(&db, &t), "DB/T");
+    assert_eq!(ride_source(&t, &db), "DB/T");
+    assert_eq!(ride_source(&t, &t), "T");
+    // A Swedish train from Trafikverket's run isn't DB's.
+    assert_eq!(ride_source(&tv, &tv), "TV");
+    assert_eq!(ride_source(&tv, &t), "TV/T");
+    assert_eq!(ride_source(&t, &tv), "TV/T");
 }
