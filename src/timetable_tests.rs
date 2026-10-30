@@ -2044,3 +2044,17 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
     let nybro = asked.iter().find(|q| q.get("center").is_some_and(|c| c == "56.744,15.906")).unwrap();
     assert_eq!((nybro.get("stopId"), nybro["radius"].as_str()), (None, "200"));
 }
+
+#[tokio::test]
+async fn without_db_or_trafikverket_copies_of_a_train_from_two_feeds_become_one() {
+    // No DB credentials: EFA and Transitous both answer with the same RE,
+    // under their own trip ids.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let places =
+        || vec![stop("Mannheim Hbf", "", "08:00"), stop("Weinheim", "08:15", "08:16"), stop("Frankfurt", "09:00", "")];
+    let copy = |id: &str| Itinerary { legs: vec![ride(id, places())] };
+    let itineraries = [copy("efa:ddb:RE60:20261024"), copy("20261024_delfi_RE60")];
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let built = super::build(&motis, None, None, &itineraries, &end("Mannheim Hbf"), &end("Frankfurt"), false).await;
+    assert_eq!(built.timetable.trips.len(), 1, "{:?}", labels(&built.timetable.trips));
+}
