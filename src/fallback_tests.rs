@@ -2,7 +2,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use chrono_tz::UTC;
 
 use super::*;
-use crate::enumerate::Step;
+use crate::enumerate::{Ride, Step};
 use crate::testkit::{Builder, at, ride, show};
 use crate::timetable::Timetable;
 
@@ -48,7 +48,7 @@ fn summary(tt: &Timetable, f: &Fallback) -> (String, DateTime<Utc>) {
         .iter()
         .enumerate()
         .take(f.rejoins_at.map_or(rides.len(), |k| k.saturating_add(1)))
-        .map(|(i, &(trip, board, alight))| {
+        .map(|(i, &Ride { trip, board, alight })| {
             let label = &tt.trips[trip].label;
             if Some(i) == f.rejoins_at {
                 format!("{label} from {} (back on plan)", name(trip, board))
