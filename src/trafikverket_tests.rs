@@ -260,6 +260,28 @@ async fn a_wrong_key_fails() {
 }
 
 #[tokio::test]
+async fn an_error_answer_for_stations_is_not_cached() {
+    let world = world();
+    let url = testkit::serve_trafikverket(&world).await;
+    let wrong = Trafikverket::new(&url, "wrong", "umstieg-test").unwrap();
+    let e = wrong.stations().await.unwrap_err().to_string();
+    assert!(e.contains("Invalid authentication"), "{e}");
+    // With the key fixed, the next search asks again instead of reading the error.
+    let fixed = Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    assert_eq!(fixed.stations().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn each_endpoint_has_its_own_cached_stations() {
+    let world = world();
+    let first = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "key", "umstieg-test").unwrap();
+    first.stations().await.unwrap();
+    let other = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "key", "umstieg-test").unwrap();
+    other.stations().await.unwrap();
+    assert_eq!(world.log(), ["stations", "stations"]);
+}
+
+#[tokio::test]
 async fn dropped_connections_are_retried_then_given_up() {
     let body = r#"{"RESPONSE":{"RESULT":[{"TrainAnnouncement":[]}]}}"#;
     let (url, accepted) = serve_faulty(Fault::Drop, 2, "200 OK", body).await;
