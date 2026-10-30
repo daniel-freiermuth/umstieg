@@ -1084,12 +1084,17 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
             ..Sighting::default()
         });
         route.insert(station.name.clone());
+        // A train turned short: its arrival at the new end runs, the departure
+        // is cancelled (and the reverse at a new start). Only a stop cancelled
+        // both ways is one the train doesn't call at.
+        let cancelled = [stop.arrival, stop.departure].into_iter().flatten().all(|m| m.cancelled);
+        let running = |m: Option<trafikverket::Moment>| m.filter(|m| cancelled || !m.cancelled);
         calls.push(Call {
             station: idx,
-            arrival: time(stop.arrival),
-            departure: time(stop.departure),
+            arrival: time(running(stop.arrival)),
+            departure: time(running(stop.departure)),
             platform: stop.track.clone(),
-            cancelled: [stop.arrival, stop.departure].into_iter().flatten().any(|m| m.cancelled),
+            cancelled,
             from_board: true,
         });
     }
