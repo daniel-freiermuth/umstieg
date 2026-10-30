@@ -801,6 +801,24 @@ fn parse_time_in(at: Option<&str>, zone: Tz, now: DateTime<Utc>) -> Result<DateT
         .with_context(|| format!("{at:?} does not exist in {zone}"))
 }
 
+/// Where a ride's times come from: the board feed ("DB", or "TV" for
+/// Trafikverket) at both ends, Transitous ("T") at both, or a mix ("DB/T").
+fn ride_source(board: &timetable::Call, alight: &timetable::Call) -> String {
+    let feed = |c: &timetable::Call| match (c.from_board, c.trafikverket) {
+        (true, true) => "TV",
+        (true, false) => "DB",
+        (false, _) => "T",
+    };
+    let (b, a) = (feed(board), feed(alight));
+    if b == a {
+        b.to_owned()
+    } else if b == "T" {
+        format!("{a}/{b}")
+    } else {
+        format!("{b}/{a}")
+    }
+}
+
 /// One connection with platforms, and the fallbacks if a change is missed.
 fn write_detail(
     out: &mut String,
@@ -825,13 +843,7 @@ fn write_detail(
                 let (b, a) = (tt.call(trip, board)?, tt.call(trip, alight)?);
                 let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
                 let platform = |p: &Option<String>| p.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default();
-                let source = if b.from_board && a.from_board {
-                    "DB"
-                } else if b.from_board || a.from_board {
-                    "DB/T"
-                } else {
-                    "T"
-                };
+                let source = ride_source(b, a);
                 writeln!(
                     out,
                     "    {} {}{} → {} {}{}   {}{}  ({source})",

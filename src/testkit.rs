@@ -81,6 +81,7 @@ impl Builder {
                 platform: None,
                 cancelled: false,
                 from_board: true,
+                trafikverket: false,
             })
             .collect();
         let digits: String = label.chars().filter(char::is_ascii_digit).collect();
@@ -353,6 +354,7 @@ pub fn timetable(spec: &Spec) -> Timetable {
                 platform: None,
                 cancelled: stop.cancelled,
                 from_board: true,
+                trafikverket: false,
             });
         }
         b.trips.push(Trip {
