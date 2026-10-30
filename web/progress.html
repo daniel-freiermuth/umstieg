@@ -65,12 +65,16 @@
       #now:empty {
         display: none;
       }
-      .error {
-        color: var(--warn);
+      .error,
+      .report {
         margin-top: 10px;
         padding: 8px 10px;
-        border: 1px solid var(--warn);
+        border: 1px solid var(--grid);
         border-radius: 8px;
+      }
+      .error {
+        color: var(--warn);
+        border-color: var(--warn);
       }
       .actions {
         margin-top: 16px;
