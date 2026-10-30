@@ -58,10 +58,12 @@ fn read(name: &str) -> Result<String> {
     }
 }
 
-/// `$<var>/umstieg`, falling back to `~/<fallback>/umstieg`.
+/// `$<var>/umstieg`, falling back to `~/<fallback>/umstieg` when `$<var>` is
+/// unset, empty or relative (the XDG Base Directory spec ignores those).
 pub fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     let base = std::env::var_os(var)
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))?;
     Some(base.join("umstieg"))
 }
