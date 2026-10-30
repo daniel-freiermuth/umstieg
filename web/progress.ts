@@ -42,9 +42,10 @@ async function poll(): Promise<void> {
     return;
   }
   document.body.classList.add("over");
-  title.textContent = "No plot";
-  const error = Object.assign(document.createElement("pre"), { className: "error", textContent: then.error });
-  log.after(error);
+  const [heading, className, text] =
+    "error" in then ? ["No plot", "error", then.error] : ["No connection found", "report", then.noConnection];
+  title.textContent = heading;
+  log.after(Object.assign(document.createElement("pre"), { className, textContent: text }));
 }
 
 void poll();
