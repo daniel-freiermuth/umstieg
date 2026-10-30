@@ -59,6 +59,21 @@ pub fn is_long_distance(category: &str) -> bool {
     LONG_DISTANCE.contains(&category)
 }
 
+/// DB's product class of a train, which the other feeds' modes and products map to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProductClass {
+    /// ICE, IC, EC, night trains: DB's 'F'.
+    LongDistance,
+    /// RE, RB: DB's 'N'.
+    Regional,
+    /// S-Bahn, commuter trains: DB's 'S'.
+    SBahn,
+}
+
+impl ProductClass {
+    pub const ALL: [Self; 3] = [Self::LongDistance, Self::Regional, Self::SBahn];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Time {
     pub planned: DateTime<Utc>,
@@ -111,7 +126,7 @@ pub struct Trip {
     pub label: String,
     /// Train numbers; a run can change number on the way.
     pub numbers: Vec<u32>,
-    pub class: Option<char>,
+    pub class: Option<ProductClass>,
     pub headsign: Option<String>,
     pub calls: Vec<Call>,
     /// Whether Transitous or EFA knows its stops: it came from a rough route
@@ -550,7 +565,7 @@ fn from_motis(
             walk = TimeDelta::zero();
 
             let stops: Vec<&Call> = match leg.class() {
-                Some(class) if all_stops && class != 'S' => calls.iter().collect(),
+                Some(class) if all_stops && class != ProductClass::SBahn => calls.iter().collect(),
                 Some(_) => vec![first, final_call],
                 None => Vec::new(),
             };
@@ -823,7 +838,7 @@ async fn fetch_boards(
         boards.keys().filter_map(|&idx| Some((stations.list.get(idx)?.board_name.clone()?, idx))).collect();
     let mut between: HashMap<String, (usize, DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     for (visits, _) in boards.values() {
-        for visit in visits.iter().filter(|v| v.class == Some('F')) {
+        for visit in visits.iter().filter(|v| v.class == Some(ProductClass::LongDistance)) {
             let Some(departure) = &visit.departure else { continue };
             let Some(t_from) = departure.planned else { continue };
             let path = departure.path();
@@ -1022,7 +1037,7 @@ async fn swedish(
     };
 
     let second = change_points(&runs, &by_sig, line, &first);
-    let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != 'S', warnings).await;
+    let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != ProductClass::SBahn, warnings).await;
     match tv.runs(&keys).await {
         Ok(found) => runs.extend(found),
         Err(e) => warnings.push(format!("Trafikverket runs: {e:#}")),
@@ -1039,8 +1054,8 @@ async fn swedish(
         if let Some(idx) = idx {
             // Trafikverket announces every train: an hour its board has any
             // covers all classes, whatever class another feed gives a train.
-            let entries: Vec<(DateTime<Utc>, char)> =
-                seen.iter().flat_map(|s| ['F', 'N', 'S'].map(|class| (s.planned, class))).collect();
+            let entries: Vec<(DateTime<Utc>, ProductClass)> =
+                seen.iter().flat_map(|s| ProductClass::ALL.map(|class| (s.planned, class))).collect();
             coverage.push((idx, Coverage::of(&entries)));
         }
     }
@@ -1074,7 +1089,7 @@ async fn from_departures(
     departures_at(motis, at, stations, first, |_| true, &mut departures, warnings).await;
     let runs: Vec<trafikverket::Run> = departures.iter().map(|leg| onward_run(leg, at.list)).collect();
     let second = change_points(&runs, at.by_sig, line, first);
-    let keep = |leg: &Leg| leg.class() != Some('S');
+    let keep = |leg: &Leg| leg.class() != Some(ProductClass::SBahn);
     let answered = departures_at(motis, at, stations, &second, keep, &mut departures, warnings).await;
     let mut names: Vec<String> =
         answered.iter().filter_map(|sig| Some(at.by_sig.get(sig.as_str())?.name.clone())).collect();
@@ -1145,7 +1160,7 @@ fn onward_run(leg: &Leg, list: &[trafikverket::Station]) -> trafikverket::Run {
     trafikverket::Run {
         key: trafikverket::RunKey { ident: leg.trip_id.clone().unwrap_or_default(), date: String::new() },
         product: None,
-        class: leg.class().unwrap_or('N'),
+        class: leg.class().unwrap_or(ProductClass::Regional),
         stops,
     }
 }
@@ -1182,7 +1197,7 @@ fn change_points(
     boarded: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
 ) -> HashMap<String, (DateTime<Utc>, DateTime<Utc>)> {
     let mut seen: HashMap<&str, Sighted<'_>> = HashMap::new();
-    for run in runs.iter().filter(|r| r.class != 'S') {
+    for run in runs.iter().filter(|r| r.class != ProductClass::SBahn) {
         let last = run.stops.len().saturating_sub(1);
         for (k, stop) in run.stops.iter().enumerate() {
             let Some(t) = stop.arrival.or(stop.departure).map(|m| m.planned) else { continue };
@@ -1405,7 +1420,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
             by_number.entry(n).or_default().push(i);
         }
     }
-    let covered = |call: &Call, class: Option<char>| {
+    let covered = |call: &Call, class: Option<ProductClass>| {
         let (Some(class), Some(t)) = (class, call.planned()) else { return false };
         boards.get(&call.station).is_some_and(|(_, coverage)| coverage.covers(t, class))
     };

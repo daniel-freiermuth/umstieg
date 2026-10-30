@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
+use super::ProductClass::{LongDistance, Regional, SBahn};
 use super::{
-    Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, angle_between, bearing, change_points, db_places,
-    fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station,
-    whole_seconds,
+    Boards, Call, Footpath, ProductClass, Sighting, Station, Stations, Time, Trip, angle_between, bearing,
+    change_points, db_places, fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish,
+    tv_station, whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
-use crate::motis::{Itinerary, Leg, Place, Stop};
+use crate::motis::{Itinerary, Leg, Mode, Place, Stop};
 use crate::testkit::{Builder, at, time};
 
 // ---------------------------------------------------------------- helpers
@@ -21,9 +22,9 @@ type Stops<'a> = [(usize, &'a str, &'a str)];
 /// (name, calls as (from DB, arrival, departure), actual times in order)
 type DelayCase<'a> = (&'a str, &'a [(bool, &'a str, &'a str)], &'a [&'a str]);
 /// (name, MOTIS class, MOTIS calls, merged)
-type SameTimeCase<'a> = (&'a str, Option<char>, &'a Stops<'a>, bool);
+type SameTimeCase<'a> = (&'a str, Option<ProductClass>, &'a Stops<'a>, bool);
 /// (name, MOTIS class, extra stop, its time, board coverage there, kept)
-type StopCase<'a> = (&'a str, Option<char>, usize, &'a str, &'a [(DateTime<Utc>, char)], bool);
+type StopCase<'a> = (&'a str, Option<ProductClass>, usize, &'a str, &'a [(DateTime<Utc>, ProductClass)], bool);
 
 fn minutes(m: i64) -> TimeDelta {
     TimeDelta::minutes(m)
@@ -49,7 +50,7 @@ fn event(s: &str) -> Option<Event> {
 }
 
 /// One DB visit; `label` is "CATEGORY NUMBER" or a bare number.
-fn visit(run: &str, seq: u32, label: &str, class: Option<char>, arrival: &str, departure: &str) -> Visit {
+fn visit(run: &str, seq: u32, label: &str, class: Option<ProductClass>, arrival: &str, departure: &str) -> Visit {
     let (category, number) =
         label.split_once(' ').map_or_else(|| (None, label.parse().ok()), |(c, n)| (Some(c.to_owned()), n.parse().ok()));
     Visit {
@@ -65,7 +66,7 @@ fn visit(run: &str, seq: u32, label: &str, class: Option<char>, arrival: &str, d
 }
 
 /// A DB run calling at (station, arrival, departure), in sequence.
-fn run(id: &str, label: &str, class: Option<char>, stops: &[(usize, &str, &str)]) -> Vec<(usize, Visit)> {
+fn run(id: &str, label: &str, class: Option<ProductClass>, stops: &[(usize, &str, &str)]) -> Vec<(usize, Visit)> {
     (1..)
         .zip(stops)
         .map(|(seq, &(station, arrival, departure))| (station, visit(id, seq, label, class, arrival, departure)))
@@ -89,7 +90,7 @@ fn boards(visits: impl IntoIterator<Item = (usize, Visit)>) -> Boards {
     out
 }
 
-fn cover(boards: &mut Boards, station: usize, entries: &[(DateTime<Utc>, char)]) {
+fn cover(boards: &mut Boards, station: usize, entries: &[(DateTime<Utc>, ProductClass)]) {
     boards.entry(station).or_default().1 = Coverage::of(entries);
 }
 
@@ -98,7 +99,7 @@ fn call(station: usize, from_board: bool, arrival: &str, departure: &str) -> Cal
 }
 
 /// A MOTIS train; its numbers are the label's digits.
-fn motis_trip(label: &str, class: Option<char>, stops: &[(usize, &str, &str)]) -> Trip {
+fn motis_trip(label: &str, class: Option<ProductClass>, stops: &[(usize, &str, &str)]) -> Trip {
     let digits: String = label.chars().filter(char::is_ascii_digit).collect();
     Trip {
         label: label.to_owned(),
@@ -151,13 +152,13 @@ fn stop(name: &str, arrival: &str, departure: &str) -> Place {
     place(name, Some(name), arrival, departure)
 }
 
-fn leg(mode: &str, trip_id: Option<&str>, places: Vec<Place>, start: &str, end: &str) -> Leg {
+fn leg(mode: Mode, trip_id: Option<&str>, places: Vec<Place>, start: &str, end: &str) -> Leg {
     let mut places = places.into_iter();
     let from = places.next().expect("leg has a start");
     let mut intermediate_stops: Vec<Place> = places.collect();
     let to = intermediate_stops.pop().expect("leg has an end");
     Leg {
-        mode: mode.to_owned(),
+        mode,
         from,
         to,
         start_time: at(start),
@@ -177,13 +178,13 @@ fn leg(mode: &str, trip_id: Option<&str>, places: Vec<Place>, start: &str, end: 
 fn ride(trip_id: &str, places: Vec<Place>) -> Leg {
     let start = places[0].scheduled_departure.expect("ride departs");
     let end = places.last().and_then(|p| p.scheduled_arrival).expect("ride arrives");
-    let mut leg = leg("REGIONAL_RAIL", Some(trip_id), places, "00:00", "00:00");
+    let mut leg = leg(Mode::RegionalRail, Some(trip_id), places, "00:00", "00:00");
     (leg.start_time, leg.end_time) = (start, end);
     leg
 }
 
 fn walk(from: Place, to: Place, start: &str, end: &str) -> Leg {
-    leg("WALK", None, vec![from, to], start, end)
+    leg(Mode::Walk, None, vec![from, to], start, end)
 }
 
 fn fixture_itinerary() -> Itinerary {
@@ -439,7 +440,7 @@ fn finish_drops_single_calls_and_orders_calls_by_planned_time() {
     let merged = Trip {
         label: "ICE 378".to_owned(),
         numbers: vec![378],
-        class: Some('F'),
+        class: Some(LongDistance),
         headsign: None,
         // DB calls first, MOTIS calls appended by the merge.
         calls: vec![
@@ -520,7 +521,7 @@ fn a_coach_stop_names_a_station_only_until_a_train_stops_there() {
             located("Malmö FlixBus stop", malmo, "10:05", ""),
         ],
     );
-    coach.mode = "COACH".to_owned();
+    coach.mode = Mode::Coach;
     let train = ride(
         "oresund",
         vec![
@@ -711,7 +712,7 @@ fn db_places_are_rail_stops_in_germany_plus_the_ends() {
         legs: vec![
             walk(place("START", None, "", "04:28"), stop("Bad Dürkheim", "04:29", ""), "04:28", "04:29"),
             leg(
-                "BUS",
+                Mode::Bus,
                 Some("bus"),
                 vec![stop("Bad Dürkheim", "", "04:29"), stop("Ring", "04:40", "")],
                 "04:29",
@@ -748,7 +749,7 @@ fn motis_itinerary_becomes_trips_keyed_by_trip_id() {
         ])
     );
     let ice = &rough.trips["20261024_07:23_de-DELFI_3448677552"];
-    assert_eq!((ice.label.as_str(), ice.numbers.as_slice(), ice.class), ("ICE 774", &[774][..], Some('F')));
+    assert_eq!((ice.label.as_str(), ice.numbers.as_slice(), ice.class), ("ICE 774", &[774][..], Some(LongDistance)));
     assert_eq!(ice.headsign.as_deref(), Some("Kiel Hbf"));
     let names: Vec<&str> = ice.calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
     assert_eq!(
@@ -770,7 +771,7 @@ fn motis_itinerary_becomes_trips_keyed_by_trip_id() {
     assert!(ice.calls.iter().all(|c| !c.from_board));
 
     let s4 = &rough.trips["20261024_07:06_de-DELFI_3449008863"];
-    assert_eq!((s4.label.as_str(), s4.class), ("S4 (38415)", Some('S')));
+    assert_eq!((s4.label.as_str(), s4.class), ("S4 (38415)", Some(SBahn)));
 
     // Changes on one platform name (two Böbig stop ids, two Mannheim ones) and
     // the walk to the nearby Danish stop id of Altona need no footpath; the
@@ -815,7 +816,7 @@ fn corridor_is_ride_ends_or_all_non_s_bahn_stops() {
 #[test]
 fn stops_without_times_are_skipped() {
     let mut itinerary = fixture_itinerary();
-    let ice = itinerary.legs.iter_mut().find(|l| l.mode == "HIGHSPEED_RAIL").expect("fixture has the ICE");
+    let ice = itinerary.legs.iter_mut().find(|l| l.mode == Mode::HighspeedRail).expect("fixture has the ICE");
     let sued = &mut ice.intermediate_stops[0];
     assert_eq!(sued.name, "Frankfurt (Main) Südbahnhof");
     (sued.arrival, sued.departure, sued.scheduled_arrival, sued.scheduled_departure) = (None, None, None, None);
@@ -839,7 +840,7 @@ fn rides_have_no_arrival_where_boarded_and_no_departure_where_left() {
 #[test]
 fn boarding_after_a_stop_without_times_needs_no_walk() {
     let places = vec![stop("X", "", ""), stop("A", "", "08:00"), stop("B", "08:30", "")];
-    let legs = vec![leg("REGIONAL_RAIL", Some("t"), places, "08:00", "08:30")];
+    let legs = vec![leg(Mode::RegionalRail, Some("t"), places, "08:00", "08:30")];
     let (stations, rough) = rough(&[Itinerary { legs }], false);
     let names: Vec<&str> = rough.trips["t"].calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
     assert_eq!(names, ["A", "B"]);
@@ -855,7 +856,7 @@ fn walks_become_footpaths_between_their_stations() {
                 ride("t1", vec![stop("A", "", "08:00"), stop("B", "08:30", "")]),
                 walk(stop("B", "08:30", ""), stop("B2", "08:33", ""), "08:30", "08:33"),
                 walk(stop("B2", "08:33", ""), stop("C", "08:35", ""), "08:33", "08:35"),
-                leg("BUS", Some("t2"), vec![stop("C", "", "08:45"), stop("D", "09:00", "")], "08:45", "09:00"),
+                leg(Mode::Bus, Some("t2"), vec![stop("C", "", "08:45"), stop("D", "09:00", "")], "08:45", "09:00"),
                 walk(stop("D", "09:00", ""), place("END", None, "09:04", ""), "09:00", "09:04"),
             ],
         },
@@ -926,12 +927,12 @@ fn db_run_joins_visits_across_boards_in_sequence_order() {
         .collect();
     // Station indices deliberately out of route order.
     let mut visits = vec![
-        (4, visit("r1", 1, "ICE 378", Some('F'), "", "06:39+1")),
-        (0, visit("r1", 2, "ICE 378", Some('F'), "07:15+2", "07:17+2")),
-        (3, visit("r1", 3, "ICE 378", Some('F'), "08:21", "08:23")),
-        (2, visit("r1", 4, "ICE 378", Some('F'), "09:30", "")),
-        (1, visit("r2", 1, "RE 7", Some('N'), "", "07:00")),
-        (3, visit("r2", 2, "RE 7", Some('N'), "07:30", "")),
+        (4, visit("r1", 1, "ICE 378", Some(LongDistance), "", "06:39+1")),
+        (0, visit("r1", 2, "ICE 378", Some(LongDistance), "07:15+2", "07:17+2")),
+        (3, visit("r1", 3, "ICE 378", Some(LongDistance), "08:21", "08:23")),
+        (2, visit("r1", 4, "ICE 378", Some(LongDistance), "09:30", "")),
+        (1, visit("r2", 1, "RE 7", Some(Regional), "", "07:00")),
+        (3, visit("r2", 2, "RE 7", Some(Regional), "07:30", "")),
     ];
     {
         let (_, frankfurt) = &mut visits[1];
@@ -951,7 +952,7 @@ fn db_run_joins_visits_across_boards_in_sequence_order() {
     assert_eq!(labels(&trips), ["ICE 378", "RE 7"]);
     let ice = &trips[0];
     assert_eq!(calls_of(ice), [(4, true), (0, true), (3, true), (2, true)]);
-    assert_eq!((ice.numbers.as_slice(), ice.class), (&[378][..], Some('F')));
+    assert_eq!((ice.numbers.as_slice(), ice.class), (&[378][..], Some(LongDistance)));
     // The last stop with a departure names the destination.
     assert_eq!(ice.headsign.as_deref(), Some("Kiel Hbf"));
     assert_eq!(ice.calls[1].arrival, time("07:15+2"));
@@ -978,7 +979,7 @@ fn db_run_label_is_the_majority_label() {
         let stations: Vec<Station> = (0..labels_in_order.len()).map(|i| station(&i.to_string(), None)).collect();
         let visits = (0..).zip(labels_in_order).map(|(i, &label)| {
             let t = format!("{:02}:00", 8 + i);
-            (i as usize, visit("r", i + 1, label, Some('F'), &t, &t))
+            (i as usize, visit("r", i + 1, label, Some(LongDistance), &t, &t))
         });
         let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new());
         assert_eq!(trips.len(), 1);
@@ -989,7 +990,7 @@ fn db_run_label_is_the_majority_label() {
 #[test]
 fn coupled_db_runs_with_identical_calls_become_one_train() {
     let stations: Vec<Station> = ["A", "B", "C"].iter().map(|&n| station(n, Some(n))).collect();
-    let ice_774 = || run("1-774", "ICE 774", Some('F'), &[(0, "", "08:00"), (1, "09:00+5", "")]);
+    let ice_774 = || run("1-774", "ICE 774", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00+5", "")]);
     // (second run's calls, expected labels)
     let cases: [(&Stops<'_>, &[&str]); 4] = [
         (&[(0, "", "08:00"), (1, "09:00", "")], &["ICE 774 + ICE 2808"]),
@@ -998,7 +999,7 @@ fn coupled_db_runs_with_identical_calls_become_one_train() {
         (&[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")], &["ICE 774", "ICE 2808"]),
     ];
     for (second, expected) in cases {
-        let visits = ice_774().into_iter().chain(run("2-2808", "ICE 2808", Some('F'), second));
+        let visits = ice_774().into_iter().chain(run("2-2808", "ICE 2808", Some(LongDistance), second));
         let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new());
         assert_eq!(labels(&trips), expected, "{second:?}");
         if let [one] = trips.as_slice() {
@@ -1013,10 +1014,15 @@ fn coupled_db_runs_with_identical_calls_become_one_train() {
 fn coupled_runs_share_their_routes_and_numbers() {
     // MOTIS knows only ICE 2808 and its stop at D, which only that run's path lists.
     let stations: Vec<Station> = ["A", "B", "D"].iter().map(|&n| station(n, Some(n))).collect();
-    let visits = run("1-774", "ICE 774", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:02")])
+    let visits = run("1-774", "ICE 774", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")])
         .into_iter()
-        .chain(path_after(run("2-2808", "ICE 2808", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:02")]), 1, &["D"]));
-    let motis = motis_trip("ICE 2808", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
+        .chain(path_after(
+            run("2-2808", "ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")]),
+            1,
+            &["D"],
+        ));
+    let motis =
+        motis_trip("ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
     let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
     assert_eq!(labels(&trips), ["ICE 774 + ICE 2808"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, false)]);
@@ -1028,9 +1034,9 @@ fn coupled_runs_share_their_routes_and_numbers() {
 /// DB's last stop) shifted by `offset` minutes, under `label`.
 fn merge_by_number(label: &str, offset: i64) -> Vec<Trip> {
     let stations = vec![station("A", Some("A")), station("B", Some("B")), station("E", None)];
-    let visits = run("r", "ICE 616", Some('F'), &[(0, "", "08:00"), (1, "09:00", "")]);
+    let visits = run("r", "ICE 616", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "")]);
     let [start, end] = [at("08:00"), at("11:00")].map(|t| (t + minutes(offset)).format("%H:%M").to_string());
-    let motis = motis_trip(label, Some('F'), &[(0, "", start.as_str()), (2, end.as_str(), "")]);
+    let motis = motis_trip(label, Some(LongDistance), &[(0, "", start.as_str()), (2, end.as_str(), "")]);
     merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new())
 }
 
@@ -1063,14 +1069,20 @@ fn motis_merges_by_identical_times_at_two_stations_of_the_same_class() {
     // DB's ICE 76: A 08:00, B 09:00/09:05, C 10:00. MOTIS calls it ICE 2558
     // and also stops at E (unknown to DB) at 11:00.
     let stations = vec![station("A", Some("A")), station("B", Some("B")), station("C", Some("C")), station("E", None)];
-    let visits = || run("r", "ICE 76", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:05"), (2, "10:00", "")]);
+    let visits =
+        || run("r", "ICE 76", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:05"), (2, "10:00", "")]);
     let cases: [SameTimeCase<'_>; 7] = [
-        ("two stations, 2 min off", Some('F'), &[(0, "", "08:00"), (1, "09:02", "")], true),
-        ("departures compared too", Some('F'), &[(0, "", "07:58"), (1, "", "09:07")], true),
-        ("3 min off at one of them", Some('F'), &[(0, "", "08:00"), (1, "09:03", "")], false),
-        ("one station only", Some('F'), &[(0, "", "08:00")], false),
-        ("S-Bahn on an ICE's times", Some('S'), &[(0, "", "08:00"), (1, "09:00", "")], false),
-        ("regional train on an ICE's times", Some('N'), &[(0, "", "08:00"), (1, "09:00", ""), (2, "10:00", "")], false),
+        ("two stations, 2 min off", Some(LongDistance), &[(0, "", "08:00"), (1, "09:02", "")], true),
+        ("departures compared too", Some(LongDistance), &[(0, "", "07:58"), (1, "", "09:07")], true),
+        ("3 min off at one of them", Some(LongDistance), &[(0, "", "08:00"), (1, "09:03", "")], false),
+        ("one station only", Some(LongDistance), &[(0, "", "08:00")], false),
+        ("S-Bahn on an ICE's times", Some(SBahn), &[(0, "", "08:00"), (1, "09:00", "")], false),
+        (
+            "regional train on an ICE's times",
+            Some(Regional),
+            &[(0, "", "08:00"), (1, "09:00", ""), (2, "10:00", "")],
+            false,
+        ),
         ("foreign train without class", None, &[(0, "", "08:00"), (1, "09:00", "")], true),
     ];
     for (name, class, stops, merged) in cases {
@@ -1092,12 +1104,12 @@ fn motis_merges_by_identical_times_at_two_stations_of_the_same_class() {
 fn motis_merges_into_the_train_sharing_most_stations() {
     let stations: Vec<Station> =
         ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).chain([station("E", None)]).collect();
-    let visits = run("1", "IC 1", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")])
+    let visits = run("1", "IC 1", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")])
         .into_iter()
-        .chain(run("2", "IC 2", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")]));
+        .chain(run("2", "IC 2", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")]));
     let motis = motis_trip(
         "Train",
-        Some('F'),
+        Some(LongDistance),
         &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "10:01"), (4, "12:00", "")],
     );
     let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
@@ -1113,10 +1125,11 @@ fn motis_merges_into_the_first_of_equally_matching_trains() {
     let stations: Vec<Station> =
         ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).chain([station("E", None)]).collect();
     for _ in 0..32 {
-        let visits = run("1", "IC 1", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")])
+        let visits = run("1", "IC 1", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")])
             .into_iter()
-            .chain(run("2", "IC 2", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")]));
-        let motis = motis_trip("Train", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (4, "12:00", "")]);
+            .chain(run("2", "IC 2", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")]));
+        let motis =
+            motis_trip("Train", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (4, "12:00", "")]);
         let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
         assert_eq!(labels(&trips), ["IC 1", "IC 2"]);
         assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
@@ -1156,34 +1169,41 @@ fn motis_stops_merged_into_a_db_train_only_where_db_lacks_them() {
         let visits = run(
             "r",
             "ICE 378",
-            Some('F'),
+            Some(LongDistance),
             &[(MANNHEIM, "", "06:39"), (SUED, "07:15", "07:17"), (FULDA, "08:21", "08:23")],
         );
         let visits = path_after(visits, SUED, &["Hanau Hbf", "Fulda", "Kassel-Wilhelmshöhe", "Göttingen"]);
         path_after(visits, FULDA, &["Kassel-Wilhelmshöhe", "Göttingen"])
     };
     let cases: [StopCase<'_>; 13] = [
-        ("off DB's route (MOTIS via Frankfurt Hbf)", Some('F'), FRANKFURT_HBF, "07:20", &[], false),
-        ("off DB's route, after its last stop", Some('F'), HAMBURG, "11:00", &[], false),
-        ("unknown to DB inside its span (other name)", Some('F'), AIRPORT, "07:00", &[], false),
-        ("unknown to DB after its span (abroad)", Some('F'), COPENHAGEN, "13:00", &[], true),
-        ("unknown to DB before its span", Some('F'), BEFORE, "06:00", &[], true),
+        ("off DB's route (MOTIS via Frankfurt Hbf)", Some(LongDistance), FRANKFURT_HBF, "07:20", &[], false),
+        ("off DB's route, after its last stop", Some(LongDistance), HAMBURG, "11:00", &[], false),
+        ("unknown to DB inside its span (other name)", Some(LongDistance), AIRPORT, "07:00", &[], false),
+        ("unknown to DB after its span (abroad)", Some(LongDistance), COPENHAGEN, "13:00", &[], true),
+        ("unknown to DB before its span", Some(LongDistance), BEFORE, "06:00", &[], true),
         // At the time of DB's first or last call it can only be that station, named differently.
-        ("unknown to DB at its first call's time", Some('F'), BEFORE, "06:39", &[], false),
-        ("unknown to DB at its last call's time", Some('F'), COPENHAGEN, "08:21", &[], false),
-        ("on DB's route, no board", Some('F'), HANAU, "07:40", &[], true),
-        ("on DB's route after its last board", Some('F'), KASSEL, "09:00", &[], true),
+        ("unknown to DB at its first call's time", Some(LongDistance), BEFORE, "06:39", &[], false),
+        ("unknown to DB at its last call's time", Some(LongDistance), COPENHAGEN, "08:21", &[], false),
+        ("on DB's route, no board", Some(LongDistance), HANAU, "07:40", &[], true),
+        ("on DB's route after its last board", Some(LongDistance), KASSEL, "09:00", &[], true),
         (
             "board lists other long-distance trains that hour",
-            Some('F'),
+            Some(LongDistance),
             GOETTINGEN,
             "09:30",
-            &[(at("09:00"), 'F')],
+            &[(at("09:00"), LongDistance)],
             false,
         ),
-        ("board covers only regional trains", Some('F'), GOETTINGEN, "09:30", &[(at("09:00"), 'N')], true),
-        ("board covers another hour", Some('F'), GOETTINGEN, "09:30", &[(at("10:00"), 'F')], true),
-        ("MOTIS train without class is never covered", None, GOETTINGEN, "09:30", &[(at("09:00"), 'F')], true),
+        (
+            "board covers only regional trains",
+            Some(LongDistance),
+            GOETTINGEN,
+            "09:30",
+            &[(at("09:00"), Regional)],
+            true,
+        ),
+        ("board covers another hour", Some(LongDistance), GOETTINGEN, "09:30", &[(at("10:00"), LongDistance)], true),
+        ("MOTIS train without class is never covered", None, GOETTINGEN, "09:30", &[(at("09:00"), LongDistance)], true),
     ];
     for (name, class, extra, t, coverage, kept) in cases {
         let mut b = boards(ice());
@@ -1207,8 +1227,8 @@ fn motis_stops_merged_into_a_db_train_only_where_db_lacks_them() {
 fn without_route_knowledge_motis_stops_are_kept() {
     // A DB train whose stations DB names nothing for (no names, no paths).
     let stations = vec![station("X", None), station("Y", None), station("Z", None)];
-    let visits = run("r", "EC 8", Some('F'), &[(0, "", "08:00"), (2, "10:00", "")]);
-    let motis = motis_trip("EC 8", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")]);
+    let visits = run("r", "EC 8", Some(LongDistance), &[(0, "", "08:00"), (2, "10:00", "")]);
+    let motis = motis_trip("EC 8", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")]);
     let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
     assert_eq!(labels(&trips), ["EC 8"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (2, true), (1, false)]);
@@ -1218,9 +1238,9 @@ fn without_route_knowledge_motis_stops_are_kept() {
 fn unmerged_motis_trains_lose_calls_their_board_rules_out() {
     let stations: Vec<Station> = ["A", "B", "C"].iter().map(|&n| station(n, Some(n))).collect();
     let mut b = Boards::new();
-    cover(&mut b, 0, &[(at("08:00"), 'N')]);
-    cover(&mut b, 1, &[(at("08:00"), 'F')]);
-    let re = motis_trip("RE 4711", Some('N'), &[(0, "", "08:00"), (1, "08:30", "08:31"), (2, "09:00", "")]);
+    cover(&mut b, 0, &[(at("08:00"), Regional)]);
+    cover(&mut b, 1, &[(at("08:00"), LongDistance)]);
+    let re = motis_trip("RE 4711", Some(Regional), &[(0, "", "08:00"), (1, "08:30", "08:31"), (2, "09:00", "")]);
     let bus = motis_trip("Bus 12", None, &[(0, "", "08:10"), (2, "08:50", "")]);
     let trips = merge(&stations, &b, raw(vec![("bus", bus), ("re", re)]), Vec::new());
     assert_eq!(labels(&trips), ["Bus 12", "RE 4711"]);
@@ -1246,11 +1266,11 @@ fn copies_of_a_train_from_two_feeds_become_one_with_efa_times() {
     // feeds also disagree on its class.
     let stations: Vec<Station> =
         ["Mannheim", "Karlsruhe", "Offenburg", "Freiburg", "Basel"].iter().map(|&n| station(n, Some(n))).collect();
-    let efa = motis_trip("ICE 273", Some('N'), &[(1, "06:49", "06:51"), (3, "08:00", "")]);
+    let efa = motis_trip("ICE 273", Some(Regional), &[(1, "06:49", "06:51"), (3, "08:00", "")]);
     let transitous = |karlsruhe: (&'static str, &'static str), mannheim: &'static str| {
         motis_trip(
             "ICE 273",
-            Some('F'),
+            Some(LongDistance),
             &[
                 (0, "", mannheim),
                 (1, karlsruhe.0, karlsruhe.1),
@@ -1296,13 +1316,13 @@ fn copies_of_a_train_from_two_feeds_become_one_with_efa_times() {
 fn feed_trains_sharing_a_number_but_no_time_stay_apart() {
     // An hour apart: two runs whose feeds give the line's number ("RE7" → 7).
     let stations: Vec<Station> = ["A", "B"].iter().map(|&n| station(n, Some(n))).collect();
-    let early = motis_trip("RE7", Some('N'), &[(0, "", "08:00"), (1, "08:30", "")]);
-    let late = motis_trip("RE7", Some('N'), &[(0, "", "09:00"), (1, "09:30", "")]);
+    let early = motis_trip("RE7", Some(Regional), &[(0, "", "08:00"), (1, "08:30", "")]);
+    let late = motis_trip("RE7", Some(Regional), &[(0, "", "09:00"), (1, "09:30", "")]);
     let trips = merge(&stations, &Boards::new(), raw(vec![("a", early), ("b", late)]), Vec::new());
     assert_eq!(trips.len(), 2);
     // Two minutes apart at one station is the same train, whatever the class.
-    let a = motis_trip("ICE 5", Some('F'), &[(0, "", "08:00"), (1, "08:30", "")]);
-    let b = motis_trip("5", Some('N'), &[(0, "", "08:02"), (1, "08:45", "")]);
+    let a = motis_trip("ICE 5", Some(LongDistance), &[(0, "", "08:00"), (1, "08:30", "")]);
+    let b = motis_trip("5", Some(Regional), &[(0, "", "08:02"), (1, "08:45", "")]);
     let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]), Vec::new());
     assert_eq!(labels(&trips), ["ICE 5"]);
     // Trams and buses: line numbers, so no merging by number.
@@ -1528,7 +1548,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     );
     let sj = trip("SJ Regional 319");
     assert_eq!(names(sj), ["Göteborg Centralstation", "Lessebo", "Emmaboda", "Nybro"]);
-    assert_eq!((sj.class, &sj.numbers, sj.headsign.as_deref()), (Some('F'), &vec![319], Some("Nybro")));
+    assert_eq!((sj.class, &sj.numbers, sj.headsign.as_deref()), (Some(LongDistance), &vec![319], Some("Nybro")));
     assert!(sj.calls.iter().all(|c| c.from_board && !c.cancelled && c.platform.as_deref() == Some("1")));
     assert_eq!(sj.calls[2].arrival, Some(Time { planned: at("09:27"), actual: at("09:30") }));
     let route = &found.trips.iter().find(|(t, _)| t.label == "SJ Regional 319").unwrap().1;
@@ -1540,8 +1560,8 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamns resecentrum", "Karlskrona C", "Nybro"];
     assert_eq!(covered, boarded);
     let (_, at_emmaboda) = found.coverage.iter().find(|(i, _)| *i == emmaboda).unwrap();
-    assert!(['F', 'N', 'S'].iter().all(|&c| at_emmaboda.covers(at("09:40"), c)));
-    assert!(!at_emmaboda.covers(at("12:40"), 'N'), "an hour without trains");
+    assert!([LongDistance, Regional, SBahn].iter().all(|&c| at_emmaboda.covers(at("09:40"), c)));
+    assert!(!at_emmaboda.covers(at("12:40"), Regional), "an hour without trains");
 
     // Transitous's SJ Regional 319: on to Kalmar (unknown to Trafikverket's
     // list here) and, wrongly, Karlskrona C, which its route doesn't have.
@@ -1556,7 +1576,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     assert_eq!(emmaboda_motis, emmaboda);
     let motis = motis_trip(
         "SJ Regional 319",
-        Some('F'),
+        Some(LongDistance),
         &[(origin, "", "06:04"), (emmaboda, "09:27", "09:30"), (karlskrona, "10:30", "10:31"), (kalmar, "10:20", "")],
     );
     let trips = merge(&stations.list, &Boards::new(), raw(vec![("m", motis)]), found.trips);
@@ -1658,7 +1678,7 @@ fn stations_with_different_trafikverket_signatures_stay_apart() {
     assert_eq!(stations.list[a].tv.as_deref(), Some("Cst"));
 }
 
-fn tv_run(ident: &str, class: char, stops: &[&str]) -> crate::trafikverket::Run {
+fn tv_run(ident: &str, class: ProductClass, stops: &[&str]) -> crate::trafikverket::Run {
     let moment = |minute: usize| {
         let planned = at("08:00") + TimeDelta::minutes(i64::try_from(minute).unwrap() * 10);
         Some(crate::trafikverket::Moment { planned, live: None, cancelled: false })
@@ -1724,16 +1744,16 @@ fn junctions_are_stations_runs_reach_from_three_directions() {
         sigs
     };
     // North–south through T, plus an express skipping T: two directions at T.
-    let line_runs = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("2", 'F', &["NN", "J", "S"])];
+    let line_runs = [tv_run("1", Regional, &["N", "T", "J", "S"]), tv_run("2", LongDistance, &["NN", "J", "S"])];
     assert_eq!(found(&line_runs, &ends), Vec::<String>::new(), "J and T: north and south only");
-    let star = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("3", 'N', &["W", "J", "E"])];
+    let star = [tv_run("1", Regional, &["N", "T", "J", "S"]), tv_run("3", Regional, &["W", "J", "E"])];
     assert_eq!(found(&star, &ends), ["J"]);
-    let commuter = [tv_run("1", 'N', &["N", "T", "J", "S"]), tv_run("3", 'S', &["W", "J", "E"])];
+    let commuter = [tv_run("1", Regional, &["N", "T", "J", "S"]), tv_run("3", SBahn, &["W", "J", "E"])];
     assert_eq!(found(&commuter, &ends), Vec::<String>::new(), "commuter trains don't count");
     let mut boarded = ends.clone();
     boarded.insert("J".to_owned(), (at("08:00"), at("08:00")));
     assert_eq!(found(&star, &boarded), Vec::<String>::new(), "J's board is fetched already");
-    let far = [tv_run("4", 'N', &["FN", "F", "FS"]), tv_run("5", 'N', &["F", "FE"])];
+    let far = [tv_run("4", Regional, &["FN", "F", "FS"]), tv_run("5", Regional, &["F", "FE"])];
     assert_eq!(found(&far, &ends), Vec::<String>::new(), "F is far off the line");
 
     // The span: from the first run there to two hours after the last.
@@ -1745,7 +1765,7 @@ fn junctions_are_stations_runs_reach_from_three_directions() {
 fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start() {
     let stations = tv_stations(&[("A", (57.0, 15.0)), ("B", (56.8, 15.0)), ("C", (56.6, 15.0)), ("D", (56.4, 15.0))]);
     let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
-    let mut run = tv_run("1", 'N', &["A", "B", "C", "D"]);
+    let mut run = tv_run("1", Regional, &["A", "B", "C", "D"]);
     let cancel = |m: &mut Option<crate::trafikverket::Moment>| m.as_mut().unwrap().cancelled = true;
     // Trafikverket's short turn: B's arrival runs, its departure is cancelled;
     // the train starts again at C, whose arrival is cancelled.
@@ -1761,7 +1781,7 @@ fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start(
     );
     assert_eq!(trip.calls[2].arrival, None);
 
-    let mut both = tv_run("2", 'N', &["A", "B", "C"]);
+    let mut both = tv_run("2", Regional, &["A", "B", "C"]);
     cancel(&mut both.stops[1].arrival);
     cancel(&mut both.stops[1].departure);
     let (trip, _) = fed_trip(&both, &by_sig, &mut interned);
@@ -1793,12 +1813,12 @@ fn termini_nearest_the_destination_come_after_the_junctions() {
     let line = Some(((57.5, 15.0), (55.5, 15.0)));
     let boarded: Spans = HashMap::from([("O".to_owned(), (at("08:00"), at("08:00")))]);
     let mut runs: Vec<crate::trafikverket::Run> =
-        ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Far"].iter().map(|t| tv_run(t, 'N', &["O", t])).collect();
-    runs.push(tv_run("S", 'S', &["O", "JS"]));
+        ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Far"].iter().map(|t| tv_run(t, Regional, &["O", t])).collect();
+    runs.push(tv_run("S", SBahn, &["O", "JS"]));
     // J: three directions (west, east, north), and an end too; as a junction
     // it takes none of the termini's places.
-    runs.push(tv_run("j1", 'N', &["JW", "J", "JE"]));
-    runs.push(tv_run("j2", 'N', &["T7", "J"]));
+    runs.push(tv_run("j1", Regional, &["JW", "J", "JE"]));
+    runs.push(tv_run("j2", Regional, &["T7", "J"]));
     let mut found: Vec<String> = change_points(&runs, &by_sig, line, &boarded).into_keys().collect();
     found.sort();
     // J; then six termini, nearest D first: JE, JW, T7, T6, T5, T4. Not Far
@@ -1839,7 +1859,7 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
     let tv = Trip {
         label: "Öresundståg 1036".to_owned(),
         numbers: vec![1036],
-        class: Some('N'),
+        class: Some(Regional),
         headsign: Some("Karlshamn".to_owned()),
         calls: vec![call(0, true, "", "09:41"), call(1, true, "10:14", "10:16"), call(2, true, "11:21", "")],
         transitous: false,
@@ -1847,7 +1867,7 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
     let route = HashSet::from(["Lund C", "Hässleholm C", "Karlshamn"].map(str::to_owned));
     let motis = motis_trip(
         "1036",
-        Some('F'),
+        Some(LongDistance),
         &[(0, "", "09:41"), (3, "10:14", "10:16"), (2, "11:21", "11:22"), (4, "11:48", "")],
     );
     let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route)]);
