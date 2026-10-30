@@ -65,4 +65,6 @@ fn keys_load_from_the_config_directory_or_the_environment() {
     run(&[("XDG_CONFIG_HOME", empty), ("DB_CLIENT_ID", "id"), ("DB_API_KEY", "env")], "id/env -");
     run(&[("XDG_CONFIG_HOME", config), ("DB_API_KEY", "env"), ("TRAFIKVERKET_KEY", "tv-env")], "abc/env tv-env");
     run(&[("XDG_CONFIG_HOME", unreadable)], "error");
+    run(&[("XDG_CONFIG_HOME", "")], "home/key -");
+    run(&[("XDG_CONFIG_HOME", "config")], "home/key -");
 }
