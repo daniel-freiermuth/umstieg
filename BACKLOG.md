@@ -13,11 +13,11 @@ used: Göteborg → Karlshamn on
 Öresundståg) and SJ 3000 481 at 06:49; we find only the Öresundståg via Lund,
 the single hub. Both trains are in Transitous.
 
-- **A. Transitous departures as boards**: `stoptimes` (rail only) at the
-  corridor stations by the hour, trains joined across stations by trip id, as
-  with DB. Finds 481 (Göteborg → Lund); a few dozen requests per search. A
-  departure names only the destination, not the stops, so stations no answer
-  mentions (Alvesta, Emmaboda) stay unknown.
+- **A. Transitous departures as boards**: `stoptimes` with `fetchStops` gives
+  each departure's following stops, so one request per station finds the
+  trains and their routes. Done for Sweden past Trafikverket's horizon (it
+  announces about two weeks ahead), with the same junction discovery; the
+  same could serve every country without a board feed.
 - **B. Hubs from a wider search**: one extra request with a day-wide window,
   only to collect change stations (the night answers bring Hässleholm,
   Kristianstad, Helsingborg). No key needed, helps everywhere.

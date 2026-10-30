@@ -192,6 +192,7 @@ fn route(stops: &[(&str, &str)]) -> Itinerary {
         end_time: swedish("10:00"),
         display_name: None,
         route_short_name: None,
+        route_long_name: None,
         trip_id: Some("t".to_owned()),
         trip_short_name: None,
         headsign: None,

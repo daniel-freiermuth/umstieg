@@ -46,6 +46,12 @@ fn labels_name_line_operator_and_train_number() {
         (json!({ "displayName": "", "routeShortName": "S2" }), "S2"),
         (json!({ "displayName": " ", "mode": "BUS" }), "BUS"),
         (json!({ "mode": "COACH", "tripShortName": "42" }), "COACH (42)"),
+        (
+            json!({ "displayName": "Ø Göteborg-Malmö", "routeLongName": "Ø Göteborg-Malmö", "agencyName": "Öresundståg" }),
+            "Öresundståg",
+        ),
+        (json!({ "displayName": "Ø Göteborg-Malmö", "routeLongName": "Ø Göteborg-Malmö" }), "Ø Göteborg-Malmö"),
+        (json!({ "displayName": "RE7", "routeLongName": "Kiel - Hamburg", "agencyName": "DB" }), "RE7"),
     ];
     for (fields, expected) in cases {
         assert_eq!(leg(&fields).label(), expected, "{fields}");

@@ -183,7 +183,10 @@ command line logs nothing unless `RUST_LOG` is set.
    Krösatåg from Emmaboda. Göteborg → Karlshamn then has SJ Regional 319 via
    Alvesta or Emmaboda, which no planner answer shows. Trafikverket's runs count like DB's: their
    times win, Transitous's copies are merged into them, German stops are left
-   to DB.
+   to DB. Trafikverket announces trains about two weeks ahead; past that, the
+   same two rounds use Transitous's departures with their following stops
+   (`stoptimes` with `fetchStops`, one request per station) and the report
+   says so.
 3. **Enumeration**: depth-first over that timetable, deepening by number of
    changes, within these limits:
    - departure inside `--window`, travel time ≤ fastest + `--extra-hours`;

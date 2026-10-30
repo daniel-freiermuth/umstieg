@@ -164,6 +164,7 @@ fn leg(mode: &str, trip_id: Option<&str>, places: Vec<Place>, start: &str, end: 
         end_time: at(end),
         display_name: None,
         route_short_name: None,
+        route_long_name: None,
         trip_id: trip_id.map(str::to_owned),
         trip_short_name: None,
         headsign: None,
@@ -1318,6 +1319,11 @@ async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
 
 /// Stand-in stations around Emmaboda (positions as on the map, roughly).
 const GOTEBORG: (f64, f64) = (57.709, 11.974);
+
+/// Transitous where it is never asked: Trafikverket has the trains.
+fn unused_motis() -> crate::motis::Motis {
+    crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap()
+}
 const KARLSHAMN: (f64, f64) = (56.177, 14.866);
 
 fn tv_world() -> std::sync::Arc<crate::testkit::TvWorld> {
@@ -1383,7 +1389,9 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     });
     let corridor = HashMap::from([(origin, (at("06:00"), at("07:00"))), (destination, (at("06:30"), at("11:00")))]);
     let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
-    let found = swedish(&tv, &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings).await;
+    let found =
+        swedish(&tv, &unused_motis(), &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings)
+            .await;
 
     assert!(warnings.is_empty(), "{warnings:?}");
     // Emmaboda, a junction; the runs' ends: Nybro, Alvesta, Karlskrona.
@@ -1462,12 +1470,22 @@ async fn trafikverket_is_not_asked_without_swedish_stations() {
         stations.intern(Sighting { name: "Mannheim Hbf", position: Some((49.479, 8.469)), ..Sighting::default() });
     let corridor = HashMap::from([(mannheim, (at("06:00"), at("07:00")))]);
     let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
-    let found = swedish(&tv, &mut stations, &corridor, (mannheim, mannheim), &mut discovered, &mut warnings).await;
+    let found =
+        swedish(&tv, &unused_motis(), &mut stations, &corridor, (mannheim, mannheim), &mut discovered, &mut warnings)
+            .await;
     assert!(found.trips.is_empty() && found.coverage.is_empty() && warnings.is_empty());
     assert_eq!(world.log(), ["stations"], "the cached list, nothing else");
 
-    let empty =
-        swedish(&tv, &mut stations, &HashMap::new(), (mannheim, mannheim), &mut discovered, &mut warnings).await;
+    let empty = swedish(
+        &tv,
+        &unused_motis(),
+        &mut stations,
+        &HashMap::new(),
+        (mannheim, mannheim),
+        &mut discovered,
+        &mut warnings,
+    )
+    .await;
     assert!(empty.trips.is_empty());
     assert_eq!(world.log(), ["stations"], "no corridor, no request");
 }
@@ -1481,7 +1499,7 @@ async fn trafikverket_failures_are_warnings() {
     let g = stations.intern(Sighting { name: "Göteborg C", position: Some(GOTEBORG), ..Sighting::default() });
     let corridor = HashMap::from([(g, (at("06:00"), at("07:00")))]);
     let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
-    let found = swedish(&tv, &mut stations, &corridor, (g, g), &mut discovered, &mut warnings).await;
+    let found = swedish(&tv, &unused_motis(), &mut stations, &corridor, (g, g), &mut discovered, &mut warnings).await;
     assert!(found.trips.is_empty());
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("Invalid authentication"), "{warnings:?}");
@@ -1772,4 +1790,152 @@ async fn the_build_says_whether_trafikverket_trains_are_in_it() {
             .await;
     assert!(!built.trafikverket);
     assert_eq!(built.timetable.trips.len(), 1);
+}
+
+/// Transitous's departures at a stop as `fetchStops` gives them: (trip id,
+/// display name, train number, long name, mode, stops as (TV station, arrival, departure)).
+type Departure<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a [(&'a str, &'a str, &'a str)]);
+
+/// Queries asked of a stand-in.
+type Asked = std::sync::Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>;
+
+/// Trafikverket's stations in the horizon test, at (lat, lon).
+fn horizon_stations() -> HashMap<&'static str, (f64, f64)> {
+    HashMap::from([
+        ("G", GOTEBORG),
+        ("Lse", (56.751, 15.270)),
+        ("Em", (56.630, 15.535)),
+        ("Ny", (56.744, 15.906)),
+        ("Cr", (56.166, 15.590)),
+        ("Kh", KARLSHAMN),
+    ])
+}
+
+/// A `stoptimes` answer with `departures`.
+fn stop_times(departures: &[Departure<'_>]) -> serde_json::Value {
+    use serde_json::json;
+    let positions = horizon_stations();
+    let place = |&(sig, arrival, departure): &(&str, &str, &str)| {
+        let (lat, lon) = positions[sig];
+        let iso = |hhmm: &str| time(hhmm).map(|t| t.planned.to_rfc3339());
+        json!({ "name": sig, "stopId": format!("{sig}-quay"), "lat": lat, "lon": lon,
+                "arrival": iso(arrival), "scheduledArrival": iso(arrival),
+                "departure": iso(departure), "scheduledDeparture": iso(departure) })
+    };
+    let times: Vec<serde_json::Value> = departures
+        .iter()
+        .map(|&(trip, display, number, long, mode, stops)| {
+            let (first, next) = stops.split_first().unwrap();
+            json!({ "place": place(first), "mode": mode, "tripId": trip,
+                    "displayName": display, "tripShortName": number, "routeShortName": "",
+                    "routeLongName": long, "agencyName": "Op", "headsign": next.last().unwrap().0,
+                    "nextStops": next.iter().map(place).collect::<Vec<_>>() })
+        })
+        .collect();
+    json!({ "stopTimes": times })
+}
+
+/// Transitous answering departures at Göteborg (by id) and Nybro (by
+/// position), and what it was asked.
+async fn horizon_transitous() -> (crate::motis::Motis, Asked) {
+    use axum::extract::{Query, State};
+    // At Göteborg: SJ 319 to Nybro via Emmaboda, and Entur's copy of the
+    // rough route's Öresundståg (no number, its long name for a name).
+    let at_goteborg = stop_times(&[
+        (
+            "sj319",
+            "SJ Regional",
+            "319",
+            "",
+            "LONG_DISTANCE",
+            &[("G", "", "06:04"), ("Lse", "08:50", "08:51"), ("Em", "09:27", "09:30"), ("Ny", "09:44", "")],
+        ),
+        (
+            "entur",
+            "Ø Göteborg-Karlshamn",
+            "",
+            "Ø Göteborg-Karlshamn",
+            "REGIONAL_RAIL",
+            &[("G", "", "06:55"), ("Em", "10:00", "10:01"), ("Kh", "11:21", "")],
+        ),
+    ]);
+    // At Nybro, where SJ 319 ends: a train on to Karlskrona, and a commuter train.
+    let at_nybro = stop_times(&[
+        ("ny-cr", "Krösatåg", "7300", "", "REGIONAL_RAIL", &[("Ny", "", "10:00"), ("Cr", "10:40", "")]),
+        ("pendel", "P", "8000", "", "SUBURBAN", &[("Ny", "", "10:05"), ("Em", "10:20", "")]),
+    ]);
+    let asked = Asked::default();
+    let answers = std::sync::Arc::new((asked.clone(), at_goteborg, at_nybro));
+    let stoptimes = |State(answers): State<std::sync::Arc<(Asked, serde_json::Value, serde_json::Value)>>,
+                     Query(q): Query<HashMap<String, String>>| async move {
+        answers.0.lock().unwrap().push(q.clone());
+        let answer = match (q.get("stopId").map(String::as_str), q.get("center").map(String::as_str)) {
+            (Some("Göteborg Centralstation"), _) => answers.1.clone(),
+            (None, Some("56.744,15.906")) => answers.2.clone(),
+            _ => serde_json::json!({ "stopTimes": [] }),
+        };
+        axum::Json(answer)
+    };
+    let router =
+        axum::Router::new().route("/horizon/api/v5/stoptimes", axum::routing::get(stoptimes)).with_state(answers);
+    let motis = crate::motis::Motis::new(&format!("{}/horizon", crate::testkit::serve(router).await), "t").unwrap();
+    (motis, asked)
+}
+
+#[tokio::test]
+async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
+    // Trafikverket knows the stations, but no trains (past its horizon).
+    let positions = horizon_stations();
+    let world = crate::testkit::TvWorld::new(
+        positions.iter().map(|(&sig, &(lat, lon))| (sig, sig, "SE", lat, lon)).collect(),
+        Vec::new(),
+    );
+    let tv =
+        crate::trafikverket::Trafikverket::new(&crate::testkit::serve_trafikverket(&world).await, "key", "t").unwrap();
+    let (motis, asked) = horizon_transitous().await;
+
+    let located = |name: &str, sig: &str, arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(positions[sig].0), Some(positions[sig].1));
+        p
+    };
+    let mut rough = ride(
+        "trafiklab",
+        vec![located("Göteborg Centralstation", "G", "", "06:55"), located("Karlshamn Resecentrum", "Kh", "11:21", "")],
+    );
+    (rough.display_name, rough.trip_short_name) = (Some("Öresundståg".to_owned()), Some("1036".to_owned()));
+    let end =
+        |name: &str, sig: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: Some(positions[sig]) };
+    let (from, to) = (end("Göteborg Centralstation", "G"), end("Karlshamn Resecentrum", "Kh"));
+    let built = super::build(&motis, None, Some(&tv), &[Itinerary { legs: vec![rough] }], &from, &to, false).await;
+
+    assert!(built.sweden_from_transitous && !built.trafikverket, "{:?}", built.warnings);
+    // Emmaboda, reached from four directions, and Nybro, where SJ 319 ends.
+    assert_eq!(built.discovered, ["Em", "Ny"]);
+    let mut trips: Vec<(&str, Vec<&str>)> = built
+        .timetable
+        .trips
+        .iter()
+        .map(|t| {
+            let names = t.calls.iter().map(|c| built.timetable.stations[c.station].name.as_str()).collect();
+            (t.label.as_str(), names)
+        })
+        .collect();
+    trips.sort();
+    // The two copies of the Öresundståg are one train, named with its number;
+    // the commuter train at Nybro, off the change point's board, is left out.
+    assert_eq!(
+        trips,
+        [
+            ("Krösatåg (7300)", vec!["Ny", "Cr"]),
+            ("SJ Regional (319)", vec!["Göteborg Centralstation", "Lse", "Em", "Ny"]),
+            ("Öresundståg (1036)", vec!["Göteborg Centralstation", "Em", "Karlshamn Resecentrum"]),
+        ]
+    );
+    // Göteborg by Transitous's id; Nybro, found on the way, by position.
+    let asked = asked.lock().unwrap().clone();
+    let goteborg = asked.iter().find(|q| q.get("stopId").is_some_and(|s| s == "Göteborg Centralstation")).unwrap();
+    assert_eq!(goteborg["fetchStops"], "true");
+    let nybro = asked.iter().find(|q| q.get("center").is_some_and(|c| c == "56.744,15.906")).unwrap();
+    assert_eq!((nybro.get("stopId"), nybro["radius"].as_str()), (None, "200"));
 }

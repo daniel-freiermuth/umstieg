@@ -201,6 +201,9 @@ pub struct Build {
     pub warnings: Vec<String>,
     /// Trains from Trafikverket are in the timetable (its data is credited).
     pub trafikverket: bool,
+    /// Trafikverket had no trains (past its horizon): Sweden's are from
+    /// Transitous's departures.
+    pub sweden_from_transitous: bool,
 }
 
 /// What is known about a station when it is first seen.
@@ -377,25 +380,35 @@ pub async fn build(
     let origin_idx = stations.intern(sighting(&resolved, &origin.name, None, origin.position, Some(&origin.id)));
     let destination_idx =
         stations.intern(sighting(&resolved, &destination.name, None, destination.position, Some(&destination.id)));
-    let rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
+    let mut rough = from_motis(itineraries, &resolved, &mut stations, (origin_idx, destination_idx), all_stops);
 
     let mut discovered = Vec::new();
     let mut boards = match db {
         Some(db) => fetch_boards(motis, db, &mut stations, &rough.corridor, &mut discovered, &mut warnings).await,
         None => Boards::new(),
     };
+    let mut sweden_from_transitous = false;
     let swedish = match tv {
         Some(tv) => {
             let ends = (origin_idx, destination_idx);
-            let found = swedish(tv, &mut stations, &rough.corridor, ends, &mut discovered, &mut warnings).await;
+            let found = swedish(tv, motis, &mut stations, &rough.corridor, ends, &mut discovered, &mut warnings).await;
             for (idx, coverage) in found.coverage {
                 boards.entry(idx).or_insert((Vec::new(), coverage));
             }
+            // Like the rough routes' trains: copies of one train from two
+            // feeds (Entur's and Trafiklab's Öresundståg) merge by their times.
+            for leg in &found.departures {
+                if let Some(trip_id) = &leg.trip_id {
+                    let calls = leg_calls(leg, &resolved, &mut stations);
+                    add_trip(&mut rough.trips, trip_id, leg, calls);
+                }
+            }
+            sweden_from_transitous = found.from_transitous;
             found.trips
         }
         None => Vec::new(),
     };
-    let from_trafikverket = !swedish.is_empty();
+    let from_trafikverket = !swedish.is_empty() && !sweden_from_transitous;
     let trips = if db.is_none() && tv.is_none() {
         rough.trips.into_values().collect()
     } else {
@@ -414,6 +427,7 @@ pub async fn build(
         discovered,
         warnings,
         trafikverket: from_trafikverket,
+        sweden_from_transitous,
     }
 }
 
@@ -508,28 +522,7 @@ fn from_motis(
                 }
             }
 
-            let entry = rough.trips.entry(trip_id.clone()).or_insert_with(|| Trip {
-                label: leg.label(),
-                numbers: leg.train_number().into_iter().collect(),
-                class: leg.class(),
-                headsign: leg.headsign.clone(),
-                calls: Vec::new(),
-                transitous: true,
-            });
-            // Legs of one trip from different itineraries meet where one ends
-            // (arrival only) and another starts (departure only).
-            for call in calls {
-                match entry.calls.iter_mut().find(|c| c.station == call.station) {
-                    Some(known) => {
-                        known.arrival = known.arrival.or(call.arrival);
-                        known.departure = known.departure.or(call.departure);
-                        if known.platform.is_none() {
-                            known.platform = call.platform;
-                        }
-                    }
-                    None => entry.calls.push(call),
-                }
-            }
+            add_trip(&mut rough.trips, trip_id, leg, calls);
         }
         if let (Some(from), Some(last)) = (previous_end, itinerary.legs.last().filter(|l| !l.is_transit())) {
             let to = end_station(stations, &last.to, destination_idx);
@@ -537,6 +530,32 @@ fn from_motis(
         }
     }
     rough
+}
+
+/// `leg`'s train, at `calls`, into `trips` by its trip id. Legs of one trip
+/// from different answers meet where one ends (arrival only) and another
+/// starts (departure only).
+fn add_trip(trips: &mut HashMap<String, Trip>, trip_id: &str, leg: &Leg, calls: Vec<Call>) {
+    let entry = trips.entry(trip_id.to_owned()).or_insert_with(|| Trip {
+        label: leg.label(),
+        numbers: leg.train_number().into_iter().collect(),
+        class: leg.class(),
+        headsign: leg.headsign.clone(),
+        calls: Vec::new(),
+        transitous: true,
+    });
+    for call in calls {
+        match entry.calls.iter_mut().find(|c| c.station == call.station) {
+            Some(known) => {
+                known.arrival = known.arrival.or(call.arrival);
+                known.departure = known.departure.or(call.departure);
+                if known.platform.is_none() {
+                    known.platform = call.platform;
+                }
+            }
+            None => entry.calls.push(call),
+        }
+    }
 }
 
 /// Trains with at least two calls, in time order, delays carried forward.
@@ -825,6 +844,10 @@ type Fed = (Trip, HashSet<String>);
 struct Swedish {
     trips: Vec<Fed>,
     coverage: Vec<(usize, Coverage)>,
+    /// Trafikverket had none: Transitous's departures instead, each up to
+    /// its last stop.
+    departures: Vec<Leg>,
+    from_transitous: bool,
 }
 
 /// The Trafikverket station at `position` (or named `name`), Swedish only:
@@ -893,6 +916,7 @@ async fn tv_boards(
 /// their long-distance and regional trains. A planner's answers name neither.
 async fn swedish(
     tv: &Trafikverket,
+    motis: &Motis,
     stations: &mut Stations,
     corridor: &HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
     ends: (usize, usize),
@@ -927,8 +951,16 @@ async fn swedish(
     if first.is_empty() {
         return Swedish::default();
     }
+    let line =
+        stations.list.get(ends.0).and_then(|s| s.position).zip(stations.list.get(ends.1).and_then(|s| s.position));
     let mut known = HashSet::new();
     let (mut listed, keys) = tv_boards(tv, &first, &mut known, |_| true, warnings).await;
+    if !listed.is_empty() && listed.values().all(Vec::is_empty) {
+        // Trafikverket announces trains about two weeks ahead: past that its
+        // boards are empty, and Transitous's departures stand in.
+        let at = Board { list: &list, by_sig: &by_sig, boarded: &boarded };
+        return from_departures(motis, &at, stations, &first, line, discovered, warnings).await;
+    }
     let mut runs = match tv.runs(&keys).await {
         Ok(runs) => runs,
         Err(e) => {
@@ -937,8 +969,6 @@ async fn swedish(
         }
     };
 
-    let line =
-        stations.list.get(ends.0).and_then(|s| s.position).zip(stations.list.get(ends.1).and_then(|s| s.position));
     let second = change_points(&runs, &by_sig, line, &first);
     let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != 'S', warnings).await;
     match tv.runs(&keys).await {
@@ -962,7 +992,110 @@ async fn swedish(
             coverage.push((idx, Coverage::of(&entries)));
         }
     }
-    Swedish { trips, coverage }
+    Swedish { trips, coverage, departures: Vec::new(), from_transitous: false }
+}
+
+/// Where Swedish boards are: Trafikverket's stations, by signature, and the
+/// corridor's (signature → station index), whose Transitous ids are known.
+struct Board<'a> {
+    list: &'a [trafikverket::Station],
+    by_sig: &'a HashMap<&'a str, &'a trafikverket::Station>,
+    boarded: &'a HashMap<String, usize>,
+}
+
+/// Trains in Sweden from Transitous's departures with their next stops, in
+/// the two rounds Trafikverket's are found in: the corridor's Swedish
+/// stations, then the change points of the trains there (found as
+/// Trafikverket's would be, their stops its stations by position). Without
+/// the stops before a board and without arrivals, the boards cover no class:
+/// other feeds' trains all stay.
+async fn from_departures(
+    motis: &Motis,
+    at: &Board<'_>,
+    stations: &Stations,
+    first: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    line: Option<((f64, f64), (f64, f64))>,
+    discovered: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Swedish {
+    let mut departures = Vec::new();
+    departures_at(motis, at, stations, first, |_| true, &mut departures, warnings).await;
+    let runs: Vec<trafikverket::Run> = departures.iter().map(|leg| onward_run(leg, at.list)).collect();
+    let second = change_points(&runs, at.by_sig, line, first);
+    let keep = |leg: &Leg| leg.class() != Some('S');
+    let answered = departures_at(motis, at, stations, &second, keep, &mut departures, warnings).await;
+    let mut names: Vec<String> =
+        answered.iter().filter_map(|sig| Some(at.by_sig.get(sig.as_str())?.name.clone())).collect();
+    names.sort();
+    discovered.extend(names);
+    Swedish { trips: Vec::new(), coverage: Vec::new(), departures, from_transitous: true }
+}
+
+/// Rail departures at the boards `wanted` (signature → span) that `keep`
+/// keeps, each up to its last stop, into `departures`. The signatures answered.
+async fn departures_at(
+    motis: &Motis,
+    at: &Board<'_>,
+    stations: &Stations,
+    wanted: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    keep: impl Fn(&Leg) -> bool,
+    departures: &mut Vec<Leg>,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let fetches = wanted.iter().map(|(sig, &(lo, hi))| {
+        // Transitous's stop if known, else Trafikverket's station by position.
+        let stop = at.boarded.get(sig).and_then(|&i| stations.list.get(i)).and_then(|s| s.motis_id.clone());
+        let center = at.by_sig.get(sig.as_str()).and_then(|s| s.position);
+        async move {
+            let (from, until) = board_span(lo, hi);
+            (sig.clone(), motis.onward(stop.as_deref(), center, from, until).await)
+        }
+    });
+    let mut answered = Vec::new();
+    for (sig, result) in join_all(fetches).await {
+        match result {
+            Ok(legs) => {
+                answered.push(sig);
+                departures.extend(legs.into_iter().filter(|l| l.class().is_some() && keep(l)));
+            }
+            Err(e) => warnings.push(format!("Transitous departures at {sig}: {e:#}")),
+        }
+    }
+    answered.sort();
+    answered
+}
+
+/// A Transitous ride as a Trafikverket run: its stops at Trafikverket's
+/// stations nearby (any country; others left out, one per station).
+fn onward_run(leg: &Leg, list: &[trafikverket::Station]) -> trafikverket::Run {
+    let moment = |planned: Option<DateTime<Utc>>, live: Option<DateTime<Utc>>, cancelled: bool| {
+        planned.or(live).map(|planned| trafikverket::Moment { planned, live, cancelled })
+    };
+    let mut stops: Vec<trafikverket::Stop> = Vec::new();
+    for p in std::iter::once(&leg.from).chain(&leg.intermediate_stops).chain(std::iter::once(&leg.to)) {
+        let Some(here) = p.lat.zip(p.lon) else { continue };
+        let nearest = list
+            .iter()
+            .filter_map(|s| Some((s, meters(s.position?, here))))
+            .filter(|&(_, m)| m <= TV_SAME_STATION_METERS)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((station, _)) = nearest else { continue };
+        if stops.last().is_some_and(|s| s.signature == station.signature) {
+            continue;
+        }
+        stops.push(trafikverket::Stop {
+            signature: station.signature.clone(),
+            arrival: moment(p.scheduled_arrival, p.arrival, p.cancelled),
+            departure: moment(p.scheduled_departure, p.departure, p.cancelled),
+            track: p.track.clone(),
+        });
+    }
+    trafikverket::Run {
+        key: trafikverket::RunKey { ident: leg.trip_id.clone().unwrap_or_default(), date: String::new() },
+        product: None,
+        class: leg.class().unwrap_or('N'),
+        stops,
+    }
 }
 
 /// What long-distance and regional runs show of a station.
@@ -1292,6 +1425,11 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
         let target = twin.and_then(|i| Some((i, trips.get_mut(i)?, routes.get(i)?)));
         if let Some((i, trip, route)) = target {
             trip.transitous = true;
+            // Entur's copy of an Öresundståg has no number; Trafiklab's has.
+            if trip.numbers.is_empty() && !motis.numbers.is_empty() {
+                trip.label.clone_from(&motis.label);
+                trip.numbers.clone_from(&motis.numbers);
+            }
             // DB's route lists every stop; a stop unknown to DB between its
             // first and last call is the same station under another name
             // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.

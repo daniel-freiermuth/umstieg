@@ -272,6 +272,7 @@ fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
         end_time: arrives,
         display_name: Some(product.map_or_else(|| leg.service_name.clone(), |p| format!("{p} {}", leg.service_name))),
         route_short_name: None,
+        route_long_name: None,
         trip_id: Some(format!("sj:{run}")),
         // A train's number, to merge with Trafikverket's run; a bus's is a line.
         trip_short_name: (leg.transport_method == "TRAIN").then(|| leg.service_name.clone()),
@@ -290,6 +291,7 @@ fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg
         end_time: end.max(start),
         display_name: None,
         route_short_name: None,
+        route_long_name: None,
         trip_id: None,
         trip_short_name: None,
         headsign: None,

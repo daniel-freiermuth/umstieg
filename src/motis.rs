@@ -17,6 +17,8 @@ use crate::sync::lock;
 const MAX_CONCURRENT_REQUESTS: usize = 2;
 /// Attempts per request on 429 Too Many Requests and transport errors.
 const MAX_ATTEMPTS: u32 = 4;
+/// Around a center given for departures, stops this close count.
+const CENTER_RADIUS_METERS: u32 = 200;
 /// How long plan answers are reused from disk.
 const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(10);
 /// First retry delay, doubled per attempt; tests don't wait seconds.
@@ -58,6 +60,9 @@ pub struct Leg {
     pub end_time: DateTime<Utc>,
     pub display_name: Option<String>,
     pub route_short_name: Option<String>,
+    /// "Ø Göteborg-Halmstad-Helsingborg-Malmö-Købe": Entur's display name
+    /// for trains without a number.
+    pub route_long_name: Option<String>,
     pub trip_id: Option<String>,
     pub trip_short_name: Option<String>,
     pub headsign: Option<String>,
@@ -78,7 +83,8 @@ impl Leg {
 
     /// "ICE 616", "RE7 (11174)", "RJ (384)", "Skånetrafiken 804 (1114)": feeds
     /// put line numbers or bare categories into the display name, so add the
-    /// operator for bare numbers and the train number when it is missing.
+    /// operator for bare numbers and the train number when it is missing. A
+    /// line's long name (a list of places) gives way to the operator.
     pub fn label(&self) -> String {
         let base = [self.display_name.as_deref(), self.route_short_name.as_deref()]
             .into_iter()
@@ -86,7 +92,9 @@ impl Leg {
             .map(str::trim)
             .find(|s| !s.is_empty())
             .unwrap_or(&self.mode);
+        let long_name = self.route_long_name.as_deref().is_some_and(|l| l.trim() == base);
         let mut label = match &self.agency_name {
+            Some(agency) if long_name => agency.clone(),
             Some(agency) if base.chars().all(|c| c.is_ascii_digit()) => format!("{agency} {base}"),
             _ => base.to_owned(),
         };
@@ -163,9 +171,42 @@ pub struct Suggestion {
 #[serde(rename_all = "camelCase")]
 pub struct StopTime {
     pub place: Place,
+    pub mode: String,
     pub trip_id: String,
     pub display_name: Option<String>,
+    pub route_short_name: Option<String>,
+    pub route_long_name: Option<String>,
     pub trip_short_name: Option<String>,
+    pub headsign: Option<String>,
+    pub agency_name: Option<String>,
+    /// The stops after this one, if asked for (`fetchStops`).
+    #[serde(default)]
+    pub next_stops: Vec<Place>,
+}
+
+impl StopTime {
+    /// The ride from here to the last of `next_stops`; `None` without any.
+    pub fn onward(self) -> Option<Leg> {
+        let mut stops = self.next_stops;
+        let to = stops.pop()?;
+        let start_time = self.place.departure.or(self.place.scheduled_departure)?;
+        let end_time = to.arrival.or(to.scheduled_arrival)?;
+        Some(Leg {
+            mode: self.mode,
+            from: self.place,
+            to,
+            start_time,
+            end_time,
+            display_name: self.display_name,
+            route_short_name: self.route_short_name,
+            route_long_name: self.route_long_name,
+            trip_id: Some(self.trip_id),
+            trip_short_name: self.trip_short_name,
+            headsign: self.headsign,
+            agency_name: self.agency_name,
+            intermediate_stops: stops,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -361,6 +402,37 @@ impl Motis {
             .await?;
         let resp: StopTimesResponse = serde_json::from_str(&text).context("decoding stop times")?;
         Ok(resp.stop_times)
+    }
+
+    /// The trains leaving `stop` (a station-level id, else the station at
+    /// `center`) from `from` until `until`, each up to its last stop.
+    pub async fn onward(
+        &self,
+        stop: Option<&str>,
+        center: Option<(f64, f64)>,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<Leg>> {
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(stop) = stop {
+            query.push(("stopId", stop.to_owned()));
+        }
+        if let Some((lat, lon)) = center {
+            // A center needs a radius: the stops of the station there.
+            query.extend([("center", format!("{lat},{lon}")), ("radius", CENTER_RADIUS_METERS.to_string())]);
+        }
+        query.extend([
+            ("time", from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            ("window", until.signed_duration_since(from).num_seconds().max(0).to_string()),
+            ("n", "1".to_owned()),
+            ("fetchStops", "true".to_owned()),
+        ]);
+        let text = self
+            .disk
+            .get_or_fetch(&format!("{}stoptimes{query:?}", self.base), self.get_text("/api/v5/stoptimes", &query))
+            .await?;
+        let resp: StopTimesResponse = serde_json::from_str(&text).context("decoding stop times")?;
+        Ok(resp.stop_times.into_iter().filter_map(StopTime::onward).collect())
     }
 
     /// A trip with all its stops, as one leg.

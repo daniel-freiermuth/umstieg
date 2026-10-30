@@ -611,6 +611,9 @@ impl Report {
         if !built.discovered.is_empty() {
             writeln!(out, "stations found along trains' routes: {}", built.discovered.join(", "))?;
         }
+        if built.sweden_from_transitous {
+            writeln!(out, "Trafikverket announces trains about two weeks ahead: in Sweden, Transitous's departures")?;
+        }
         let Some(fastest) = result.fastest else {
             writeln!(out, "\nNo connection found.")?;
             return Ok(Outcome { text: out, plot: None });

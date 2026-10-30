@@ -160,6 +160,7 @@ fn report(tt: crate::timetable::Timetable) -> String {
             discovered: Vec::new(),
             warnings: Vec::new(),
             trafikverket: false,
+            sweden_from_transitous: false,
         },
         enumeration,
         limits,
