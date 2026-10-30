@@ -5,6 +5,7 @@ import type { Segment } from "./reach";
 const pick = (id: string, chains: number[], segments: Segment[] | null = null): Picked => ({
   id,
   info: id,
+  pts: [],
   chains,
   reach: segments === null ? null : { key: `r:${id}`, segments },
 });

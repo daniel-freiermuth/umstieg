@@ -622,7 +622,13 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
 // picks narrow down: the listed connections pass all of them, the highlight is
 // what is reachable through each. One connection left is selected directly.
 function choose(target: Target | Picked): void {
-  picks = toggle(picks, { id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
+  picks = toggle(picks, {
+    id: target.id,
+    info: target.info,
+    pts: target.pts,
+    chains: target.chains,
+    reach: target.reach ?? null,
+  });
   applyPicks();
   refresh();
 }
@@ -697,6 +703,8 @@ function refresh(): void {
   }
 
   hoverLayer.replaceChildren();
+  // The picks stay marked, under what is hovered.
+  for (const p of picks) el("polyline", { points: pts(p), class: "picked-piece" }, hoverLayer);
   if (hoverTarget) el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
 
   // Fallbacks of the selection, dashed in train colours, hoverable. Redrawn

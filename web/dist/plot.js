@@ -1013,7 +1013,13 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
   scheduleRender();
 });
 function choose(target) {
-  picks = toggle(picks, { id: target.id, info: target.info, chains: target.chains, reach: target.reach ?? null });
+  picks = toggle(picks, {
+    id: target.id,
+    info: target.info,
+    pts: target.pts,
+    chains: target.chains,
+    reach: target.reach ?? null
+  });
   applyPicks();
   refresh();
 }
@@ -1089,6 +1095,8 @@ function refresh() {
       draw(pi, "strong");
   }
   hoverLayer.replaceChildren();
+  for (const p of picks)
+    el("polyline", { points: pts(p), class: "picked-piece" }, hoverLayer);
   if (hoverTarget)
     el("polyline", { points: pts(hoverTarget), class: "hover-piece" }, hoverLayer);
   const fbKey = (focus2) => focus2 === pinned ? focus2 : null;

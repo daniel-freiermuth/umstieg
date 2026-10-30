@@ -1,12 +1,15 @@
 // Narrowing down by picks, without the DOM: clicked lines and stations, the
 // connections passing all of them, and what is reachable through each.
 
+import type { XY } from "./geometry";
 import { type Reach, intersectReach } from "./reach";
 import { item } from "./util";
 
 export interface Picked {
   id: string;
   info: string;
+  /** Where it is drawn: a stretch, a stay, or a station's row. */
+  pts: readonly XY[];
   chains: number[];
   reach: Reach | null;
 }
