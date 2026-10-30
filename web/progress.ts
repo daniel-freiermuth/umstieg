@@ -16,15 +16,18 @@ async function poll(): Promise<void> {
   let status: Status;
   try {
     const response = await fetch(statusUrl);
-    if (!response.ok) {
+    if (response.status === 404) {
       document.body.classList.add("over");
       title.textContent = "Search not found";
       return;
     }
+    // The server answers only 200 or 404: any other failure is its proxy's (a
+    // 502 or 504 while the server is slow), and the search runs on.
+    if (!response.ok) throw new Error(`status ${String(response.status)}`);
     status = decodeStatus(parseJson(await response.text()), "status");
   } catch {
     // No status this time (a network blip, the laptop asleep, a proxy's page
-    // instead): the search runs on, so ask again.
+    // or error instead): the search runs on, so ask again.
     setTimeout(() => void poll(), 1000);
     return;
   }
