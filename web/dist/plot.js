@@ -567,13 +567,19 @@ function want(chains) {
     for (const i of ids)
       asked.add(i);
     (async () => {
-      const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
-      if (response?.ok) {
-        const got = decodeDetails(parseJson(await response.text()), "details");
-        addDetails(D, got.map((d, k) => [item(ids, k), d]));
-      } else
+      try {
+        const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
+        if (response?.ok) {
+          const got = decodeDetails(parseJson(await response.text()), "details");
+          addDetails(D, got.map((d, k) => [item(ids, k), d]));
+        } else
+          for (const i of ids)
+            lost.add(i);
+      } catch {
         for (const i of ids)
-          lost.add(i);
+          asked.delete(i);
+        return;
+      }
       panelKey = null;
       if (view)
         view.fbKey = undefined;
