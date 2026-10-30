@@ -139,29 +139,40 @@ function viaField(f: Field, id: string): HTMLElement {
       }),
     );
   };
+  // Text that names no station would be lost: it must be picked or cleared.
+  const check = (): void => {
+    input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
+  };
   const input = stationText(id, (stop) => {
     if (stop !== null) {
       stops.push(stop);
       input.value = "";
       render();
     }
-    // Text that names no station would be lost: it must be picked or cleared.
-    input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
+    check();
   });
   input.placeholder = "Add a station";
   box.append(chips, input, names, ids);
   render();
-  for (const name of unpicked(SPEC.values, f.name)) {
+  // Names without their ids (an older link): picked, in their order, once every
+  // lookup is back, if Transitous suggests exactly them; the others stay as text,
+  // to pick or clear.
+  const listed = unpicked(SPEC.values, f.name);
+  const text = listed.join("; ");
+  input.value = text;
+  check();
+  const lookups = listed.map((name) => {
     const q = stationSearch(name);
-    if (q !== null)
-      void lookup(q).then(() => {
-        const stop = pickedNow(name);
-        if (stop !== null) {
-          stops.push(stop);
-          render();
-        }
-      });
-  }
+    return q === null ? Promise.resolve([]) : lookup(q);
+  });
+  if (listed.length > 0)
+    void Promise.all(lookups).then(() => {
+      // Before any the user added meanwhile: the link's come first.
+      stops.unshift(...listed.map(pickedNow).filter((s) => s !== null));
+      render();
+      if (input.value === text) input.value = listed.filter((name) => pickedNow(name) === null).join("; ");
+      check();
+    });
   return box;
 }
 
