@@ -126,7 +126,7 @@ impl<'n> Fallbacks<'n> {
         // Catching a later train of the plan (also the missed one, further on)
         // before the plan leaves it ends the detour. Trip → where the plan leaves it.
         let rejoin: HashMap<usize, usize> =
-            chain.rides().skip(after_change).map(|(trip, _, alight)| (trip, alight)).collect();
+            chain.rides().skip(after_change).map(|ride| (ride.trip, ride.alight)).collect();
         let arrival = chain.arrival(tt)?;
 
         // A change listed although missed (negative buffer): the traveller is
@@ -137,8 +137,8 @@ impl<'n> Fallbacks<'n> {
         // but the traveller already stands there, and may leave right after it.
         let ready = transfer.ready();
         let mut candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
-        if let Some((trip, board, _)) = chain.rides().nth(after_change) {
-            let boards_at = tt.call(trip, board)?.station;
+        if let Some(ride) = chain.rides().nth(after_change) {
+            let boards_at = tt.call(ride.trip, ride.board)?.station;
             if boards_at != transfer.station {
                 // From there, only what boards a train right there, and doesn't
                 // come back for what is listed from where the train arrived:
@@ -182,13 +182,13 @@ impl<'n> Fallbacks<'n> {
             .map(|fallback| {
                 let rides: Vec<_> = fallback.rides().collect();
                 let back =
-                    rides.iter().position(|(trip, board, _)| rejoin.get(trip).is_some_and(|alight| board < alight));
+                    rides.iter().position(|ride| rejoin.get(&ride.trip).is_some_and(|&alight| ride.board < alight));
                 // Every fallback has a ride.
                 let changes = back.unwrap_or_else(|| rides.len().saturating_sub(1));
                 let slack = fallback.transfers(tt)?.iter().take(changes).map(|t| t.slack).min();
                 let lands = if back.is_some() { arrival } else { fallback.arrival(tt)? };
                 let marked: HashSet<usize> =
-                    back.and_then(|i| rides.get(i)).map(|&(trip, _, _)| trip).into_iter().collect();
+                    back.and_then(|i| rides.get(i)).map(|ride| ride.trip).into_iter().collect();
                 // A first train from where the missed one left is named with its station.
                 let line = text::route_from(tt, fallback, Some(transfer.station), min_transfer, &marked, self.zone)?;
                 Ok((lands, changes, Reverse(slack), line, back, fallback))

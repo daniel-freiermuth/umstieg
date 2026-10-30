@@ -237,7 +237,7 @@ fn changes_missed_by_up_to_missed_by_are_listed_with_negative_buffer() {
             .chains
             .iter()
             .map(|c| {
-                let second = c.rides().nth(1).unwrap().0;
+                let second = c.rides().nth(1).unwrap().trip;
                 (tt.trips[second].label.clone(), c.min_slack(&tt).unwrap().unwrap().num_minutes())
             })
             .collect();
@@ -543,7 +543,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
     ];
     assert_eq!(got, expected);
     for g in &groups {
-        let trips: Vec<usize> = g.chains[0].rides().map(|(trip, _, _)| trip).collect();
+        let trips: Vec<usize> = g.chains[0].rides().map(|ride| ride.trip).collect();
         assert_eq!((g.first, g.last), (trips[0], trips[trips.len() - 1]));
     }
 }
@@ -1147,7 +1147,7 @@ fn best_keeps_the_connections_no_other_beats() {
     let one = |trip| chain(vec![Step::Ride { trip, board: 0, alight: 1 }]);
     let all = vec![two(ice), two(re), two(slow), two(early), one(direct), one(late)];
     let kept: Vec<String> =
-        best(&tt, all).unwrap().iter().map(|c| tt.trips[c.rides().next().unwrap().0].label.clone()).collect();
+        best(&tt, all).unwrap().iter().map(|c| tt.trips[c.rides().next().unwrap().trip].label.clone()).collect();
     // ICE 6: latest, direct (enough buffer), beats ICE 7. ICE 1 arrives first;
     // RE 2 leaves earlier for a bigger buffer; RB 3 and RB 4 both have enough
     // (above 90 minutes), so the later RB 3 beats RB 4.
