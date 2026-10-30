@@ -307,6 +307,7 @@ pub async fn run(
         enumeration,
         limits,
         hubs: rough.hubs,
+        planner_first: rough.first,
         requests,
         with_db: db.is_some(),
         with_sj,
@@ -317,6 +318,15 @@ pub async fn run(
         plot,
     };
     blocking(events, move |updates| report.write(updates)).await
+}
+
+/// Often there is a connection, only leaving after the window (the last bus
+/// has gone): when the planner's first one leaves and arrives, if any.
+fn later(planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>, zone: Tz) -> String {
+    let at = |t: DateTime<Utc>| format!("{}, {}", t.with_timezone(&zone).format("%a %-d %b"), clock(t, zone));
+    planner_first.map_or_else(String::new, |(leaves, arrives)| {
+        format!("\nTransitous's first connection leaves {} and arrives {}.", at(leaves), at(arrives))
+    })
 }
 
 /// Origin, destination and vias: as picked in the form, or the best match for the names.
@@ -542,6 +552,8 @@ struct Report {
     enumeration: enumerate::Enumeration,
     limits: Limits,
     hubs: Vec<String>,
+    /// When the planner's earliest answer leaves and arrives.
+    planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>,
     /// "12 Transitous requests, 3 EFA requests, …".
     requests: String,
     with_db: bool,
@@ -565,6 +577,7 @@ impl Report {
             enumeration: result,
             limits,
             hubs,
+            planner_first,
             requests,
             with_db,
             with_sj,
@@ -615,7 +628,7 @@ impl Report {
             writeln!(out, "Trafikverket announces trains about two weeks ahead: in Sweden, Transitous's departures")?;
         }
         let Some(fastest) = result.fastest else {
-            writeln!(out, "\nNo connection found.")?;
+            writeln!(out, "\nNo connection found.{}", later(planner_first, zone))?;
             return Ok(Outcome { text: out, plot: None });
         };
         let (summary, completeness) =

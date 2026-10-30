@@ -33,6 +33,9 @@ pub struct Query {
 
 pub struct Rough {
     pub itineraries: Vec<Itinerary>,
+    /// When the planner's first answer leaves and arrives, in the window or
+    /// after it (the last bus may have gone).
+    pub first: Option<(DateTime<Utc>, DateTime<Utc>)>,
     pub hubs: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -45,6 +48,7 @@ pub async fn collect(motis: &Motis, efa: Option<&Efa>, q: &Query) -> Result<Roug
     // Later departures the planner pads with still show the corridor, which
     // matters when only local services (missing in Transitous) run in the window.
     let hubs = pick_hubs(&answers, q);
+    let first = answers.iter().filter_map(|i| Some((i.legs.first()?.start_time, i.legs.last()?.end_time))).min();
     let baseline = departing(answers, q.time, q.window);
     let halves = join_all(hubs.iter().map(|hub| via_hub(motis, efa, q, hub))).await;
 
@@ -62,7 +66,7 @@ pub async fn collect(motis: &Motis, efa: Option<&Efa>, q: &Query) -> Result<Roug
             Err(e) => warnings.push(format!("hub {}: {e:#}", hub.name)),
         }
     }
-    Ok(Rough { itineraries, hubs: hubs.into_iter().map(|h| h.name).collect(), warnings })
+    Ok(Rough { itineraries, first, hubs: hubs.into_iter().map(|h| h.name).collect(), warnings })
 }
 
 /// Stations where the planner's answers change trains, most used first, plus the user's vias.

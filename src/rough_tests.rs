@@ -359,6 +359,23 @@ async fn collect_adds_halves_through_hubs() {
 }
 
 #[tokio::test]
+async fn the_planners_first_whole_answer_is_kept_even_after_the_window() {
+    // Nothing reaches Dest before 13:00 (the last bus has gone); a half to the
+    // hub leaving earlier is no connection.
+    let fake = FakeMotis::default()
+        .route(vec![leg(Some("C1"), O, X, "13:00", "13:30"), leg(Some("C2"), X, D, "13:40", "14:00")])
+        .route(vec![leg(Some("Y1"), O, X, "08:30", "09:00")]);
+    let (motis, _) = fake_motis(fake).await;
+    let rough = collect(&motis, None, &query(stop("o", "Origin"), stop("d", "Dest"), Vec::new(), 2)).await.unwrap();
+    assert_eq!(rough.first, Some((at("13:00"), at("14:00"))));
+    assert_eq!(trips(&rough.itineraries), BTreeSet::from(["Y1".to_owned()]), "only the half leaves in the window");
+
+    let (motis, _) = fake_motis(corridor()).await;
+    let rough = collect(&motis, None, &query(stop("o", "Origin"), stop("d", "Dest"), Vec::new(), 2)).await.unwrap();
+    assert_eq!(rough.first, Some((at("08:10"), at("10:00"))));
+}
+
+#[tokio::test]
 async fn failing_hubs_become_warnings_failing_baselines_errors() {
     let (motis, _) = fake_motis(corridor().fail("o", "x")).await;
     let q = query(stop("o", "Origin"), stop("d", "Dest"), Vec::new(), 2);

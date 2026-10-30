@@ -348,6 +348,21 @@ async fn suggestions_are_unique_stop_names_at_most_eight_stops_with_trains_first
 }
 
 #[tokio::test]
+async fn suggestions_say_where_a_stop_lies() {
+    let fake = Arc::new(Fake::default());
+    let area = |name: &str, default: bool| json!({ "name": name, "adminLevel": 7.0, "default": default });
+    let mut hamlet = stop("STOP", "Markaryd", "bus");
+    hamlet["areas"] = json!([area("Sverige", false), area("Ödeshögs kommun", true), area("Ödeshög", false)]);
+    let mut town = stop("STOP", "Markaryd station", "rail");
+    town["areas"] = json!([area("Markaryds kommun", false)]);
+    fake.geocode("Markaryd", json!([hamlet, town]));
+    let motis = client(&fake).await;
+    let areas: Vec<Option<String>> = motis.suggest("Markaryd").await.unwrap().into_iter().map(|s| s.area).collect();
+    // The area to show is the one marked so; none marked, none.
+    assert_eq!(areas, [Some("Ödeshögs kommun".to_owned()), None]);
+}
+
+#[tokio::test]
 async fn a_picked_stop_is_found_by_its_id_among_those_of_its_name() {
     let fake = Arc::new(Fake::default());
     let mut second = stop("STOP", "Hamburg Hbf", "s");

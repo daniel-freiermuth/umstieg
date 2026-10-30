@@ -117,7 +117,8 @@ new options appear by themselves). Left out: text-only ones like `--detail`,
 `--metric` (the plot page switches it), and the services and contact
 (`--api`, `--efa`, `--contact`), which `umstieg serve` takes and uses for every
 search; the page can't change them. Stations are chosen from Transitous's
-suggestions as one types: a field shows "✓ found" once its text names one
+suggestions as one types, each with its municipality (a bus stop "Markaryd"
+lies in Ödeshögs kommun, 200 km from Markaryd station): a field shows "✓ found" once its text names one
 exactly, and the search can't start before every station is chosen (vias become
 removable chips). The chosen stop's id goes with the search, so it runs from
 exactly that stop, not from the best match for the name; the command line

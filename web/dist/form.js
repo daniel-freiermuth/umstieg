@@ -138,7 +138,11 @@ var decodeStop = (v, path) => {
   const o = object(v, path);
   return { name: field(o, "name", string, path), id: field(o, "id", string, path) };
 };
-var decodeStops = array(decodeStop);
+var decodeSuggestion = (v, path) => {
+  const o = object(v, path);
+  return { ...decodeStop(v, path), area: field(o, "area", nullable(string), path) };
+};
+var decodeSuggestions = array(decodeSuggestion);
 function stationSearch(text) {
   const q = text.trim();
   return q.length < 3 ? null : q;
@@ -167,7 +171,7 @@ async function lookup(q) {
   const response = await fetch(`/stops?q=${encodeURIComponent(q)}`);
   if (!response.ok)
     return [];
-  const stops = decodeStops(parseJson(await response.text()), "stops");
+  const stops = decodeSuggestions(parseJson(await response.text()), "stops");
   for (const s of stops)
     if (!known.has(s.name))
       known.set(s.name, s.id);
@@ -192,7 +196,7 @@ function stationText(id, typed) {
       return;
     timer = setTimeout(() => {
       lookup(q).then((stops) => {
-        list.replaceChildren(...stops.map((s) => new Option(s.name)));
+        list.replaceChildren(...stops.map((s) => Object.assign(new Option(s.name), { label: s.area ?? "" })));
         typed(pickedNow(input.value));
       });
     }, 250);

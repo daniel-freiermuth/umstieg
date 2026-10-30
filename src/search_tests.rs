@@ -139,6 +139,11 @@ fn the_machine_zone_is_tz_else_the_system_s() {
 
 /// The report for `tt`, departing 08:00–09:00, changes taking no time at all.
 fn report(tt: crate::timetable::Timetable) -> String {
+    report_with(tt, None)
+}
+
+/// [`report`], the planner's first answer leaving and arriving then.
+fn report_with(tt: crate::timetable::Timetable, planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>) -> String {
     let args = search_args(&["A", "C"]);
     let limits = Limits {
         origin: tt.origin,
@@ -165,6 +170,7 @@ fn report(tt: crate::timetable::Timetable) -> String {
         enumeration,
         limits,
         hubs: Vec::new(),
+        planner_first,
         requests: "0 Transitous requests".to_owned(),
         with_db: false,
         with_sj: false,
@@ -194,6 +200,21 @@ fn a_change_without_slack_is_made_not_missed() {
     let text = report(b.build("A", "C"));
     let summary = text.lines().find(|l| l.starts_with("fastest ")).unwrap();
     assert!(summary.contains(" · 1 connections in 1 groups, 1 with a change missed by ≤ 5m ("), "{text}");
+}
+
+#[test]
+fn without_a_connection_the_report_says_when_the_planners_first_leaves() {
+    // The bus leaves after the window: nothing in it.
+    let tt = || {
+        let mut b = Builder::new();
+        b.trip("Bus 670", &[("A", "", "18:26"), ("C", "19:09", "")]);
+        b.build("A", "C")
+    };
+    let plain = report(tt());
+    assert!(plain.contains("No connection found."), "{plain}");
+    let told = report_with(tt(), Some((at("18:26"), at("19:09"))));
+    let added: Vec<&str> = told.lines().filter(|l| !plain.lines().any(|p| p == *l)).collect();
+    assert!(matches!(added[..], [line] if line.contains("18:26") && line.contains("19:09")), "{told}");
 }
 
 #[test]
@@ -268,7 +289,7 @@ async fn sj_adds_rough_routes_only_through_sweden_and_its_failures_are_warnings(
         vias: Vec::new(),
         auto_hubs: 0,
     };
-    let empty = || crate::rough::Rough { itineraries: Vec::new(), hubs: Vec::new(), warnings: Vec::new() };
+    let empty = || crate::rough::Rough { itineraries: Vec::new(), first: None, hubs: Vec::new(), warnings: Vec::new() };
     let sweden = query("se-Trafiklab_740000002", "se-Trafiklab_740000073");
 
     let (events, asked) = (|_: Event<'_>| {}, String::new);

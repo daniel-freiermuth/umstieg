@@ -13,7 +13,7 @@ import {
   picked,
   sections,
   stationSearch,
-  decodeStops,
+  decodeSuggestions,
   unpicked,
   zoneOf,
 } from "./fields";
@@ -194,14 +194,20 @@ describe("stationSearch", () => {
     });
 });
 
-describe("decodeStops", () => {
-  test("names with their ids", () => {
-    expect(decodeStops(parseJson('[{"name": "Fulda", "id": "de:1"}]'), "stops")).toEqual([
-      { name: "Fulda", id: "de:1" },
+describe("decodeSuggestions", () => {
+  test("names with their ids and areas, if known", () => {
+    const json =
+      '[{"name": "Markaryd", "id": "se:1", "area": "Ödeshögs kommun"}, {"name": "Fulda", "id": "de:1", "area": null}]';
+    expect(decodeSuggestions(parseJson(json), "stops")).toEqual([
+      { name: "Markaryd", id: "se:1", area: "Ödeshögs kommun" },
+      { name: "Fulda", id: "de:1", area: null },
     ]);
   });
-  test("an id is required", () => {
-    expect(() => decodeStops(parseJson('[{"name": "Fulda"}]'), "stops")).toThrow("stops[0].id");
+  test("an id is required, an area is a string or null", () => {
+    expect(() => decodeSuggestions(parseJson('[{"name": "Fulda", "area": null}]'), "stops")).toThrow("stops[0].id");
+    expect(() => decodeSuggestions(parseJson('[{"name": "Fulda", "id": "d", "area": 7}]'), "stops")).toThrow(
+      "stops[0].area",
+    );
   });
 });
 

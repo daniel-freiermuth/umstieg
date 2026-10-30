@@ -523,7 +523,7 @@ async fn stops_completes_from_transitous_after_three_characters() {
     assert_eq!(code, StatusCode::OK);
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!([{"name": "Mannheim Hbf", "id": "a"}, {"name": "Mannheim-Neckarau", "id": "d"}])
+        json!([{"name": "Mannheim Hbf", "id": "a", "area": null}, {"name": "Mannheim-Neckarau", "id": "d", "area": null}])
     );
     assert_eq!(*lock(&transitous.asked), ["Man"]);
 

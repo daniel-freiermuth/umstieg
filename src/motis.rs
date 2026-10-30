@@ -150,6 +150,17 @@ struct GeocodeMatch {
     lon: Option<f64>,
     #[serde(default)]
     modes: Vec<String>,
+    #[serde(default)]
+    areas: Vec<Area>,
+}
+
+/// Where a stop lies: country, county, municipality, …
+#[derive(Deserialize)]
+struct Area {
+    name: String,
+    /// The one to show with the stop's name (the municipality in Sweden).
+    #[serde(default)]
+    default: bool,
 }
 
 impl GeocodeMatch {
@@ -159,11 +170,13 @@ impl GeocodeMatch {
     }
 }
 
-/// A stop to pick in the form: its name and Transitous id.
+/// A stop to pick in the form: its name, Transitous id and where it lies
+/// ("Ödeshögs kommun": two Markaryds are 200 km apart).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Suggestion {
     pub name: String,
     pub id: String,
+    pub area: Option<String>,
 }
 
 /// A train at a stop, from the departures of a station.
@@ -350,7 +363,8 @@ impl Motis {
         let mut found: Vec<Suggestion> = Vec::new();
         for m in matches {
             if found.iter().all(|s| s.name != m.name) {
-                found.push(Suggestion { name: m.name, id: m.id });
+                let area = m.areas.into_iter().find(|a| a.default).map(|a| a.name);
+                found.push(Suggestion { name: m.name, id: m.id, area });
             }
         }
         found.truncate(8);

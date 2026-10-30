@@ -6,9 +6,10 @@ import { byId } from "./dom";
 import {
   type Field,
   type Stop,
+  type Suggestion,
   changed,
   decodeSpec,
-  decodeStops,
+  decodeSuggestions,
   initial,
   label,
   omitted,
@@ -33,10 +34,10 @@ const element = <K extends keyof HTMLElementTagNameMap>(
 /** Every station suggested so far, by name: typing or choosing a name exactly picks it. */
 const known = new Map<string, string>();
 
-async function lookup(q: string): Promise<Stop[]> {
+async function lookup(q: string): Promise<Suggestion[]> {
   const response = await fetch(`/stops?q=${encodeURIComponent(q)}`);
   if (!response.ok) return [];
-  const stops = decodeStops(parseJson(await response.text()), "stops");
+  const stops = decodeSuggestions(parseJson(await response.text()), "stops");
   for (const s of stops) if (!known.has(s.name)) known.set(s.name, s.id);
   return stops;
 }
@@ -64,7 +65,8 @@ function stationText(id: string, typed: (stop: Stop | null) => void): HTMLInputE
     if (q === null || pickedNow(input.value) !== null) return;
     timer = setTimeout(() => {
       void lookup(q).then((stops) => {
-        list.replaceChildren(...stops.map((s) => new Option(s.name)));
+        // The area beside the name: which of two Markaryds.
+        list.replaceChildren(...stops.map((s) => Object.assign(new Option(s.name), { label: s.area ?? "" })));
         // The text may name a suggestion exactly by now.
         typed(pickedNow(input.value));
       });

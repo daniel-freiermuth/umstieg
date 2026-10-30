@@ -134,8 +134,18 @@ const decodeStop: Decoder<Stop> = (v, path) => {
   return { name: field(o, "name", string, path), id: field(o, "id", string, path) };
 };
 
+/** A station the server suggests, with where it lies ("Ödeshögs kommun") if known. */
+export interface Suggestion extends Stop {
+  area: string | null;
+}
+
+const decodeSuggestion: Decoder<Suggestion> = (v, path) => {
+  const o = object(v, path);
+  return { ...decodeStop(v, path), area: field(o, "area", nullable(string), path) };
+};
+
 /** The server's suggestions for a station input. */
-export const decodeStops: Decoder<Stop[]> = array(decodeStop);
+export const decodeSuggestions: Decoder<Suggestion[]> = array(decodeSuggestion);
 
 /** What to look up for a station input: the trimmed text, null below 3 characters. */
 export function stationSearch(text: string): string | null {
