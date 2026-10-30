@@ -15,7 +15,7 @@ use chrono_tz::Europe::Stockholm;
 use serde::Deserialize;
 
 use crate::cache::DiskCache;
-use crate::motis::{Itinerary, Leg, Place};
+use crate::motis::{Itinerary, Leg, Mode, Place};
 use crate::rough::Query;
 use crate::trafikverket;
 
@@ -235,12 +235,12 @@ fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
     let (departs, arrives) = (leg.departure_date_time.to_utc(), leg.arrival_date_time.to_utc());
     let kind = leg.service_type.as_ref();
     let mode = match leg.transport_method.as_str() {
-        "TRAIN" if kind.and_then(|k| k.modality.as_deref()) == Some("HIGHSPEED_RAIL") => "HIGHSPEED_RAIL",
-        "TRAIN" => "REGIONAL_RAIL",
-        "EXPRESSBUS" => "COACH",
-        "TRAM" => "TRAM",
-        "FERRY" => "FERRY",
-        _ => "BUS",
+        "TRAIN" if kind.and_then(|k| k.modality.as_deref()) == Some("HIGHSPEED_RAIL") => Mode::HighspeedRail,
+        "TRAIN" => Mode::RegionalRail,
+        "EXPRESSBUS" => Mode::Coach,
+        "TRAM" => Mode::Tram,
+        "FERRY" => Mode::Ferry,
+        _ => Mode::Bus,
     };
     let product = kind.and_then(|k| k.description.clone()).filter(|d| !d.is_empty());
     let mut from = place(&leg.origin, stations);
@@ -253,7 +253,7 @@ fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
         format!("{}:{}", leg.service_name, leg.service_schedule_date.as_deref().unwrap_or_default())
     });
     Leg {
-        mode: mode.to_owned(),
+        mode,
         from,
         to,
         start_time: departs,
@@ -272,7 +272,7 @@ fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
 
 fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {
     Leg {
-        mode: "WALK".to_owned(),
+        mode: Mode::Walk,
         from,
         to,
         start_time: start,

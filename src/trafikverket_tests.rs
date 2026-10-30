@@ -135,16 +135,17 @@ fn products_give_label_number_and_class_and_buses_are_dropped() {
         with("73724", Some("Västtågen"), "Buss"),
         with("8X", None, "Tåg"),
     ]);
-    let mut got: Vec<(String, Option<u32>, char)> = runs.iter().map(|r| (r.label(), r.number(), r.class)).collect();
+    let mut got: Vec<(String, Option<u32>, ProductClass)> =
+        runs.iter().map(|r| (r.label(), r.number(), r.class)).collect();
     got.sort();
     assert_eq!(
         got,
         [
-            ("8X".to_owned(), None, 'N'),
-            ("SJ Regional 319".to_owned(), Some(319), 'F'),
-            ("SJ Snabbtåg 481".to_owned(), Some(481), 'F'),
-            ("SL Pendeltåg 2412".to_owned(), Some(2412), 'S'),
-            ("Öresundståg 1036".to_owned(), Some(1036), 'N'),
+            ("8X".to_owned(), None, ProductClass::Regional),
+            ("SJ Regional 319".to_owned(), Some(319), ProductClass::LongDistance),
+            ("SJ Snabbtåg 481".to_owned(), Some(481), ProductClass::LongDistance),
+            ("SL Pendeltåg 2412".to_owned(), Some(2412), ProductClass::SBahn),
+            ("Öresundståg 1036".to_owned(), Some(1036), ProductClass::Regional),
         ]
     );
 }
@@ -201,10 +202,10 @@ async fn boards_list_each_train_once_without_buses_in_the_asked_span() {
     let world = world();
     let tv = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "key", "umstieg-test").unwrap();
     let seen = tv.board("G", at("06:00"), at("07:45")).await.unwrap();
-    let got: Vec<(&str, DateTime<Utc>, char)> =
+    let got: Vec<(&str, DateTime<Utc>, ProductClass)> =
         seen.iter().map(|s| (s.run.ident.as_str(), s.planned, s.class)).collect();
     // 3027 leaves at 07:45, the end of the span; train 1 arrives at 09:00.
-    assert_eq!(got, [("1047", at("06:55"), 'N'), ("319", at("06:04"), 'F')]);
+    assert_eq!(got, [("1047", at("06:55"), ProductClass::Regional), ("319", at("06:04"), ProductClass::LongDistance)]);
     assert_eq!(world.log(), ["board G"]);
     assert_eq!(tv.request_count(), 1);
 }

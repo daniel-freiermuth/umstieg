@@ -15,6 +15,7 @@ use serde::Deserialize;
 use tokio::sync::{OnceCell, Semaphore};
 
 use crate::cache::DiskCache;
+use crate::timetable::ProductClass;
 
 /// The API (`--trafikverket-api` overrides it).
 pub const API: &str = "https://api.trafikinfo.trafikverket.se/v2/data.json";
@@ -28,8 +29,8 @@ const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Dura
 const RUNS_PER_REQUEST: usize = 40;
 /// The station list hardly changes: kept a week.
 const STATIONS_TTL: Duration = Duration::from_hours(168);
-/// Products of long-distance trains; other trains are regional ('N'),
-/// commuter trains ("Pendeltåg") 'S'.
+/// Products of long-distance trains; other trains are regional,
+/// commuter trains ("Pendeltåg") S-Bahn.
 const LONG_DISTANCE: [&str; 10] = [
     "SJ Snabbtåg",
     "SJ InterCity",
@@ -68,7 +69,7 @@ pub struct RunKey {
 pub struct Seen {
     pub run: RunKey,
     pub planned: DateTime<Utc>,
-    pub class: char,
+    pub class: ProductClass,
 }
 
 /// Arrival or departure.
@@ -93,7 +94,7 @@ pub struct Run {
     pub key: RunKey,
     /// "SJ Regional", "Öresundståg".
     pub product: Option<String>,
-    pub class: char,
+    pub class: ProductClass,
     /// In time order.
     pub stops: Vec<Stop>,
 }
@@ -190,13 +191,13 @@ impl Announcement {
         self.product_information.first().map(|p| p.description.as_str()).filter(|p| !p.is_empty())
     }
 
-    fn class(&self) -> char {
+    fn class(&self) -> ProductClass {
         if self.type_of_traffic.iter().any(|t| t.description == "Pendeltåg") {
-            'S'
+            ProductClass::SBahn
         } else if self.product().is_some_and(|p| LONG_DISTANCE.contains(&p)) {
-            'F'
+            ProductClass::LongDistance
         } else {
-            'N'
+            ProductClass::Regional
         }
     }
 
