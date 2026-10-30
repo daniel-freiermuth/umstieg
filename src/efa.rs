@@ -12,7 +12,7 @@ use chrono_tz::Europe::Berlin;
 use serde::Deserialize;
 
 use crate::cache::DiskCache;
-use crate::motis::{Itinerary, Leg, Place};
+use crate::motis::{Itinerary, Leg, Mode, Place};
 
 /// Trips asked for per request; EFA answers with about this many departures.
 const TRIPS_PER_REQUEST: &str = "6";
@@ -170,16 +170,16 @@ impl Efa {
 }
 
 /// MOTIS mode for an EFA product class; `None` for walks.
-const fn mode(class: i64) -> Option<&'static str> {
+const fn mode(class: i64) -> Option<Mode> {
     Some(match class {
-        0 | 13 => "REGIONAL_RAIL",
-        14..=16 => "HIGHSPEED_RAIL",
-        1 => "SUBURBAN",
-        2 => "SUBWAY",
-        3 | 4 => "TRAM",
-        9 => "FERRY",
+        0 | 13 => Mode::RegionalRail,
+        14..=16 => Mode::HighspeedRail,
+        1 => Mode::Suburban,
+        2 => Mode::Subway,
+        3 | 4 => Mode::Tram,
+        9 => Mode::Ferry,
         99 | 100 | 105..=107 => return None,
-        _ => "BUS",
+        _ => Mode::Bus,
     })
 }
 
@@ -218,7 +218,7 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         };
         let transport = transport?;
         let category = category(transport);
-        let mode = if category.is_some_and(crate::timetable::is_long_distance) { "LONG_DISTANCE" } else { mode };
+        let mode = if category.is_some_and(crate::timetable::is_long_distance) { Mode::LongDistance } else { mode };
         let name = match (category, transport.number.as_deref()) {
             (Some(category), Some(number)) => Some(format!("{category} {number}")),
             _ => transport.number.clone(),
@@ -234,7 +234,7 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         let inner = stops.get(1..stops.len().saturating_sub(1)).unwrap_or_default();
         let intermediate = inner.iter().map(place).collect();
         legs.push(Leg {
-            mode: mode.to_owned(),
+            mode,
             from,
             to,
             start_time: start,
@@ -263,9 +263,9 @@ fn category(transport: &Transportation) -> Option<&str> {
     (words.next() == Some(number)).then_some(category)
 }
 
-fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {
+const fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {
     Leg {
-        mode: "WALK".to_owned(),
+        mode: Mode::Walk,
         from,
         to,
         start_time: start,

@@ -15,6 +15,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::sync::lock;
+use crate::timetable::ProductClass;
 
 /// The DB Timetables API (`--db-api` overrides it).
 pub const API: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
@@ -91,8 +92,8 @@ pub struct Visit {
     /// Position of this station in the run.
     pub seq: u32,
     pub number: Option<u32>,
-    /// Product class: 'F' long distance, 'N' regional, 'S' S-Bahn. Foreign trains may lack it.
-    pub class: Option<char>,
+    /// Product class. Foreign trains may lack it.
+    pub class: Option<ProductClass>,
     pub category: Option<String>,
     pub line: Option<String>,
     pub arrival: Option<Event>,
@@ -405,16 +406,16 @@ fn parse_station_cache(text: &str) -> HashMap<String, Option<Station>> {
 /// (slot, class) pairs a fetched board contains: if a board lists trains of a
 /// class for an hour, a train of that class missing from it does not call there.
 #[derive(Debug, Clone, Default)]
-pub struct Coverage(Vec<(String, char)>);
+pub struct Coverage(Vec<(String, ProductClass)>);
 
 impl Coverage {
-    pub fn covers(&self, at: DateTime<Utc>, class: char) -> bool {
+    pub fn covers(&self, at: DateTime<Utc>, class: ProductClass) -> bool {
         let slot = slot(at);
         self.0.iter().any(|(s, c)| *s == slot && *c == class)
     }
 
     /// Coverage of the given (time, class) pairs: a board's trains.
-    pub fn of(entries: &[(DateTime<Utc>, char)]) -> Self {
+    pub fn of(entries: &[(DateTime<Utc>, ProductClass)]) -> Self {
         Self(entries.iter().map(|&(t, c)| (slot(t), c)).collect())
     }
 }
@@ -528,6 +529,20 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
     Berlin.from_local_datetime(&naive).earliest().map(|t| t.with_timezone(&Utc))
 }
 
+/// Product class of a timetable's `f` attribute; codes other than F, N and S
+/// are logged and dropped, so the category decides.
+fn product_class(f: &str) -> Option<ProductClass> {
+    match f {
+        "F" => Some(ProductClass::LongDistance),
+        "N" => Some(ProductClass::Regional),
+        "S" => Some(ProductClass::SBahn),
+        _ => {
+            tracing::debug!("DB: unknown product class {f:?}");
+            None
+        }
+    }
+}
+
 fn parse_event(n: roxmltree::Node<'_, '_>) -> Event {
     let text = |a: &str| n.attribute(a).filter(|v| !v.is_empty()).map(str::to_owned);
     let path =
@@ -560,8 +575,12 @@ fn parse_visits(xml: &str) -> Result<Vec<(String, Visit)>> {
                         visit.number = child.attribute("n").and_then(|n| n.parse().ok());
                         visit.category = child.attribute("c").map(str::to_owned);
                         // FlixTrain and some foreign trains come without a class.
-                        visit.class = child.attribute("f").and_then(|f| f.chars().next()).or_else(|| {
-                            visit.category.as_deref().filter(|c| crate::timetable::is_long_distance(c)).map(|_| 'F')
+                        visit.class = child.attribute("f").and_then(product_class).or_else(|| {
+                            visit
+                                .category
+                                .as_deref()
+                                .filter(|c| crate::timetable::is_long_distance(c))
+                                .map(|_| ProductClass::LongDistance)
                         });
                     }
                     "ar" | "dp" => {
