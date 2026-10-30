@@ -138,6 +138,9 @@ fn trains_without_class_or_with_a_bare_line_number_get_category_labels() {
     assert_eq!((s1.label(), s1.class), ("1 (34459)".to_owned(), Some(ProductClass::SBahn)));
     let bus = board(r#"<tl t="p" o="X" c="Bus" n="4711"/>"#, "");
     assert_eq!((bus.label(), bus.class), ("Bus 4711".to_owned(), None));
+    // F is long-distance even for a category the fallback doesn't know.
+    let est = board(r#"<tl f="F" t="p" o="80" c="EST" n="9425"/>"#, "");
+    assert_eq!(est.class, Some(ProductClass::LongDistance));
     // Codes other than F, N and S are no class: the category decides.
     let unknown = board(r#"<tl f="D" t="p" o="80" c="ICE" n="1"/>"#, "");
     assert_eq!(unknown.class, Some(ProductClass::LongDistance));
