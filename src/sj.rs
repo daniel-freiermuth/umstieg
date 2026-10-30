@@ -163,19 +163,6 @@ pub fn uic(stop_id: &str) -> Option<String> {
     Some(format!("7400{station}"))
 }
 
-/// A Swedish station name as a key across feeds: SJ's "Göteborg Central",
-/// "Emmaboda station" and "Karlshamn Resecentrum" are Trafikverket's
-/// "Göteborg C", "Emmaboda" and "Karlshamn".
-pub fn station_key(name: &str) -> String {
-    let lower = name.trim().to_lowercase();
-    let mut key = lower.as_str();
-    for suffix in [" station", " resecentrum"] {
-        key = key.strip_suffix(suffix).unwrap_or(key);
-    }
-    let central = [" centralstation", " central"].iter().find_map(|s| key.strip_suffix(s));
-    central.map_or_else(|| key.to_owned(), |base| format!("{base} c"))
-}
-
 /// SJ's connections leaving in `[from, until]`, as itineraries: places with
 /// Trafiklab's stop ids, Trafikverket's positions where `stations` knows the
 /// name. Between legs at different stops, a walk as long as the change but
@@ -224,8 +211,9 @@ fn stop_id(station: &SjStation) -> String {
 }
 
 fn place(station: &SjStation, stations: &[trafikverket::Station]) -> Place {
-    let key = station_key(&station.name);
-    let position = stations.iter().find(|s| s.country == "SE" && station_key(&s.name) == key).and_then(|s| s.position);
+    let key = crate::db::station_key(&station.name);
+    let position =
+        stations.iter().find(|s| s.country == "SE" && crate::db::station_key(&s.name) == key).and_then(|s| s.position);
     Place {
         name: station.name.clone(),
         stop_id: Some(stop_id(station)),

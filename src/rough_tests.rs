@@ -146,6 +146,12 @@ fn vias_come_first_and_count_on_top_of_auto_hubs() {
     // The origin as via and the repeated via are dropped; the destination is never a hub.
     assert_eq!(hub_names(&hubs), ["Hamburg Hbf", "Mannheim, Hauptbahnhof", "Fulda Bahnhof"]);
     assert_eq!(hubs[0].id, "via-hh");
+
+    // One station under two feeds' names is one hub: "Lund C" and "Lund Centralstation".
+    let destination = stop("x", "Karlshamn");
+    let vias = vec![stop("dk-lund", "Lund C"), stop("se-lund", "Lund Centralstation"), stop("kh", "Karlshamn St.")];
+    let hubs = pick_hubs(&fixture(), &query(stop("o", "Neustadt, Böbig"), destination, vias, 0));
+    assert_eq!(hub_names(&hubs), ["Lund C"]);
 }
 
 // ---- stand-in planners ----

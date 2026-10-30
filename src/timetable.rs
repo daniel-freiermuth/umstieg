@@ -216,12 +216,17 @@ struct Sighting<'a> {
     tz: Option<&'a str>,
     position: Option<(f64, f64)>,
     motis_id: Option<&'a str>,
+    /// Seen as a stop of a bus, not a train.
+    bus: bool,
 }
 
 #[derive(Default)]
 struct Stations {
     list: Vec<Station>,
     by_key: HashMap<String, usize>,
+    /// Stations named after a bus stop (the coach stop at Malmö C): the first
+    /// train stop there names them.
+    bus_named: HashSet<usize>,
 }
 
 impl Stations {
@@ -229,9 +234,9 @@ impl Stations {
     fn from_list(list: Vec<Station>) -> Self {
         let mut by_key = HashMap::new();
         for (i, s) in list.iter().enumerate() {
-            by_key.insert(format!("name:{}", db::fold(&s.name)), i);
+            by_key.insert(format!("name:{}", db::station_key(&s.name)), i);
             if let Some(name) = &s.board_name {
-                by_key.insert(format!("name:{}", db::fold(name)), i);
+                by_key.insert(format!("name:{}", db::station_key(name)), i);
             }
             if let Some(eva) = &s.eva {
                 by_key.insert(format!("eva:{eva}"), i);
@@ -240,7 +245,7 @@ impl Stations {
                 by_key.insert(format!("tv:{tv}"), i);
             }
         }
-        Self { list, by_key }
+        Self { list, by_key, bus_named: HashSet::new() }
     }
 
     /// Station `idx` is Trafikverket's `station`: its trains from there on.
@@ -254,7 +259,28 @@ impl Stations {
             st.position = station.position;
         }
         self.by_key.insert(format!("tv:{}", station.signature), idx);
-        self.by_key.insert(format!("name:{}", db::fold(&station.name)), idx);
+        self.by_key.insert(format!("name:{}", db::station_key(&station.name)), idx);
+    }
+
+    /// Train stations Trafikverket knows (by signature, else position or
+    /// name) go by its names ("Malmö C", "Landskrona"), whatever a feed called
+    /// them first ("Landskrona St.", "Malmö Centralstation"); not `ends`,
+    /// named as asked for, nor bus stops.
+    fn name_by_trafikverket(&mut self, list: &[trafikverket::Station], ends: (usize, usize)) {
+        let by_sig: HashMap<&str, &trafikverket::Station> = list.iter().map(|s| (s.signature.as_str(), s)).collect();
+        for (idx, st) in self.list.iter_mut().enumerate() {
+            if idx == ends.0 || idx == ends.1 || self.bus_named.contains(&idx) {
+                continue;
+            }
+            let known = match st.tv.as_deref() {
+                Some(sig) => by_sig.get(sig).copied(),
+                None => tv_station(list, st.position, &st.name),
+            };
+            if let Some(tv) = known {
+                st.name.clone_from(&tv.name);
+                self.by_key.insert(format!("name:{}", db::station_key(&tv.name)), idx);
+            }
+        }
     }
 
     /// One index per physical station, unified by EVA number, Trafikverket
@@ -262,7 +288,7 @@ impl Stations {
     /// numbers or signatures stay separate (S-Bahn vs. long-distance station)
     /// and get a footpath instead.
     fn intern(&mut self, s: Sighting<'_>) -> usize {
-        let name_key = format!("name:{}", db::fold(s.name));
+        let name_key = format!("name:{}", db::station_key(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
         let tv_key = s.tv.map(|t| format!("tv:{t}"));
         let found = [&eva_key, &tv_key]
@@ -278,7 +304,15 @@ impl Stations {
                     compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
                 })
             });
+        if let Some(idx) = found.filter(|i| !s.bus && self.bus_named.remove(i))
+            && let Some(station) = self.list.get_mut(idx)
+        {
+            s.name.clone_into(&mut station.name);
+        }
         let idx = found.unwrap_or_else(|| {
+            if s.bus {
+                self.bus_named.insert(self.list.len());
+            }
             self.list.push(Station {
                 name: s.name.to_owned(),
                 eva: None,
@@ -335,6 +369,7 @@ fn sighting<'a>(
         tz,
         position,
         motis_id,
+        bus: false,
     }
 }
 
@@ -404,6 +439,10 @@ pub async fn build(
                 }
             }
             sweden_from_transitous = found.from_transitous;
+            // The list is fetched (and kept) by now, if there is one.
+            if let Ok(list) = tv.stations().await {
+                stations.name_by_trafikverket(&list, ends);
+            }
             found.trips
         }
         None => Vec::new(),
@@ -648,13 +687,10 @@ fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut 
         .iter()
         .enumerate()
         .map(|(k, p)| Call {
-            station: stations.intern(sighting(
-                resolved,
-                &p.name,
-                p.tz.as_deref(),
-                p.lat.zip(p.lon),
-                p.station_id().filter(|_| rail),
-            )),
+            station: stations.intern(Sighting {
+                bus: !rail,
+                ..sighting(resolved, &p.name, p.tz.as_deref(), p.lat.zip(p.lon), p.station_id().filter(|_| rail))
+            }),
             arrival: if k > 0 { Time::new(p.scheduled_arrival, p.arrival) } else { None },
             departure: if k < last { Time::new(p.scheduled_departure, p.departure) } else { None },
             platform: p.track.clone(),
@@ -836,6 +872,7 @@ async fn fetch_boards(
                     tz: Some(DB_TIME_ZONE),
                     position: stop.as_ref().and_then(|s| s.position),
                     motis_id: stop.as_ref().map(|s| s.id.as_str()),
+                    bus: false,
                 });
                 if !boards.contains_key(&idx) {
                     discovered.push(station.name.clone());
@@ -881,7 +918,7 @@ fn tv_station<'a>(
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(s, _)| s)
     });
-    near.or_else(|| swedish.clone().find(|s| db::fold(&s.name) == db::fold(name)))
+    near.or_else(|| swedish.clone().find(|s| db::station_key(&s.name) == db::station_key(name)))
 }
 
 /// Board hours from `lo` to `hi` widened by `BOARD_MARGIN`, at most `MAX_HOURS_PER_STATION`.

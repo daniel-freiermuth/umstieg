@@ -467,6 +467,20 @@ pub fn fold(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A station's name as feeds agree on it: folded, without words for
+/// "station" ("Landskrona St.", "Emmaboda station", "Karlshamn Resecentrum")
+/// and with the central station as "C" ("Malmö Centralstation", "Göteborg
+/// Central").
+pub fn station_key(name: &str) -> String {
+    let folded = fold(name);
+    let mut key = folded.as_str();
+    for suffix in [" station", " stasjon", " resecentrum", " stn", " st"] {
+        key = key.strip_suffix(suffix).unwrap_or(key);
+    }
+    let central = [" centralstation", " centralen", " central"].iter().find_map(|s| key.strip_suffix(s));
+    central.map_or_else(|| key.to_owned(), |base| format!("{base} c"))
+}
+
 /// Guards against wrong EVA guesses: the DB name must contain the place's first word or vice versa.
 pub fn same_place(db_name: &str, place_name: &str) -> bool {
     let (db, place) = (fold(db_name), fold(place_name));

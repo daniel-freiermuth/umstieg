@@ -337,6 +337,38 @@ fn fold_makes_spellings_comparable() {
 }
 
 #[test]
+fn station_keys_match_the_names_feeds_give_one_station() {
+    let same = [
+        ("Göteborg Central", "Göteborg C"),
+        ("Malmö Centralstation", "Malmö C"),
+        ("Oslo Sentralstasjon", "Oslo Sentralstasjon"),
+        ("Emmaboda station", "Emmaboda"),
+        ("Karlshamn Resecentrum", "Karlshamn"),
+        ("Landskrona St.", "Landskrona"),
+        ("Landskrona St.", "Landskrona station"),
+        ("Alvesta stn", "Alvesta"),
+        ("Drammen stasjon", "Drammen"),
+        ("Stockholm Centralen", "Stockholm C"),
+        (" Bergåsa ", "Bergåsa"),
+    ];
+    for (a, b) in same {
+        assert_eq!(station_key(a), station_key(b), "{a} / {b}");
+    }
+    let different = [
+        ("Malmö C Norra Vallgatan", "Malmö C"),
+        ("Karlshamn centrum väst", "Karlshamn"),
+        ("Hamburg Hbf", "Hamburg-Altona"),
+        ("Lund C", "Lund"),
+        // Only a whole last word counts.
+        ("Ost", "O"),
+        ("Bergåsa", "Bergå"),
+    ];
+    for (a, b) in different {
+        assert_ne!(station_key(a), station_key(b), "{a} / {b}");
+    }
+}
+
+#[test]
 fn same_place_needs_the_first_word() {
     let cases = [
         ("Frankfurt(M) Flughafen Fernbf", "Frankfurt (Main) Flughafen Fernbahnhof", true),

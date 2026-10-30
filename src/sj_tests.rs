@@ -73,22 +73,6 @@ fn uic_codes_from_transitous_stop_ids() {
 }
 
 #[test]
-fn station_names_match_across_feeds() {
-    let cases = [
-        ("Göteborg Central", "göteborg c"),
-        ("Göteborg C", "göteborg c"),
-        ("Malmö Centralstation", "malmö c"),
-        ("Emmaboda station", "emmaboda"),
-        ("Karlshamn Resecentrum", "karlshamn"),
-        (" Bergåsa ", "bergåsa"),
-        ("Malmö C Norra Vallgatan", "malmö c norra vallgatan"),
-    ];
-    for (name, key) in cases {
-        assert_eq!(station_key(name), key, "{name}");
-    }
-}
-
-#[test]
 fn connections_leaving_in_the_span_become_itineraries() {
     let stations = [station("Emmaboda", (56.63, 15.535)), station("Göteborg C", (57.709, 11.974))];
     let found = itineraries_of(&fixture(), swedish("06:00"), swedish("07:00"), &stations);

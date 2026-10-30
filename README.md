@@ -169,7 +169,10 @@ command line logs nothing unless `RUST_LOG` is set.
    EFA's times win, and the other copy only adds stops where both agree on the
    stops around them (Transitous had ICE 273 22 minutes late at Mannheim).
    Stations from different feeds are unified by EVA number, Trafikverket
-   signature, name or distance (< 300 m).
+   signature, name or distance (< 300 m); names compare without words for
+   "station" ("Landskrona St.", "Landskrona station") and with "Central"
+   as "C". A station goes by the name of the first train stop seen there,
+   not a bus stop's, and in Sweden by Trafikverket's ("Malmö C").
 
    In Sweden, [Trafikverket](https://api.trafikinfo.trafikverket.se) has
    every train with planned, forecast and actual times, and a train's whole

@@ -83,11 +83,13 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
     let mut ranked: Vec<_> = counts.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
-    // Feeds of different countries name the same station alike but with different ids.
-    let mut names: HashSet<String> = [q.origin.name.clone(), q.destination.name.clone()].into();
+    // Feeds of different countries name the same station alike but with
+    // different ids ("Lund C", "Lund Centralstation"): one hub for it.
+    let key = |name: &str| crate::db::station_key(name);
+    let mut names: HashSet<String> = [key(&q.origin.name), key(&q.destination.name)].into();
     let mut hubs = Vec::new();
     for stop in &q.vias {
-        if names.insert(stop.name.clone()) {
+        if names.insert(key(&stop.name)) {
             hubs.push(stop.clone());
         }
     }
@@ -96,7 +98,7 @@ fn pick_hubs(baseline: &[Itinerary], q: &Query) -> Vec<Stop> {
         if hubs.len() >= limit {
             break;
         }
-        if names.insert(name.to_owned()) {
+        if names.insert(key(name)) {
             hubs.push(Stop { id: id.to_owned(), name: name.to_owned(), position: None });
         }
     }

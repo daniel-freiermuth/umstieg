@@ -478,6 +478,107 @@ fn stations_unify_by_folded_name() {
 }
 
 #[test]
+fn a_station_named_after_a_bus_stop_takes_the_first_train_stops_name() {
+    let mut stations = Stations::default();
+    let malmo = (55.609, 13.000);
+    let flixbus = Sighting {
+        name: "Malmö central train station FlixBus stop",
+        position: Some(malmo),
+        bus: true,
+        ..Sighting::default()
+    };
+    let idx = stations.intern(flixbus);
+    // Another bus names nothing; the train stop does, once.
+    let bus = Sighting {
+        name: "Malmö C Norra Vallgatan",
+        position: Some(north(malmo, 100.0)),
+        bus: true,
+        ..Sighting::default()
+    };
+    assert_eq!(stations.intern(bus), idx);
+    assert_eq!(stations.list[idx].name, "Malmö central train station FlixBus stop");
+    let train = Sighting { name: "Malmö Centralstation", position: Some(north(malmo, 50.0)), ..Sighting::default() };
+    assert_eq!(stations.intern(train), idx);
+    let other = Sighting { name: "Malmö Central", position: Some(malmo), ..Sighting::default() };
+    assert_eq!(stations.intern(other), idx);
+    assert_eq!(stations.list[idx].name, "Malmö Centralstation");
+    assert_eq!(stations.list.len(), 1);
+}
+
+#[test]
+fn a_coach_stop_names_a_station_only_until_a_train_stops_there() {
+    let malmo = (55.609, 13.000);
+    let located = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(position.0), Some(position.1));
+        p
+    };
+    let mut coach = ride(
+        "flix",
+        vec![
+            located("Göteborg Nils Ericson", GOTEBORG, "", "07:00"),
+            located("Malmö FlixBus stop", malmo, "10:05", ""),
+        ],
+    );
+    coach.mode = "COACH".to_owned();
+    let train = ride(
+        "oresund",
+        vec![
+            located("Malmö Centralstation", north(malmo, 50.0), "", "10:27"),
+            located("Karlshamn", KARLSHAMN, "12:21", ""),
+        ],
+    );
+    let (stations, _) = rough(&[Itinerary { legs: vec![coach] }, Itinerary { legs: vec![train] }], false);
+    let names: Vec<&str> = stations.list.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Origin", "Destination", "Göteborg Nils Ericson", "Malmö Centralstation", "Karlshamn"]);
+}
+
+#[test]
+fn train_stations_go_by_trafikverkets_names_but_not_the_ends_or_bus_stops() {
+    let tv = |sig: &str, name: &str, position: (f64, f64)| crate::trafikverket::Station {
+        signature: sig.to_owned(),
+        name: name.to_owned(),
+        country: "SE".to_owned(),
+        position: Some(position),
+    };
+    let (malmo, landskrona, lund, karlshamn) = ((55.609, 13.000), (55.879, 12.857), (55.705, 13.186), KARLSHAMN);
+    let list = [
+        tv("Mc", "Malmö C", malmo),
+        tv("Lkö", "Landskrona", landskrona),
+        tv("Lu", "Lund C", lund),
+        tv("Kh", "Karlshamn", karlshamn),
+    ];
+    let mut stations = Stations::default();
+    let origin =
+        stations.intern(Sighting { name: "Malmö Centralstation", position: Some(malmo), ..Sighting::default() });
+    let destination =
+        stations.intern(Sighting { name: "Karlshamn St.", position: Some(karlshamn), ..Sighting::default() });
+    // By signature; by name though placed 2 km off (Rejseplanen's); by position.
+    let lund_idx = stations.intern(Sighting { name: "Lund Centralstation", tv: Some("Lu"), ..Sighting::default() });
+    let landskrona_idx =
+        stations.intern(Sighting { name: "Landskrona St.", position: Some((55.867, 12.831)), ..Sighting::default() });
+    let near_lund =
+        stations.intern(Sighting { name: "Lund Gunnesbo", position: Some((55.72, 13.16)), ..Sighting::default() });
+    let bus = stations.intern(Sighting {
+        name: "Lund C busstation",
+        position: Some(north(lund, 30.0)),
+        bus: true,
+        ..Sighting::default()
+    });
+    stations.name_by_trafikverket(&list, (origin, destination));
+    let names: Vec<&str> = [origin, destination, lund_idx, landskrona_idx, near_lund, bus]
+        .iter()
+        .map(|&i| stations.list[i].name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["Malmö Centralstation", "Karlshamn St.", "Lund C", "Landskrona", "Lund Gunnesbo", "Lund C busstation"]
+    );
+    // The new name finds the station too.
+    assert_eq!(stations.intern(Sighting { name: "Landskrona", ..Sighting::default() }), landskrona_idx);
+}
+
+#[test]
 fn stations_unify_by_eva_across_names() {
     let mut stations = Stations::default();
     let motis = stations.intern(Sighting {
@@ -541,6 +642,7 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         tz: Some("Europe/Berlin"),
         position: Some((50.554, 9.684)),
         motis_id: Some("de-DELFI_de:06631:1234_G"),
+        bus: false,
     });
     stations.intern(Sighting {
         name: "Fulda",
@@ -550,6 +652,7 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         tz: Some("Europe/Paris"),
         position: Some((1.0, 1.0)),
         motis_id: Some("other"),
+        bus: false,
     });
     let s = &stations.list[a];
     assert_eq!(stations.list.len(), 1);
@@ -1382,8 +1485,10 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
         position: Some(north(GOTEBORG, 50.0)),
         ..Sighting::default()
     });
+    // Too far for the same station and named otherwise: found by position
+    // for Trafikverket, and its trains' stops there are this station.
     let destination = stations.intern(Sighting {
-        name: "Karlshamn Resecentrum",
+        name: "Karlshamns resecentrum",
         position: Some(north(KARLSHAMN, 450.0)),
         ..Sighting::default()
     });
@@ -1418,7 +1523,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let names = |t: &Trip| t.calls.iter().map(|c| stations.list[c.station].name.clone()).collect::<Vec<_>>();
     assert_eq!(
         names(trip("Öresundståg 1060")),
-        ["Karlskrona C", "Karlshamn Resecentrum", "Köpenhamn H"],
+        ["Karlskrona C", "Karlshamns resecentrum", "Köpenhamn H"],
         "no German stop"
     );
     let sj = trip("SJ Regional 319");
@@ -1432,7 +1537,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let emmaboda = index_of(&stations, "Emmaboda");
     let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
     covered.sort_unstable();
-    let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamn Resecentrum", "Karlskrona C", "Nybro"];
+    let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamns resecentrum", "Karlskrona C", "Nybro"];
     assert_eq!(covered, boarded);
     let (_, at_emmaboda) = found.coverage.iter().find(|(i, _)| *i == emmaboda).unwrap();
     assert!(['F', 'N', 'S'].iter().all(|&c| at_emmaboda.covers(at("09:40"), c)));
