@@ -448,11 +448,7 @@ pub async fn build(
         None => Vec::new(),
     };
     let from_trafikverket = !swedish.is_empty() && !sweden_from_transitous;
-    let trips = if db.is_none() && tv.is_none() {
-        rough.trips.into_values().collect()
-    } else {
-        merge(&stations.list, &boards, rough.trips, swedish)
-    };
+    let trips = merge(&stations.list, &boards, rough.trips, swedish);
 
     Build {
         timetable: Timetable {
