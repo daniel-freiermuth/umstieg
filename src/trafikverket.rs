@@ -293,7 +293,7 @@ impl Trafikverket {
                      <FILTER><EQ name=\"Advertised\" value=\"true\"/></FILTER>\
                      <INCLUDE>LocationSignature</INCLUDE><INCLUDE>AdvertisedLocationName</INCLUDE>\
                      <INCLUDE>CountryCode</INCLUDE><INCLUDE>Geometry.WGS84</INCLUDE></QUERY>";
-                let text = self.station_cache.get_or_fetch("stations", self.post(query)).await?;
+                let text = self.station_cache.get_or_fetch(&format!("{}stations", self.url), self.post(query)).await?;
                 Ok(Arc::new(parse_stations(&text)?))
             })
             .await
