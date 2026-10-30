@@ -83,11 +83,13 @@ async function poll() {
   let status;
   try {
     const response = await fetch(statusUrl);
-    if (!response.ok) {
+    if (response.status === 404) {
       document.body.classList.add("over");
       title.textContent = "Search not found";
       return;
     }
+    if (!response.ok)
+      throw new Error(`status ${String(response.status)}`);
     status = decodeStatus(parseJson(await response.text()), "status");
   } catch {
     setTimeout(() => void poll(), 1000);
