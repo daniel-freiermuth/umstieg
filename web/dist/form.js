@@ -252,28 +252,36 @@ function viaField(f, id) {
       return chip;
     }));
   };
+  const check = () => {
+    input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
+  };
   const input = stationText(id, (stop) => {
     if (stop !== null) {
       stops.push(stop);
       input.value = "";
       render();
     }
-    input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
+    check();
   });
   input.placeholder = "Add a station";
   box.append(chips, input, names, ids);
   render();
-  for (const name of unpicked(SPEC.values, f.name)) {
+  const listed = unpicked(SPEC.values, f.name);
+  const text = listed.join("; ");
+  input.value = text;
+  check();
+  const lookups = listed.map((name) => {
     const q = stationSearch(name);
-    if (q !== null)
-      lookup(q).then(() => {
-        const stop = pickedNow(name);
-        if (stop !== null) {
-          stops.push(stop);
-          render();
-        }
-      });
-  }
+    return q === null ? Promise.resolve([]) : lookup(q);
+  });
+  if (listed.length > 0)
+    Promise.all(lookups).then(() => {
+      stops.unshift(...listed.map(pickedNow).filter((s) => s !== null));
+      render();
+      if (input.value === text)
+        input.value = listed.filter((name) => pickedNow(name) === null).join("; ");
+      check();
+    });
   return box;
 }
 var USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
