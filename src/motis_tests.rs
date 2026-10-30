@@ -310,6 +310,52 @@ async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() 
 }
 
 #[tokio::test]
+async fn stop_ignores_connecting_words_missing_from_stop_names() {
+    // Transitous' answers of 2026-10-30, abridged: the geocoder ranks queries with "am", "an der" badly.
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    let main_hbf = |name: &str| with_modes(name, "main-hbf", &["LONG_DISTANCE", "SUBURBAN"]);
+    let main_sued = || with_modes("Frankfurt (Main) Süd", "main-sued", &["LONG_DISTANCE", "SUBURBAN"]);
+    for text in ["Frankfurt am Main Hbf", "Frankfurt am Main Hauptbahnhof"] {
+        fake.geocode(text, json!([main_hbf("Frankfurt Hauptbahnhof"), main_sued()]));
+    }
+    fake.geocode(
+        "Frankfurt am Main Bahnhof",
+        json!([with_modes("Frankfurt (Main) Höchst Bahnhof", "hoechst", &["REGIONAL_RAIL"])]),
+    )
+    .geocode(
+        "Frankfurt am Main",
+        json!([
+            with_modes("Frankfurt am Main, P+R", "p+r", &["RIDE_SHARING"]),
+            main_hbf("Frankfurt (M) Hbf"),
+            with_modes("Frankfurt (Main) Am Riedsteg", "riedsteg", &["BUS"]),
+        ]),
+    )
+    .geocode("Frankfurt Main Hbf", json!([main_hbf("Frankfurt(Main) Hbf"), main_sued()]))
+    .geocode(
+        "Frankfurt an der Oder",
+        json!([
+            with_modes("Frankfurt (Oder), An den Seefichten", "seefichten", &["BUS"]),
+            with_modes("Frankfurt (Main) An der Bornhohl", "bornhohl", &["BUS"]),
+        ]),
+    )
+    .geocode(
+        "Frankfurt Oder Hbf",
+        json!([
+            main_hbf("Frankfurt (M) Hbf"),
+            with_modes("Frankfurt (Oder), Bahnhof", "oder", &["LONG_DISTANCE", "REGIONAL_RAIL"]),
+        ]),
+    );
+    let motis = client(&fake).await;
+    assert_eq!(motis.stop("Frankfurt am Main Hbf").await.unwrap().id, "main-hbf");
+    assert_eq!(motis.stop("Frankfurt an der Oder Hbf").await.unwrap().id, "oder");
+}
+
+#[tokio::test]
 async fn stop_tries_bare_place_last_and_reports_all_queries() {
     let fake = Arc::new(Fake::default());
     fake.geocode("Altona", json!([stop("STOP", "Hamburg-Altona", "altona")]));
