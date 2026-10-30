@@ -19,7 +19,7 @@ use crate::motis::{Motis, Stop};
 use crate::sj::{self, Sj};
 use crate::text::{buffer, clock, duration, header, route, timed, window};
 use crate::trafikverket::{self, Trafikverket};
-use crate::{checked, complete, db, efa, plot, rough, timetable};
+use crate::{checked, complete, db, efa, plot, rough, timetable, usable};
 
 /// Upper limit of the options in minutes (`--window`, `--min-transfer`,
 /// `--missed-by`): a week, far beyond any search the timetable covers.
@@ -95,6 +95,11 @@ pub struct SearchArgs {
     /// minutes (marked ✗): delays can still shift either way. 0 = only feasible ones.
     #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub missed_by: i64,
+    /// List every connection within the limits, not only the best ones (none
+    /// leaving later, arriving earlier, with fewer changes and a bigger
+    /// buffer at once). Slow to draw for a busy corridor.
+    #[arg(long)]
+    pub all: bool,
     /// Connections listed per (first train, last train) group; 0 = all.
     #[arg(long, default_value_t = 5)]
     pub per_group: usize,
@@ -578,7 +583,11 @@ impl Report {
                 missed = missed.saturating_add(1);
             }
         }
-        let groups = enumerate::group(tt, result.chains)?;
+        // What all of them use, drawn whether listed or not.
+        let network = plot.is_some().then(|| usable::of_chains(tt, &result.chains));
+        let listed = if args.all { result.chains } else { enumerate::best(tt, result.chains)? };
+        let groups = enumerate::group(tt, listed)?;
+        let listed = groups.iter().map(|g| g.chains.len()).sum();
 
         let mut out = String::new();
         let title = format!("{} → {}", tt.station(tt.origin)?.name, tt.station(tt.destination)?.name);
@@ -606,7 +615,8 @@ impl Report {
             writeln!(out, "\nNo connection found.")?;
             return Ok(Outcome { text: out, plot: None });
         };
-        let (summary, completeness) = summarize(fastest, result.complete_up_to, &limits, total, groups.len(), missed);
+        let (summary, completeness) =
+            summarize(fastest, result.complete_up_to, &limits, (total, listed, groups.len()), missed);
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 
         let mut fallbacks = Fallbacks::new(&net, min_transfer, zone);
@@ -632,6 +642,7 @@ impl Report {
                 };
                 let plot = plot::Plot {
                     title,
+                    usable: &network.unwrap_or_default(),
                     subtitle: format!("{departing} · {summary}{completeness}"),
                     groups: &groups,
                     metric: args.metric,
@@ -655,8 +666,7 @@ fn summarize(
     fastest: TimeDelta,
     complete_up_to: Option<usize>,
     limits: &Limits,
-    total: usize,
-    groups: usize,
+    (total, listed, groups): (usize, usize, usize),
     missed: usize,
 ) -> (String, String) {
     let completeness = match complete_up_to {
@@ -664,13 +674,16 @@ fn summarize(
         Some(n) => format!(", complete up to {n} changes; raise --max-nodes for more"),
         None => ", incomplete even without changes; raise --max-nodes".to_owned(),
     };
+    let listing = if listed == total {
+        format!("{total} connections in {groups} groups")
+    } else {
+        format!("{total} connections, the {listed} best in {groups} groups")
+    };
     let summary = format!(
-        "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {} connections in {} groups{}",
+        "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {listing}{}",
         duration(fastest),
         duration(checked::sum(fastest, limits.extra_time)),
         limits.max_changes,
-        total,
-        groups,
         if missed > 0 {
             format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by))
         } else {

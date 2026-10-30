@@ -17,6 +17,7 @@ mod sync;
 mod text;
 mod timetable;
 mod trafikverket;
+mod usable;
 
 #[cfg(test)]
 mod e2e_tests;

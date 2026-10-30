@@ -699,6 +699,9 @@ fn args(extra: &[&str]) -> SearchArgs {
             argv.extend([option, default]);
         }
     }
+    // Every connection, so tests see what the enumeration finds; listing
+    // only the best is tested on its own.
+    argv.push("--all");
     argv.extend(extra);
     Cli::try_parse_from(argv).unwrap().args
 }
@@ -1199,14 +1202,14 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     let data = testkit::embedded_json(&plot.text().await.unwrap(), "data");
     assert_eq!(data["back"], back.as_str());
     assert_eq!(data["tz"], "America/New_York", "the plot's time axis");
-    assert_eq!(data["chains"].as_array().unwrap().len(), 6);
-    assert!(
-        data["subtitle"].as_str().unwrap().starts_with("departing Tue 3 Nov 2026, 02:00 EST–03:00 EST · "),
-        "{data}"
-    );
+    // The form lists the best connections; the network drawn has all six.
+    assert_eq!(data["chains"].as_array().unwrap().len(), 4);
+    let subtitle = data["subtitle"].as_str().unwrap();
+    assert!(subtitle.starts_with("departing Tue 3 Nov 2026, 02:00 EST–03:00 EST · "), "{data}");
+    assert!(subtitle.contains(" · 6 connections, the 4 best in "), "{subtitle}");
     // Details aren't in the page: it asks for them by connection. ICE 203 at 10:49 in Berlin.
     assert_eq!(data["details"], Value::Null);
-    let details_url = format!("{site}{}?ids=0,1,2,3,4,5", data["details_url"].as_str().unwrap());
+    let details_url = format!("{site}{}?ids=0,1,2,3", data["details_url"].as_str().unwrap());
     let details: Value = http.get(details_url).send().await.unwrap().json().await.unwrap();
     assert!(details.as_array().unwrap().iter().any(|d| d["route"].as_str().unwrap().contains("04:49 EST (+4)")));
     // The back link brings the form up with the same values.

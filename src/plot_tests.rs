@@ -303,6 +303,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
     // Shown in Berlin, whatever the stations' zones (here none).
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
+        usable: &crate::usable::Usable::default(),
         title: "A → C".to_owned(),
         subtitle: "sub".to_owned(),
         groups: &groups,
@@ -407,6 +408,7 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
     let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }]).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
+        usable: &crate::usable::Usable::default(),
         title: String::new(),
         subtitle: String::new(),
         groups: &groups,
@@ -491,6 +493,7 @@ fn drawing_reports_the_connections_done() {
     let reports = std::sync::Mutex::new(Vec::new());
     let progress = |done, total| reports.lock().unwrap().push((done, total));
     let plot = Plot {
+        usable: &crate::usable::Usable::default(),
         title: String::new(),
         subtitle: String::new(),
         groups: &groups,
@@ -506,4 +509,68 @@ fn drawing_reports_the_connections_done() {
     assert_eq!(*reports.lock().unwrap(), [(0, 3), (1, 3), (2, 3)]);
     assert_eq!(embedded_json(&rendered.html, "data")["details"], Value::Null, "not embedded");
     assert_eq!(rendered.details.len(), 3);
+}
+
+#[test]
+fn the_network_is_drawn_from_what_the_connections_use() {
+    // ICE 1 A–X–B ridden through X; RE 2 B–C; a wait at B; a walk B → B2, S 3 B2–C.
+    let mut b = testkit::Builder::new();
+    let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("X", "08:30", "08:32"), ("B", "09:00", "")]);
+    let re = b.trip("RE 2", &[("B", "", "09:10"), ("C", "10:00", "")]);
+    let s = b.trip("S 3", &[("B2", "", "09:20"), ("C", "10:10", "")]);
+    b.walk("B", "B2", 5);
+    let tt = b.build("A", "C");
+    let used = crate::usable::of_chains(
+        &tt,
+        &[
+            Chain { steps: vec![ride(ice, 0, 2), ride(re, 0, 1)] },
+            Chain { steps: vec![ride(ice, 0, 2), Step::Walk { footpath: 0 }, ride(s, 0, 1)] },
+        ],
+    );
+    let net = Network::new(&tt).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let plot = Plot {
+        usable: &used,
+        title: String::new(),
+        subtitle: String::new(),
+        groups: &[],
+        metric: Metric::RemainingTime,
+        min_transfer: MIN,
+        zone: Berlin,
+        back: None,
+        details_url: None,
+        progress: &|_, _| {},
+    };
+    let data = embedded_json(&render(&net, &mut fallbacks, &plot).unwrap().html, "data");
+    let drawn: Vec<(String, Vec<(i64, usize)>)> = indexes(&data["network"])
+        .into_iter()
+        .map(|i| {
+            let p = &data["pieces"][i];
+            let pts = p["pts"].as_array().unwrap().iter().map(|q| (q[0].as_i64().unwrap(), idx(&q[1]))).collect();
+            (p["kind"].as_str().unwrap().to_owned(), pts)
+        })
+        .collect();
+    let at_ = |hhmm: &str, name: &str| pt(&tt, hhmm, name);
+    assert_eq!(
+        drawn,
+        [
+            ("ride".to_owned(), vec![at_("08:00", "A"), at_("08:30", "X"), at_("08:32", "X"), at_("09:00", "B")]),
+            ("ride".to_owned(), vec![at_("09:10", "B"), at_("10:00", "C")]),
+            ("ride".to_owned(), vec![at_("09:20", "B2"), at_("10:10", "C")]),
+            ("wait".to_owned(), vec![at_("09:00", "B"), at_("09:10", "B")]),
+            ("wait".to_owned(), vec![at_("09:05", "B2"), at_("09:20", "B2")]),
+            ("walk".to_owned(), vec![at_("09:00", "B"), at_("09:05", "B2")]),
+        ]
+    );
+    // Rows where trains are boarded or left and walks go, not where they pass.
+    let rows: Vec<usize> = indexes(&data["stations"]);
+    assert_eq!(
+        rows,
+        ["A", "B", "C", "B2"]
+            .map(|n| station(&tt, n))
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
 }

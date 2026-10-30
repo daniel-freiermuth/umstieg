@@ -1126,3 +1126,30 @@ fn connections_can_start_with_a_walk() {
     let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:30")).unwrap();
     assert_eq!(shown(&tt, &result), ["RE 1 A-D"]);
 }
+
+/// The best: none beaten on departure, arrival, changes and worst buffer, a
+/// buffer above `ENOUGH_BUFFER` counting as just enough.
+#[test]
+fn best_keeps_the_connections_no_other_beats() {
+    let mut b = Builder::new();
+    let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]); // fast, 2 min change
+    let re = b.trip("RE 2", &[("A", "", "07:00"), ("B", "08:50", "")]); // earlier, 12 min change
+    let slow = b.trip("RB 3", &[("A", "", "06:00"), ("B", "06:55", "")]); // 2 h 07 change
+    let early = b.trip("RB 4", &[("A", "", "05:50"), ("B", "06:50", "")]); // 2 h 12 change
+    let on = b.trip("IC 5", &[("B", "", "09:02"), ("C", "10:00", "")]);
+    let direct = b.trip("ICE 6", &[("A", "", "08:30"), ("C", "10:20", "")]);
+    let late = b.trip("ICE 7", &[("A", "", "08:00"), ("C", "10:30", "")]); // beaten by ICE 6
+    let tt = b.build("A", "C");
+    let chain = |steps: Vec<Step>| Chain { steps };
+    let two = |first| {
+        chain(vec![Step::Ride { trip: first, board: 0, alight: 1 }, Step::Ride { trip: on, board: 0, alight: 1 }])
+    };
+    let one = |trip| chain(vec![Step::Ride { trip, board: 0, alight: 1 }]);
+    let all = vec![two(ice), two(re), two(slow), two(early), one(direct), one(late)];
+    let kept: Vec<String> =
+        best(&tt, all).unwrap().iter().map(|c| tt.trips[c.rides().next().unwrap().0].label.clone()).collect();
+    // ICE 6: latest, direct (enough buffer), beats ICE 7. ICE 1 arrives first;
+    // RE 2 leaves earlier for a bigger buffer; RB 3 and RB 4 both have enough
+    // (above 90 minutes), so the later RB 3 beats RB 4.
+    assert_eq!(kept, ["ICE 6", "ICE 1", "RE 2", "RB 3"]);
+}

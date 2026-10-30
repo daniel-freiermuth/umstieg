@@ -19,6 +19,7 @@ use crate::fallback::{Fallback, Fallbacks};
 use crate::page;
 use crate::text;
 use crate::timetable::{Timetable, meters};
+use crate::usable::Usable;
 
 /// How a station's height is computed; all are "remaining", goal = 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -150,6 +151,9 @@ struct Data {
     groups: Vec<GroupOut>,
     /// Drawable stretches, shared by all connections using them.
     pieces: Vec<Piece>,
+    /// The pieces lying on some connection within the limits, listed or not:
+    /// what the plot draws and hovering explores.
+    network: Vec<usize>,
     fallbacks: Vec<FallbackOut>,
     chains: Vec<ChainOut>,
     /// The connections' details in the page itself (a file has no server to
@@ -335,6 +339,8 @@ impl Builder<'_> {
 
 pub struct Plot<'a> {
     pub title: String,
+    /// Everything on some connection within the limits, drawn as the network.
+    pub usable: &'a Usable,
     pub subtitle: String,
     pub groups: &'a [Group],
     pub metric: Metric,
@@ -368,6 +374,55 @@ fn metrics(net: &Network<'_>, requested: Metric) -> Result<(Vec<MetricOut>, usiz
         metrics.push(MetricOut { id, unit: m.unit(), description: m.description(), heights });
     }
     Ok((metrics, shown))
+}
+
+/// The usable rides, waits and walks as pieces (indexes into the builder's).
+fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usize>> {
+    let tt = builder.tt;
+    let mut out = Vec::new();
+    for run in &usable.rides {
+        let t = tt.trip(run.trip)?;
+        let mut pts = Vec::new();
+        for k in run.from..=run.to {
+            let call = tt.call(run.trip, k)?;
+            if k > run.from {
+                pts.extend(call.arrival_time().map(|at| point(call.station, at)));
+            }
+            if k < run.to {
+                pts.extend(call.departure_time().or_else(|| call.arrival_time()).map(|at| point(call.station, at)));
+            }
+        }
+        // Rows for where trains are boarded or left, as for connections.
+        let (b, a) = (tt.call(run.trip, run.from)?, tt.call(run.trip, run.to)?);
+        builder.used.extend([b.station, a.station]);
+        let info = format!(
+            "{}{} · {} {} → {} {}",
+            t.label,
+            t.headsign.as_deref().map(|h| format!(" → {h}")).unwrap_or_default(),
+            text::timed(b.departure.or(b.arrival), builder.zone),
+            tt.station(b.station)?.name,
+            text::timed(a.arrival.or(a.departure), builder.zone),
+            tt.station(a.station)?.name,
+        );
+        out.push(builder.intern(Piece { kind: "ride", info, warn: false, trip: Some(run.trip), pts }));
+    }
+    for w in &usable.waits {
+        let pts = vec![point(w.station, w.from), point(w.station, w.to)];
+        let info = format!("at {}", tt.station(w.station)?.name);
+        builder.used.insert(w.station);
+        out.push(builder.intern(Piece { kind: "wait", info, warn: false, trip: None, pts }));
+    }
+    for w in &usable.walks {
+        let fp = tt.footpath(w.footpath)?;
+        let end = checked::later(w.start, fp.duration, "walk")?;
+        let pts = vec![point(fp.from, w.start), point(fp.to, end)];
+        let info = format!("walk {} to {}", text::duration(fp.duration), tt.station(fp.to)?.name);
+        builder.used.extend([fp.from, fp.to]);
+        out.push(builder.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 /// Index of `fallback` (taken when `transfer` is missed) in `out`, added once
@@ -444,6 +499,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         }
     }
 
+    let network = network_pieces(&mut builder, plot.usable)?;
     let mut stations: Vec<usize> = builder.used.into_iter().collect();
     stations.sort_unstable();
 
@@ -472,6 +528,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             })
             .collect::<Result<_>>()?,
         pieces: builder.pieces,
+        network,
         fallbacks: fallback_out,
         chains,
         details: plot.details_url.is_none().then(|| details.clone()),

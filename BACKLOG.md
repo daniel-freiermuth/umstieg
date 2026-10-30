@@ -44,10 +44,17 @@ the single hub. Both trains are in Transitous.
 
 ## Plot page
 
-- **Per-piece instead of per-connection**: `reach.ts` `network()` builds
-  17.5M ride memberships and 9.6M wait spans for 188k connections (~16 s);
-  Frankfurt Süd → Hamburg with 276k connections didn't finish drawing in
-  10 minutes. Compute once per distinct ride or wait.
+- **The best connections without enumerating them all**: the listing is the
+  enumeration filtered to the connections no other one beats; McRAPTOR (rounds
+  of RAPTOR with departure, arrival, changes and worst buffer as criteria)
+  computes that set directly. The drawn network still needs the detour rule
+  and "no station twice", which depend on the path: two sweeps (latest origin
+  departure forward, earliest arrival backward, per stretch and round) mark
+  3× the stretches on Göteborg → Karlshamn without them (tried 2026-10-30).
+  As pruning bounds for the enumeration they would speed it up exactly.
+- **Picks as server queries**: picking a line lists the listed connections
+  through it; a query for the best connections through the picks would list
+  those not among them too.
 - **Canvas instead of SVG**, with own hit-testing (`distanceToLine` exists);
   WebGL beyond that. Calculation in a Web Worker; less detail when zoomed out.
 - **Headless-browser tests** for the DOM code (form, pointer handling, plot

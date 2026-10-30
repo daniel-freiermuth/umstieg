@@ -51,6 +51,7 @@ fn form_fields_are_the_search_options_minus_text_only_ones() {
             "extra_hours",
             "min_transfer",
             "missed_by",
+            "all",
             "via",
             "hubs",
             "keep_detours",

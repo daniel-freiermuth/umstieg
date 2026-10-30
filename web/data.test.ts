@@ -170,7 +170,7 @@ describe("applyHeights", () => {
   });
 });
 
-test("extent: the connections' times padded by 10 minutes, heights from 0, fallbacks ignored", () => {
+test("extent: the network's times padded by 10 minutes, heights from 0, fallbacks ignored", () => {
   const plot = load(fresh());
   applyHeights(plot, 0);
   // The connection runs 09:29–10:15; its fallbacks until 10:35.
@@ -180,13 +180,14 @@ test("extent: the connections' times padded by 10 minutes, heights from 0, fallb
 test("reach on the sample: on the ICE, the rest of the connection lies ahead", () => {
   const plot = load(fresh());
   applyHeights(plot, 0);
-  const net = network(plot.pieces, plot.chains, () => true);
+  const net = network(plot.pieces, plot.network, plot.chains, () => true);
   const ice = net.rides[0];
   if (!ice) throw new Error("no ride");
   const [a] = ice.pts;
   const reached = net.reach({ at: [], back: [[a[2], a[0]]], ride: { trip: ice.trip, from: a[0], until: a[0] } });
-  // Every piece after the ICE, whole; the fallbacks are no connection of their own.
+  // The ICE and every piece after it, whole; the fallbacks aren't in the network.
   expect(reached.map(([pi, from, to]) => [pi, (from / MIN) % 1000, (to / MIN) % 1000]).sort()).toEqual([
+    [0, 949, 986],
     [1, 986, 990],
     [2, 990, 992],
     [3, 992, 993],

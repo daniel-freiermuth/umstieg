@@ -1,17 +1,22 @@
 # <img src="web/logo.svg" alt="" width="40" align="center"> umstieg
 
-Lists every public transport connection within limits — including the ones
-journey planners hide — grouped by first and last train.
+Finds every public transport connection within limits — including the ones
+journey planners hide —, lists the best of them grouped by first and last
+train, and draws all of them.
 
 Planners return only the Pareto set (departure, arrival, changes) and drop
 everything else, e.g. a trip that waits longer at a change for the same final
 train. Open timetables can also be wrong: DELFI, the source behind Transitous
 and gtfs.de, routes ICE 378 via Frankfurt Hbf, while DB runs it via Frankfurt
-Süd. `umstieg` builds its own small timetable and enumerates.
+Süd. `umstieg` builds its own small timetable and enumerates. It lists the
+connections no other one beats on departure, arrival, changes *and* worst
+buffer at a change (up to 90 minutes: more counts as enough) — so leaving
+earlier for the same train with 40 minutes to change instead of 4 stays — and
+`--all` lists every one.
 
 ```
 $ umstieg "Mannheim Hbf" "København H" --at "2026-10-24 06:30"
-fastest 9h39 · limits: ≤ 12h39 travel time, ≤ 15 changes · 1090 connections in 8 groups
+fastest 9h39 · limits: ≤ 12h39 travel time, ≤ 15 changes · 1090 connections, the … best in … groups
 
 ■ ICE 378 … RJ 384  (49)
   06:39 CEST → 17:42 CEST  11h03  2×  min 42m   06:39 CEST (+1) ICE 378 → 07:15 CEST (+2) Frankfurt (Main) Südbahnhof ‖49m‖ 08:04 CEST (+12) ICE 2558 + ICE 76 → 11:51 CEST Hamburg Hbf ‖42m‖ 12:33 CEST (+5) RJ 384 → 17:42 CEST (+4) København H
@@ -44,28 +49,31 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
 
 `--html out.html` writes a self-contained interactive time–distance diagram
 (a Marey chart generalised to a network): x is time, y a fixed height per
-station with the goal at the bottom. Every stretch is drawn once, however many
-connections use it: riding in one colour per train (follow a train across all
-connections), waiting as a thin horizontal line (merged per continuous stay;
-red below `--min-transfer`), walking dotted. Later departures of the same route
+station with the goal at the bottom. Drawn is everything on some connection
+within the limits, listed or not, each stretch once: riding in one colour per
+train (follow a train across all connections), waiting as a thin horizontal
+line (merged per station; a listed connection's changes red below
+`--min-transfer`), walking dotted. The page carries this network once and
+only the listed connections in full, so it stays small however many
+connections there are (Frankfurt Süd → Hamburg, an hour: 396 000, 0.2 MB). Later departures of the same route
 run parallel, faster trains are steeper and overtake slower ones.
 
 Hovering only previews: it highlights what is reachable through the point under
-the mouse and lists the connections there by group. On a flat line at a station
+the mouse and names the listed connections there by group. On a flat line at a station
 (waiting, or in a train standing there; one target per continuous stay, nothing
 stacks) that is every connection arriving by then, up to the station, and every
 one leaving from then on, from the station, later departures included. On a
-ride it is every connection on that train between those two stops, plus what
-could lead onto the train (arriving at an earlier stop by its departure there)
-and what it leads to (leaving a later stop from its arrival there on).
+ride it is the train itself, what could lead onto it (arriving at an earlier
+stop by its departure there) and what it leads to (leaving a later stop from
+its arrival there on).
 Reachability is transitive over everything plotted, so changes no listed
 connection makes count too (ICE 774 to Kassel, then ICE 772). Station names on
 the axis work the same way: hovering shows every connection touching the
 station and what is reachable through it at any time.
 
 Clicking a line or station name picks it: picks are shown at the top of the side
-panel, and clicking a pick (or its line again) removes it. The connections
-passing every pick are listed below (e.g. 63 on ICE 378 Mannheim → Frankfurt
+panel, and clicking a pick (or its line again) removes it. The listed connections
+passing every pick are shown below (e.g. 63 on ICE 378 Mannheim → Frankfurt
 Süd; narrowed further by also picking Ludwigshafen Mitte); if one is left it is
 selected. Hovering a listed connection previews it, clicking selects it. The
 highlight is what is reachable through every pick; it and the other listed
@@ -201,6 +209,12 @@ command line logs nothing unless `RUST_LOG` is set.
    kept (RNV 4 → S1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte).
    If the effort cap (`--max-nodes`) is hit, the output says up to how many
    changes the list is complete.
+
+   The listing keeps the connections no other one beats: leaving no earlier,
+   arriving no later, changing no more often and with no smaller worst buffer
+   (counted up to 90 minutes; a direct connection's as enough, a missed
+   change's as negative). `--all` lists them all. The plot draws what all of
+   them use.
 
 4. **Stops for the display**: a train only DB boards know (no Transitous
    answer rode it) has times only where boards were fetched, and looks like a

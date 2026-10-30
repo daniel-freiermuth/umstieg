@@ -28,7 +28,7 @@ import {
   zoom,
 } from "./geometry";
 import { type Candidates, type Picked, narrow, pinAfter, step, toggle } from "./picks";
-import { type Reach, type Ride, type Wait, network, runsOf, stayAt } from "./reach";
+import { type Reach, type Ride, network, runsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
 
 // What the mouse is over: a line, a station, a fallback.
@@ -55,9 +55,8 @@ interface FbTarget {
 }
 interface Model {
   edges: Edge[];
-  waits: Wait[];
+  waits: number[];
   walks: number[];
-  warns: number[];
   targets: HitTarget[];
   stationTarget: (s: number) => Target;
 }
@@ -139,8 +138,9 @@ const timeFmt = new Intl.DateTimeFormat(undefined, {
 // One colour per train, so a train can be followed across all connections.
 const trainColor = (t: number): string => `hsl(${String((t * 137.508) % 360)}, 70%, 45%)`;
 const HINT =
-  "Hover a line or station name to see what is reachable through it. Click it to pick it: the connections " +
-  "passing it are listed (one alone is selected). Click more to narrow down, a pick again to remove it.";
+  "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " +
+  "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " +
+  "it are shown (one alone is selected). Click more to narrow down, a pick again to remove it.";
 
 // Interaction state. Selection only changes on click; hovering only previews.
 const hidden = new Set<number>(); // hidden groups
@@ -228,12 +228,12 @@ metricSelect.addEventListener("change", () => {
 });
 applyMetric(D.metric);
 
-// The smallest shared units (reach.ts), each drawn once and used as hover
-// target; stays are resolved by the time under the mouse.
-// Depends only on which groups are hidden, not on zoom.
+// The network's smallest units (reach.ts), each drawn once and used as hover
+// target; stays are resolved by the time under the mouse. Depends only on
+// the heights and which groups are hidden, not on zoom.
 function buildModel(): void {
-  const net = network(D.pieces, D.chains, (i) => !hidden.has(item(D.chains, i).group));
-  const { stays, walks, touching, reach: closure } = net;
+  const net = network(D.pieces, D.network, D.chains, (i) => !hidden.has(item(D.chains, i).group));
+  const { stays, walks, touching, chainsAt, reach: closure } = net;
   const edges = net.rides.map((r): Edge => {
     const [a, b] = r.pts;
     const info = `${item(D.trips, r.trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
@@ -278,11 +278,10 @@ function buildModel(): void {
         at: (time) => {
           const { t, here, pts } = stayAt(spans, from, to, time, y, s);
           const trains = [...new Set(here.flatMap((w) => (w.trip === undefined ? [] : [w.trip])))];
-          const waiting = new Set(here.filter((w) => w.trip === undefined).map((w) => w.chain)).size;
-          const parts = [
-            waiting ? `${String(waiting)} waiting` : null,
-            ...trains.map((tr) => `standing: ${item(D.trips, tr)}`),
-          ].filter((x): x is string => x !== null);
+          const waiting = here.some((w) => w.trip === undefined);
+          const parts = [waiting ? "waiting" : null, ...trains.map((tr) => `standing: ${item(D.trips, tr)}`)].filter(
+            (x): x is string => x !== null,
+          );
           // What is reachable only changes when t passes a span end here, so the
           // two counts identify the highlight; it is rebuilt only when they change.
           const key = `${String(s)}:${String(spans.filter((w) => w.from <= t).length)}:${String(spans.filter((w) => w.to >= t).length)}`;
@@ -293,7 +292,7 @@ function buildModel(): void {
             id: `stay:${String(s)}:${String(from)}`,
             info: `at ${item(D.names, s)} · ${timeFmt.format(t)} · ${parts.join(" · ")}`,
             ...(trip === undefined ? {} : { trip }),
-            chains: [...new Set(here.map((w) => w.chain))],
+            chains: chainsAt(s, t),
             reach: r,
             pts,
           };
@@ -333,7 +332,6 @@ function buildModel(): void {
     edges,
     waits: net.waits,
     walks: [...walks.keys()],
-    warns: net.warns,
     targets,
     stationTarget,
   };
@@ -438,23 +436,7 @@ function render(): void {
     p.pts.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const base = el("g", { class: "base", "clip-path": "url(#area)" }, svg);
   for (const e of md.edges) el("polyline", { points: pts(e), class: "ride", stroke: trainColor(e.trip) }, base);
-  for (const w of md.waits) {
-    for (const [from, to] of w.runs)
-      el(
-        "polyline",
-        {
-          points: pts({
-            pts: [
-              [from, w.y],
-              [to, w.y],
-            ],
-          }),
-          class: "wait",
-        },
-        base,
-      );
-  }
-  for (const pi of md.warns) el("polyline", { points: pts(item(D.pieces, pi)), class: "wait warn" }, base);
+  for (const pi of md.waits) el("polyline", { points: pts(item(D.pieces, pi)), class: "wait" }, base);
   for (const pi of md.walks) el("polyline", { points: pts(item(D.pieces, pi)), class: "walk" }, base);
   const overlay = el("g", { class: "overlay", "clip-path": "url(#area)" }, svg);
 
@@ -817,7 +799,9 @@ function refresh(): void {
         .sort((a, b) => b[1] - a[1])
         .map(([g, n]) => `• ${esc(item(D.groups, g).label)} (${String(n)})`)
         .join("<br>");
-      who = `<br><span style="color:var(--muted)">${String(chains.length)} connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}`;
+      who = chains.length
+        ? `<br><span style="color:var(--muted)">${String(chains.length)} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}`
+        : `<br><span style="color:var(--muted)">none of the listed connections · on others within the limits</span>`;
     }
     tip.innerHTML = `<b>${swatch}${esc(info)}</b>${who}`;
     tip.style.display = "block";
@@ -883,7 +867,7 @@ function renderPanel(): void {
     panelTitle.textContent =
       picks.length > 1
         ? `${String(candidates.chains.length)} connections pass all ${String(picks.length)}`
-        : `${String(candidates.chains.length)} connections use it`;
+        : `${String(candidates.chains.length)} listed connections use it`;
     details.replaceChildren();
     // The first ones: the rest takes picks to narrow down, not scrolling.
     const shown = candidates.chains.slice(0, MAX_LISTED);

@@ -16,6 +16,8 @@ export interface Data {
   trips: string[]; // "ICE 378 → Berlin Hbf" by trip id
   groups: { label: string; count: number }[];
   pieces: PieceData[];
+  /** The pieces on some connection within the limits: what is drawn. */
+  network: number[];
   fallbacks: { at: string; line: string; pieces: number[] }[];
   chains: { group: number; header: string; pieces: number[] }[];
   /** The connections' details, if in the page; otherwise fetched by connection. */
@@ -95,6 +97,7 @@ export const decodeData: Decoder<Data> = (v, path) => {
       path,
     ),
     pieces: field(o, "pieces", array(decodePiece), path),
+    network: field(o, "network", array(number), path),
     fallbacks: field(
       o,
       "fallbacks",
@@ -220,18 +223,17 @@ export function applyHeights(plot: Plot, metric: number): Row[] {
 }
 
 /**
- * Full extent of the connections (fallbacks reaching beyond are clipped):
- * their times padded by 10 minutes, heights from 0 (the goal) to the highest.
+ * Full extent of the network (fallbacks reaching beyond are clipped): its
+ * times padded by 10 minutes, heights from 0 (the goal) to the highest.
  */
 export function extent(plot: Plot): Domain {
   const full: Domain = { t0: Infinity, t1: -Infinity, y0: 0, y1: 0 };
-  for (const c of plot.chains)
-    for (const i of c.pieces)
-      for (const [t, v] of item(plot.pieces, i).pts) {
-        full.t0 = Math.min(full.t0, t);
-        full.t1 = Math.max(full.t1, t);
-        full.y1 = Math.max(full.y1, v);
-      }
+  for (const i of plot.network)
+    for (const [t, v] of item(plot.pieces, i).pts) {
+      full.t0 = Math.min(full.t0, t);
+      full.t1 = Math.max(full.t1, t);
+      full.y1 = Math.max(full.y1, v);
+    }
   full.t0 -= 10 * 60e3;
   full.t1 += 10 * 60e3;
   return full;

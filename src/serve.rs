@@ -32,7 +32,7 @@ const KEEP_JOBS: usize = 20;
 const NOT_IN_FORM: [&str; 9] =
     ["html", "detail", "per_group", "metric", "help", "version", "from_id", "to_id", "via_id"];
 /// Options shown folded under "Advanced".
-const ADVANCED: [&str; 5] = ["hubs", "max_nodes", "no_db", "no_trafikverket", "all_stops"];
+const ADVANCED: [&str; 6] = ["all", "hubs", "max_nodes", "no_db", "no_trafikverket", "all_stops"];
 
 /// The search options as a command line, for validation and defaults.
 #[derive(Parser)]

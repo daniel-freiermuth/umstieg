@@ -827,6 +827,36 @@ impl Search<'_> {
     }
 }
 
+/// A worst buffer this long is enough: longer ones don't count as better, so
+/// waiting 3 h at Lund for a later train doesn't beat taking the next one.
+pub const ENOUGH_BUFFER: TimeDelta = TimeDelta::minutes(90);
+
+/// The connections no other one beats: leaving no earlier, arriving no
+/// later, changing no more often and with no smaller worst buffer up to
+/// `ENOUGH_BUFFER` (a direct connection's counts as enough, a missed change's
+/// as negative), better in one of them. Equal ones are all kept (the same
+/// trains changing at Ludwigshafen Hbf or Mitte). Order: latest departure first.
+pub fn best(tt: &Timetable, chains: Vec<Chain>) -> Result<Vec<Chain>> {
+    type Key = (Reverse<DateTime<Utc>>, DateTime<Utc>, usize, Reverse<TimeDelta>);
+    let mut keyed = chains
+        .into_iter()
+        .map(|c| {
+            let slack = c.min_slack(tt)?.unwrap_or(ENOUGH_BUFFER).min(ENOUGH_BUFFER);
+            Ok(((Reverse(c.departure(tt)?), c.arrival(tt)?, c.changes(), Reverse(slack)), c))
+        })
+        .collect::<Result<Vec<(Key, Chain)>>>()?;
+    // A connection beating another sorts before it.
+    keyed.sort_by_key(|k| k.0);
+    let beats = |a: &Key, b: &Key| a != b && a.0 <= b.0 && a.1 <= b.1 && a.2 <= b.2 && a.3 <= b.3;
+    let mut kept: Vec<(Key, Chain)> = Vec::new();
+    for (key, chain) in keyed {
+        if !kept.iter().any(|(k, _)| beats(k, &key)) {
+            kept.push((key, chain));
+        }
+    }
+    Ok(kept.into_iter().map(|(_, c)| c).collect())
+}
+
 /// Connections sharing first and last train.
 pub struct Group {
     pub first: usize,

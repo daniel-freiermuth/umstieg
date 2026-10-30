@@ -1,5 +1,6 @@
-// What is reachable through a point of the plot, without the DOM: the shared
-// stretches of the visible connections (rides, stays, walks) and the
+// What is reachable through a point of the plot, without the DOM: the
+// network's stretches (rides, stays, walks: everything on some connection
+// within the limits), the listed connections passing them, and the
 // transitive closure over them.
 
 import type { Kind } from "./data";
@@ -9,17 +10,17 @@ import { entry, item } from "./util";
 /** A reachable stretch of a piece: [piece, from, to]. */
 export type Segment = [piece: number, from: number, to: number];
 
-/**
- * A stretch of time at a station within a connection: piece position j, for
- * standing trains point k.
- */
+/** A stretch of time at a station: waiting, or in a train standing there (`trip`). */
 export interface Span {
   from: number;
   to: number;
-  chain: number;
-  j: number;
   trip?: number;
-  k?: number;
+}
+/** A listed connection at a station for a stretch of time. */
+export interface Presence {
+  from: number;
+  to: number;
+  chain: number;
 }
 
 /** A reach highlight: `key` identifies it, `with` are the connections it is about. */
@@ -83,85 +84,10 @@ export function stayAt<S extends { from: number; to: number }>(
   };
 }
 
-/** A station-time to reach through: spans at a station, the time, and which halves. */
-export interface Through {
-  spans: readonly Span[];
-  t: number;
-  back: boolean;
-  fwd: boolean;
-}
-
-// Position in a connection: (piece position, point), and the cut time.
-type Cut = [j: number, k: number, t: number];
-
-/**
- * Reachability through station-times: for each item, every connection there
- * arriving by t, up to the station (back), and every one leaving from t on,
- * from the station (fwd). Later departures count too: waiting longer is
- * always possible.
- * Per connection only the earliest cut forward and the latest backward
- * matter. A wait at piece j belongs to both halves; a train standing there is
- * cut at the stop (points k-1, k).
- * The stay at the cut is clipped to the reachable time: from t on forward, up
- * to t backward, so waits don't light up before anything reachable arrives.
- * Returns per piece the reachable stretches as time intervals [piece, from,
- * to] (pieces run forward in time), merged, so highlights of several picks
- * can be intersected exactly.
- */
-export function reachSegments(pieces: readonly Line[], chains: readonly Route[], items: readonly Through[]): Segment[] {
-  const from = new Map<number, Cut>(),
-    upTo = new Map<number, Cut>();
-  // Cuts in order of position, then time (the same stay reached at two times).
-  const before = (a: Cut, b: Cut): boolean => {
-    // Stryker disable next-line EqualityOperator: <= only differs for equal cuts, and replacing one by an equal one changes nothing.
-    const sooner = a[2] < b[2];
-    return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && sooner)));
-  };
-  const last = (pi: number): number => item(pieces, pi).pts.length - 1;
-  for (const { spans, t, back, fwd } of items)
-    for (const w of spans) {
-      if (fwd && w.to >= t) {
-        const p: Cut = w.k === undefined ? [w.j, 0, t] : [w.j, w.k - 1, t],
-          q = from.get(w.chain);
-        if (!q || before(p, q)) from.set(w.chain, p);
-      }
-      if (back && w.from <= t) {
-        const p: Cut = w.k === undefined ? [w.j, last(item(item(chains, w.chain).pieces, w.j)), t] : [w.j, w.k, t],
-          q = upTo.get(w.chain);
-        if (!q || before(q, p)) upTo.set(w.chain, p);
-      }
-    }
-  const raw = new Map<number, Interval[]>();
-  // Points k0..k1 of a piece; the end at a cut (always flat: a wait, or a
-  // train standing) is clipped to the cut time.
-  const add = (pi: number, k0: number, k1: number, c0: number | null = null, c1: number | null = null): void => {
-    const s = item(pieces, pi).pts;
-    if (!s.length) return;
-    let a = item(s, k0)[0],
-      b = item(s, k1)[0];
-    if (c0 !== null && k0 < k1) a = Math.min(Math.max(a, c0), item(s, k0 + 1)[0]);
-    if (c1 !== null && k1 > k0) b = Math.max(Math.min(b, c1), item(s, k1 - 1)[0]);
-    entry(raw, pi, () => []).push([a, b]);
-  };
-  for (const [chain, [j, k0, t]] of from) {
-    const ps = item(chains, chain).pieces;
-    add(item(ps, j), k0, last(item(ps, j)), t, null);
-    for (let q = j + 1; q < ps.length; q++) add(item(ps, q), 0, last(item(ps, q)));
-  }
-  for (const [chain, [j, k1, t]] of upTo) {
-    const ps = item(chains, chain).pieces;
-    for (let q = 0; q < j; q++) add(item(ps, q), 0, last(item(ps, q)));
-    add(item(ps, j), 0, k1, null, t);
-  }
-  const out: Segment[] = [];
-  for (const [pi, list] of raw) for (const [a, b] of mergeIntervals(list)) out.push([pi, a, b]);
-  return out;
-}
-
 /**
  * Stretches reachable through all of several highlights: per piece, the
- * intersection of their time intervals (each list merged, as reachSegments
- * returns them). None for no highlights.
+ * intersection of their time intervals (each list merged, as reach returns
+ * them). None for no highlights.
  */
 export function intersectReach(segmentLists: readonly (readonly Segment[])[]): Segment[] {
   const maps = segmentLists.map((list) => {
@@ -207,30 +133,27 @@ export interface Source {
   ride?: { trip: number; from: number; until: number };
 }
 
-/** One train's stop-to-stop stretch (or standing at a stop), shared by every connection riding it. */
+/** One train's stop-to-stop stretch (or standing at a stop) of the network, and the listed connections riding it. */
 export interface Ride {
   trip: number;
   pts: [Pt, Pt];
+  /** The network piece it is part of. */
+  piece: number;
   chains: Set<number>;
 }
-/** Waits at a station: their spans and the continuous runs they make. */
-export interface Wait {
-  y: number;
-  spans: Span[];
-  runs: Interval[];
-}
-/** The smallest shared units of the visible connections. */
+/** The plot's network: everything on some connection, and the listed connections in it. */
 export interface Network {
-  /** Per train and stop-to-stop stretch, in order of first appearance. */
+  /** Per train and stop-to-stop stretch. */
   rides: Ride[];
   /** Per station: everything flat there (waits, standing trains). */
   stays: Map<number, { y: number; spans: Span[] }>;
-  waits: Wait[];
-  /** Walk pieces with the connections walking them. */
+  /** Wait pieces of the network. */
+  waits: number[];
+  /** Walk pieces of the network, with the listed connections walking them. */
   walks: Map<number, Set<number>>;
-  /** Wait pieces below the minimum transfer time (or missed). */
-  warns: number[];
-  /** Per station: every connection with a point there. */
+  /** The listed connections at a station at a time (waiting or in a standing train). */
+  chainsAt: (station: number, t: number) => number[];
+  /** Per station: every listed connection with a point there. */
   touching: Map<number, Set<number>>;
   /** Everything reachable from a source, transitively over all rides and walks. */
   reach: (src: Source) => Segment[];
@@ -240,84 +163,88 @@ export interface Network {
 const atMost = (v: number | undefined, t: number): boolean => v !== undefined && v <= t;
 const atLeast = (v: number | undefined, t: number): boolean => v !== undefined && v >= t;
 
+const stretchKey = (trip: number, a: Pt, b: Pt): string =>
+  `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
+
 /**
- * The smallest shared units of the visible connections, each drawn once and
- * used as hover target, so every connection passing through counts, wherever
- * it boards or leaves:
- *   rides: one per train and stop-to-stop stretch,
- *   stays: per station and continuous stay, waiting or in a standing train,
+ * The network's smallest units, each drawn once and used as hover target:
+ *   rides: one per train and stop-to-stop stretch of the network's rides,
+ *   stays: per station, its waits and standing trains,
  *   walks: per walk.
+ * `base` are the network's pieces (everything on some connection within the
+ * limits); `chains` the listed connections, visible or not, which only say
+ * who passes where.
  */
 export function network(
   pieces: readonly Line[],
+  base: readonly number[],
   chains: readonly Route[],
   visible: (chain: number) => boolean,
 ): Network {
   const rides = new Map<string, Ride>(),
-    waits = new Map<number, Wait>(),
+    waits: number[] = [],
     walks = new Map<number, Set<number>>(),
-    warns = new Set<number>();
-  // Everything flat at a station (waits, trains standing there) is one target
-  // per continuous stay, so nothing stacks. Spans remember where in their
-  // connection they are (piece position j, for standing trains point k) for
-  // the reachability highlight.
-  const stays = new Map<number, { y: number; spans: Span[] }>();
+    stays = new Map<number, { y: number; spans: Span[] }>();
   const stay = (s: number, y: number, span: Span): void => {
     entry(stays, s, () => ({ y, spans: [] })).spans.push(span);
   };
-  // Pieces are shared by many connections (a night search lists 188 000 over
-  // a thousand pieces): a ride's stop-to-stop stretches are worked out once.
-  const stretchesOf = new Map<number, { ride: Ride; k: number }[]>();
-  const stretches = (pi: number, trip: number, pts: readonly Pt[]): { ride: Ride; k: number }[] =>
-    entry(stretchesOf, pi, () => {
-      const found: { ride: Ride; k: number }[] = [];
-      for (let k = 1; k < pts.length; k++) {
-        const a = item(pts, k - 1),
-          b = item(pts, k);
-        const key = `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
-        found.push({ ride: entry(rides, key, () => ({ trip, pts: [a, b], chains: new Set() })), k });
+  for (const pi of base) {
+    const p = item(pieces, pi);
+    // Rides carry their train, waits and walks none.
+    if (p.trip !== null) {
+      for (let k = 1; k < p.pts.length; k++) {
+        const a = item(p.pts, k - 1),
+          b = item(p.pts, k);
+        rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set() });
+        if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
       }
-      return found;
-    });
+    } else if (p.kind === "wait") {
+      const first = p.pts[0],
+        last = p.pts[p.pts.length - 1];
+      if (!first || !last) continue;
+      waits.push(pi);
+      stay(first[2], first[1], { from: first[0], to: last[0] });
+    } else walks.set(pi, new Set());
+  }
+
+  // Who of the listed connections passes where.
+  const present = new Map<number, Presence[]>(),
+    touching = new Map<number, Set<number>>();
   chains.forEach((c, i) => {
     if (!visible(i)) return;
-    c.pieces.forEach((pi, j) => {
+    for (const pi of c.pieces) {
       const p = item(pieces, pi);
-      if (p.kind === "ride") {
-        if (p.trip === null) return;
-        for (const { ride, k } of stretches(pi, p.trip, p.pts)) {
-          ride.chains.add(i);
-          const [a, b] = ride.pts;
-          if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], chain: i, trip: ride.trip, j, k });
+      for (const [, , s] of p.pts) entry(touching, s, () => new Set()).add(i);
+      if (p.trip !== null) {
+        for (let k = 1; k < p.pts.length; k++) {
+          const a = item(p.pts, k - 1),
+            b = item(p.pts, k);
+          rides.get(stretchKey(p.trip, a, b))?.chains.add(i);
+          if (a[2] === b[2]) entry(present, a[2], () => []).push({ from: a[0], to: b[0], chain: i });
         }
       } else if (p.kind === "wait") {
         const first = p.pts[0],
           last = p.pts[p.pts.length - 1];
-        if (!first || !last) return;
-        const s = first[2],
-          span = { from: first[0], to: last[0], chain: i, j };
-        entry(waits, s, () => ({ y: first[1], spans: [], runs: [] })).spans.push(span);
-        stay(s, first[1], span);
-        if (p.warn) warns.add(pi);
-      } else entry(walks, pi, () => new Set()).add(i);
-    });
+        if (first && last) entry(present, first[2], () => []).push({ from: first[0], to: last[0], chain: i });
+      } else walks.get(pi)?.add(i);
+    }
   });
-  // Overlapping waits at a station merge into one line per continuous stay.
-  for (const w of waits.values()) w.runs = runsOf(w.spans);
+  const chainsAt = (station: number, t: number): number[] => [
+    ...new Set((present.get(station) ?? []).filter((w) => w.from <= t && t <= w.to).map((w) => w.chain)),
+  ];
 
-  // Reachability is transitive over everything plotted: stop-to-stop rides
-  // (also standing at a stop) and walks, so changing between two trains that
-  // no listed connection changes between counts too (alight at Kassel, take
-  // the next train through there).
-  const conns = [...rides.values()].map((e) => ({
-    trip: e.trip,
-    from: e.pts[0][2],
-    dep: e.pts[0][0],
-    to: e.pts[1][2],
-    arr: e.pts[1][0],
-  }));
-  const byDep = [...conns].sort((a, b) => a.dep - b.dep),
-    byArr = [...conns].sort((a, b) => b.arr - a.arr);
+  // Reachability is transitive over the whole network: stop-to-stop rides
+  // (also standing at a stop) and walks, so changing between two trains no
+  // listed connection changes between counts too.
+  const all = [...rides.values()];
+  // Stretches grouped by departure (latest arrival first, backward).
+  const groups = (key: (r: Ride) => number, later: boolean): Ride[][] => {
+    const by = new Map<number, Ride[]>();
+    for (const r of all) entry(by, key(r), () => []).push(r);
+    return [...by].sort((x, y) => (later ? y[0] - x[0] : x[0] - y[0])).map(([, rs]) => rs);
+  };
+  const byDep = groups((r) => r.pts[0][0], false),
+    byArr = groups((r) => r.pts[1][0], true);
   // Walks from (to) a station: where to (from), how long.
   const foot = new Map<number, [number, number][]>(),
     footBack = new Map<number, [number, number][]>();
@@ -329,7 +256,8 @@ export function network(
     entry(foot, a[2], () => []).push([b[2], b[0] - a[0]]);
     entry(footBack, b[2], () => []).push([a[2], b[0] - a[0]]);
   }
-  // Earliest arrival forward, latest departure backward.
+  // Earliest arrival forward, latest departure backward; what they reach,
+  // as stretches of the network's pieces.
   const reach = (src: Source): Segment[] => {
     const ea = new Map<number, number>(),
       ld = new Map<number, number>();
@@ -349,41 +277,76 @@ export function network(
     }
     for (const [s, t] of src.back ?? []) late(s, t);
     for (const [s, t] of src.fwd ?? []) early(s, t);
-    // On a train (since, until) every later (earlier) stretch of it counts,
-    // even across stretches no visible connection rides.
+    const raw = new Map<number, Interval[]>();
+    const add = (pi: number, a: number, b: number): void => {
+      entry(raw, pi, () => []).push([a, b]);
+    };
+    // On a train (since, until) every later (earlier) stretch of it counts.
+    // Stretches taking no time (a train standing, squeezed live times) can
+    // lead onto others at the same time in any order: such groups repeat
+    // until nothing more is reached. On a train, its later (earlier)
+    // stretches count from a boarding (alighting) on, also across stretches
+    // no connection rides. In time order the last one set is the earliest
+    // (latest) that matters: the hovered train's own stretches before (after)
+    // its boarding are reached the other way.
     const boarded = new Map<number, number>(src.ride ? [[src.ride.trip, src.ride.from]] : []);
-    for (const c of byDep) {
-      const since = boarded.get(c.trip);
-      if ((since !== undefined && c.dep >= since) || atMost(ea.get(c.from), c.dep)) {
-        boarded.set(c.trip, c.dep);
-        early(c.to, c.arr);
+    const ahead = new Set<Ride>(),
+      behind = new Set<Ride>();
+    for (const group of byDep) {
+      for (let again = true; again;) {
+        again = false;
+        for (const r of group) {
+          const [a, b] = r.pts;
+          const since = boarded.get(r.trip);
+          if (ahead.has(r) || !((since !== undefined && a[0] >= since) || atMost(ea.get(a[2]), a[0]))) continue;
+          boarded.set(r.trip, a[0]);
+          early(b[2], b[0]);
+          ahead.add(r);
+          // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
+          again ||= b[0] === a[0];
+        }
       }
     }
     const alighted = new Map<number, number>(src.ride ? [[src.ride.trip, src.ride.until]] : []);
-    for (const c of byArr) {
-      const until = alighted.get(c.trip);
-      if ((until !== undefined && c.arr <= until) || atLeast(ld.get(c.to), c.arr)) {
-        alighted.set(c.trip, c.arr);
-        late(c.from, c.dep);
+    for (const group of byArr) {
+      for (let again = true; again;) {
+        again = false;
+        for (const r of group) {
+          const [a, b] = r.pts;
+          const until = alighted.get(r.trip);
+          if (behind.has(r) || !((until !== undefined && b[0] <= until) || atLeast(ld.get(b[2]), b[0]))) continue;
+          alighted.set(r.trip, b[0]);
+          late(a[2], a[0]);
+          behind.add(r);
+          // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
+          again ||= b[0] === a[0];
+        }
       }
     }
-    const items: Through[] = [];
-    for (const [x, t] of ea) {
-      const st = stays.get(x);
-      if (st) items.push({ spans: st.spans, t, back: false, fwd: true });
+    for (const r of new Set([...ahead, ...behind])) add(r.piece, r.pts[0][0], r.pts[1][0]);
+    // Waits from when one is there on (up to when one has to leave).
+    for (const pi of waits) {
+      const p = item(pieces, pi);
+      const first = p.pts[0],
+        last = p.pts[p.pts.length - 1];
+      if (!first || !last) continue;
+      const [from, , s] = first,
+        to = last[0];
+      const there = ea.get(s),
+        by = ld.get(s);
+      if (there !== undefined && to >= there) add(pi, Math.max(from, there), to);
+      if (by !== undefined && from <= by) add(pi, from, Math.min(to, by));
     }
-    for (const [x, t] of ld) {
-      const st = stays.get(x);
-      if (st) items.push({ spans: st.spans, t, back: true, fwd: false });
+    for (const pi of walks.keys()) {
+      const p = item(pieces, pi);
+      const a = p.pts[0],
+        b = p.pts[p.pts.length - 1];
+      if (!a || !b) continue;
+      if (atMost(ea.get(a[2]), a[0]) || atLeast(ld.get(b[2]), b[0])) add(pi, a[0], b[0]);
     }
-    return reachSegments(pieces, chains, items);
+    const out: Segment[] = [];
+    for (const [pi, list] of raw) for (const [a, b] of mergeIntervals(list)) out.push([pi, a, b]);
+    return out;
   };
-
-  // A station on the axis: every connection touching it.
-  const touching = new Map<number, Set<number>>();
-  chains.forEach((c, i) => {
-    if (!visible(i)) return;
-    for (const pi of c.pieces) for (const [, , s] of item(pieces, pi).pts) entry(touching, s, () => new Set()).add(i);
-  });
-  return { rides: [...rides.values()], stays, waits: [...waits.values()], walks, warns: [...warns], touching, reach };
+  return { rides: all, stays, waits, walks, chainsAt, touching, reach };
 }
