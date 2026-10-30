@@ -10,6 +10,30 @@ import { entry, item } from "./util";
 /** A reachable stretch of a piece: [piece, from, to]. */
 export type Segment = [piece: number, from: number, to: number];
 
+/** Where a hover target lies: a stretch of a piece, or a moment at a station. */
+export type Spot = { piece: number; from: number; to: number } | { station: number; t: number };
+
+/**
+ * Whether a highlight's `segments` cover `spot`: a stretch shares time with a
+ * segment of its piece (an instant one lies in it); a moment at a station
+ * lies in a segment of a piece staying there then (a wait, a standing train).
+ */
+export function covers(segments: readonly Segment[], lines: readonly Line[], spot: Spot): boolean {
+  if ("piece" in spot) {
+    const { piece, from, to } = spot;
+    return segments.some(([pi, a, b]) => pi === piece && (from === to ? a <= from && from <= b : a < to && b > from));
+  }
+  const { station, t } = spot;
+  return segments.some(([pi, a, b]) => {
+    if (t < a || t > b) return false;
+    const pts = item(lines, pi).pts;
+    return pts.some((q, k) => {
+      const p = pts[k - 1];
+      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0];
+    });
+  });
+}
+
 /** A stretch of time at a station: waiting, or in a train standing there (`trip`). */
 export interface Span {
   from: number;

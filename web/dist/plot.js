@@ -296,6 +296,22 @@ function distanceToLine(px, py, p) {
 }
 
 // reach.ts
+function covers(segments, lines, spot) {
+  if ("piece" in spot) {
+    const { piece, from, to } = spot;
+    return segments.some(([pi, a, b]) => pi === piece && (from === to ? a <= from && from <= b : a < to && b > from));
+  }
+  const { station, t } = spot;
+  return segments.some(([pi, a, b]) => {
+    if (t < a || t > b)
+      return false;
+    const pts = item(lines, pi).pts;
+    return pts.some((q, k) => {
+      const p = pts[k - 1];
+      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0];
+    });
+  });
+}
 function runsOf(spans) {
   return mergeIntervals(spans.map((w) => [w.from, w.to]));
 }
@@ -607,7 +623,7 @@ var timeFmt = new Intl.DateTimeFormat(undefined, {
   timeZoneName: "short"
 });
 var trainColor = (t) => `hsl(${String(t * 137.508 % 360)}, 70%, 45%)`;
-var HINT = "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " + "it are shown (one alone is selected). Click more to narrow down, a pick again to remove it.";
+var HINT = "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " + "it are shown (one alone is selected). Click more to narrow down (hovering previews it; grey parts lead past " + "your picks), a pick again to remove it.";
 var hidden = new Set;
 var pinned = null;
 var picks = [];
@@ -703,6 +719,7 @@ function buildModel() {
           trip: e.trip,
           chains: [...e.chains],
           pts: e.pts,
+          spot: { piece: e.piece, from: a[0], to: b[0] },
           reach: {
             key: id,
             with: e.chains,
@@ -736,14 +753,23 @@ function buildModel() {
             ...trip === undefined ? {} : { trip },
             chains: chainsAt(s, t),
             reach: r,
-            pts
+            pts,
+            spot: { station: s, t }
           };
         }
       });
   }
   for (const [pi, chains] of walks) {
     const p = item(D.pieces, pi);
-    const t = { id: `walk:${String(pi)}`, info: p.info, chains: [...chains], pts: p.pts };
+    const [first, last] = [p.pts[0], p.pts[p.pts.length - 1]];
+    const spot = first && last ? { piece: pi, from: first[0], to: last[0] } : undefined;
+    const t = {
+      id: `walk:${String(pi)}`,
+      info: p.info,
+      chains: [...chains],
+      pts: p.pts,
+      ...spot ? { spot } : {}
+    };
     targets.push({ pts: t.pts, at: () => t });
   }
   const stationTargets = new Map;
@@ -855,26 +881,27 @@ function render() {
   const hits = el("g", { "clip-path": "url(#area)" }, svg);
   md.targets.forEach((t, i) => el("polyline", { points: pts(t), class: "hit", "data-t": i }, hits));
   const timeAt = (e) => dom.t0 + (e.clientX - svg.getBoundingClientRect().left - m.l) / (W - m.l - m.r) * (dom.t1 - dom.t0);
-  const nearest = (e, key) => {
+  const byDistance = (e, key) => {
     const r = svg.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
-    let best = null, bestD = Infinity;
+    const found = [];
     for (const h of document.elementsFromPoint(e.clientX, e.clientY)) {
       if (!(h instanceof SVGPolylineElement))
         continue;
       const i = h.dataset[key];
-      if (i === undefined)
-        continue;
-      const d = distanceToLine(px, py, [...h.points]);
-      if (d < bestD) {
-        bestD = d;
-        best = Number(i);
-      }
+      if (i !== undefined)
+        found.push([distanceToLine(px, py, [...h.points]), Number(i)]);
     }
-    return best;
+    return found.sort((a, b) => a[0] - b[0]).map(([, i]) => i);
   };
+  const nearest = (e, key) => byDistance(e, key)[0] ?? null;
   const targetAt = (e) => {
-    const i = nearest(e, "t");
-    return i === null ? null : item(md.targets, i).at(timeAt(e));
+    const time = timeAt(e);
+    for (const i of byDistance(e, "t")) {
+      const t = item(md.targets, i).at(time);
+      if (live(t))
+        return t;
+    }
+    return null;
   };
   hits.addEventListener("mousemove", (e) => {
     if (drag)
@@ -1033,17 +1060,36 @@ function clearPicks() {
   pinned = null;
   preview = null;
 }
+function live(t) {
+  const segments = candidates?.reach?.segments;
+  if (segments === undefined || t.spot === undefined || picks.some((p) => p.id === t.id))
+    return true;
+  return covers(segments, D.pieces, t.spot);
+}
+var hoverPick = null;
+function previewOf(h) {
+  if (h === null || !("id" in h) || typeof h.id !== "string" || picks.length === 0)
+    return null;
+  const target = { id: h.id, info: h.info, pts: h.pts, chains: h.chains, reach: h.reach ?? null };
+  const key = JSON.stringify([target.id, target.reach?.key, picks.map((p) => p.id), [...hidden]]);
+  if (hoverPick?.key !== key)
+    hoverPick = { key, result: narrow(toggle(picks, target), (i) => !hidden.has(item(D.chains, i).group)) };
+  return hoverPick.result;
+}
 function refresh() {
   if (!view)
     return;
   const { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels } = view;
   const strong = [pinned, preview].filter((i) => i !== null);
   const soft = new Set, faded = new Set;
-  const reach = hoverTarget?.reach ?? candidates?.reach ?? null;
+  const pv = previewOf(hoverTarget);
+  const reach = pv ? pv.reach : hoverTarget?.reach ?? candidates?.reach ?? null;
   const reachFaded = !hoverTarget?.reach && strong.length > 0;
-  if (hoverTarget && !hoverTarget.reach)
+  if (pv)
+    pv.chains.forEach((i) => soft.add(i));
+  else if (hoverTarget && !hoverTarget.reach)
     hoverTarget.chains.forEach((i) => soft.add(i));
-  if (hoverTarget?.reach?.with)
+  else if (hoverTarget?.reach?.with)
     hoverTarget.reach.with.forEach((i) => soft.add(i));
   if (softGroup !== null)
     D.chains.forEach((c, i) => {
@@ -1051,7 +1097,10 @@ function refresh() {
         soft.add(i);
     });
   if (candidates)
-    candidates.chains.forEach((i) => (strong.length ? faded : soft).add(i));
+    candidates.chains.forEach((i) => {
+      if (!soft.has(i))
+        (strong.length || pv ? faded : soft).add(i);
+    });
   svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);
   const key = JSON.stringify([
     strong,
@@ -1169,32 +1218,45 @@ function refresh() {
     }
   }
   if (hoverTarget) {
-    const { info, chains, trip } = hoverTarget;
+    const { info, trip } = hoverTarget;
     const swatch = trip === undefined ? "" : `<span style="color:${trainColor(trip)}">■</span> `;
-    let who;
-    const only = chains.length === 1 ? chains[0] : undefined;
-    if (hoverTarget.fallbacks) {
-      const at = [...new Set(hoverTarget.fallbacks.map((f) => f.at))];
-      who = `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>` + hoverTarget.fallbacks.map((f) => `<br><span style="color:var(--muted)">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`).join("");
-    } else if (only !== undefined) {
-      want([only]);
-      const route = routeOf(only);
-      who = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(route)}</span>`;
-    } else {
-      const groups = new Map;
-      for (const i of chains) {
-        const g = item(D.chains, i).group;
-        groups.set(g, (groups.get(g) ?? 0) + 1);
-      }
-      const list = [...groups].sort((a, b) => b[1] - a[1]).map(([g, n]) => `• ${esc(item(D.groups, g).label)} (${String(n)})`).join("<br>");
-      who = chains.length ? `<br><span style="color:var(--muted)">${String(chains.length)} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}` : `<br><span style="color:var(--muted)">none of the listed connections · on others within the limits</span>`;
-    }
+    const who = whoAt(hoverTarget, pv);
     tip.innerHTML = `<b>${swatch}${esc(info)}</b>${who}`;
     tip.style.display = "block";
   } else {
     tip.style.display = "none";
   }
   renderPanel();
+}
+var muted = (html) => `<br><span style="color:var(--muted)">${html}</span>`;
+function whoAt(h, pv) {
+  if (h.fallbacks) {
+    const at = [...new Set(h.fallbacks.map((f) => f.at))];
+    return `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>` + h.fallbacks.map((f) => muted(`• ${esc(f.line)} · arrive ${esc(f.arrive)}`)).join("");
+  }
+  const chains = pv ? pv.chains : h.chains;
+  const groups = new Map;
+  for (const i of chains) {
+    const g = item(D.chains, i).group;
+    groups.set(g, (groups.get(g) ?? 0) + 1);
+  }
+  const k = String(chains.length);
+  let note;
+  const picked = "id" in h && picks.some((p) => p.id === h.id);
+  if (picked)
+    note = pv ? `picked · click to remove it: ${k} connections pass the other picks` : "picked · click to remove it";
+  else if (pv === null)
+    note = chains.length ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them` : "none of the listed connections · on others within the limits";
+  else
+    note = chains.length ? `${k} of the ${String(candidates?.chains.length ?? 0)} connections passing your picks · click to narrow to them` : "none together with your picks";
+  const only = chains.length === 1 ? chains[0] : undefined;
+  if (only !== undefined) {
+    want([only]);
+    const one = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(routeOf(only))}</span>`;
+    return pv === null && !picked ? one : muted(note) + one;
+  }
+  const list = [...groups].sort((a, b) => b[1] - a[1]).map(([g, n]) => `• ${esc(item(D.groups, g).label)} (${String(n)})`).join("<br>");
+  return muted(note) + (list ? `<br>${list}` : "");
 }
 function moveTip(e) {
   const r = plotEl.getBoundingClientRect();

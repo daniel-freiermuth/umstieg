@@ -77,7 +77,12 @@ passing every pick are shown below (e.g. 63 on ICE 378 Mannheim → Frankfurt
 Süd; narrowed further by also picking Ludwigshafen Mitte); if one is left it is
 selected. Hovering a listed connection previews it, clicking selects it. The
 highlight is what is reachable through every pick; it and the other listed
-connections fade to 30 % once one is selected or previewed.
+connections fade to 30 % once one is selected or previewed. Picks stay marked
+with an orange band. With picks, hovering previews the click: the highlight
+through the picks and the hovered line together, the connections that would
+remain ("1 of the 4 connections passing your picks"), the others faded; on a
+pick, what removing it leaves. What the picks' highlight leaves grey can be
+neither hovered nor picked.
 `↑`/`↓` step through the list, `Esc` or clicking the background clears. The selection gets its changes
 labelled and its fallbacks drawn dashed in train colours, starting with a
 dotted wait from the missed departure; hovering a fallback stretch names it and

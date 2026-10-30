@@ -28,7 +28,7 @@ import {
   zoom,
 } from "./geometry";
 import { type Candidates, type Picked, narrow, pinAfter, step, toggle } from "./picks";
-import { type Reach, type Ride, network, runsOf, stayAt } from "./reach";
+import { type Reach, type Ride, type Spot, covers, network, runsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
 
 // What the mouse is over: a line, a station, a fallback.
@@ -42,6 +42,8 @@ interface Hover {
 }
 interface Target extends Hover {
   id: string;
+  /** Where it lies, to tell whether the picks' highlight covers it; none for a station's row. */
+  spot?: Spot;
 }
 interface Edge extends Ride {
   info: string;
@@ -147,7 +149,8 @@ const trainColor = (t: number): string => `hsl(${String((t * 137.508) % 360)}, 7
 const HINT =
   "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " +
   "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " +
-  "it are shown (one alone is selected). Click more to narrow down, a pick again to remove it.";
+  "it are shown (one alone is selected). Click more to narrow down (hovering previews it; grey parts lead past " +
+  "your picks), a pick again to remove it.";
 
 // Interaction state. Selection only changes on click; hovering only previews.
 const hidden = new Set<number>(); // hidden groups
@@ -264,6 +267,7 @@ function buildModel(): void {
           trip: e.trip,
           chains: [...e.chains],
           pts: e.pts,
+          spot: { piece: e.piece, from: a[0], to: b[0] },
           reach: {
             key: id,
             with: e.chains,
@@ -302,13 +306,22 @@ function buildModel(): void {
             chains: chainsAt(s, t),
             reach: r,
             pts,
+            spot: { station: s, t },
           };
         },
       });
   }
   for (const [pi, chains] of walks) {
     const p = item(D.pieces, pi);
-    const t: Target = { id: `walk:${String(pi)}`, info: p.info, chains: [...chains], pts: p.pts };
+    const [first, last] = [p.pts[0], p.pts[p.pts.length - 1]];
+    const spot = first && last ? { piece: pi, from: first[0], to: last[0] } : undefined;
+    const t: Target = {
+      id: `walk:${String(pi)}`,
+      info: p.info,
+      chains: [...chains],
+      pts: p.pts,
+      ...(spot ? { spot } : {}),
+    };
     targets.push({ pts: t.pts, at: () => t });
   }
   // A station on the axis: every connection touching it, and what is
@@ -454,27 +467,29 @@ function render(): void {
   // Hit lines are 9 px wide, so lines of nearby stations (Ludwigshafen Mitte
   // 2 min above Mannheim Hbf) overlap: the line nearest to the mouse wins, not
   // the one drawn last.
-  const nearest = (e: MouseEvent, key: string): number | null => {
+  // The hit lines with `key` under the mouse, nearest first.
+  const byDistance = (e: MouseEvent, key: string): number[] => {
     const r = svg.getBoundingClientRect(),
       px = e.clientX - r.left,
       py = e.clientY - r.top;
-    let best: number | null = null,
-      bestD = Infinity;
+    const found: [number, number][] = [];
     for (const h of document.elementsFromPoint(e.clientX, e.clientY)) {
       if (!(h instanceof SVGPolylineElement)) continue;
       const i = h.dataset[key];
-      if (i === undefined) continue;
-      const d = distanceToLine(px, py, [...h.points]);
-      if (d < bestD) {
-        bestD = d;
-        best = Number(i);
-      }
+      if (i !== undefined) found.push([distanceToLine(px, py, [...h.points]), Number(i)]);
     }
-    return best;
+    return found.sort((a, b) => a[0] - b[0]).map(([, i]) => i);
   };
+  const nearest = (e: MouseEvent, key: string): number | null => byDistance(e, key)[0] ?? null;
+  // With picks, what their highlight leaves grey can't be hovered or picked:
+  // the nearest line that can be, if any is under the mouse.
   const targetAt = (e: MouseEvent): Target | null => {
-    const i = nearest(e, "t");
-    return i === null ? null : item(md.targets, i).at(timeAt(e));
+    const time = timeAt(e);
+    for (const i of byDistance(e, "t")) {
+      const t = item(md.targets, i).at(time);
+      if (live(t)) return t;
+    }
+    return null;
   };
   hits.addEventListener("mousemove", (e) => {
     if (drag) return;
@@ -643,6 +658,28 @@ function clearPicks(): void {
   preview = null;
 }
 
+/** Whether `t` can be hovered and picked: with picks, only inside their highlight (or picked itself). */
+function live(t: Target): boolean {
+  const segments = candidates?.reach?.segments;
+  if (segments === undefined || t.spot === undefined || picks.some((p) => p.id === t.id)) return true;
+  return covers(segments, D.pieces, t.spot);
+}
+
+/**
+ * With picks, what clicking the hovered line or station would leave: the
+ * connections passing all picks and it, and their shared highlight (without
+ * it, if it is picked). Cached while the target and its highlight stay.
+ */
+let hoverPick: { key: string; result: Candidates | null } | null = null;
+function previewOf(h: Hover | null): Candidates | null {
+  if (h === null || !("id" in h) || typeof h.id !== "string" || picks.length === 0) return null;
+  const target: Picked = { id: h.id, info: h.info, pts: h.pts, chains: h.chains, reach: h.reach ?? null };
+  const key = JSON.stringify([target.id, target.reach?.key, picks.map((p) => p.id), [...hidden]]);
+  if (hoverPick?.key !== key)
+    hoverPick = { key, result: narrow(toggle(picks, target), (i) => !hidden.has(item(D.chains, i).group)) };
+  return hoverPick.result;
+}
+
 function refresh(): void {
   if (!view) return;
   const { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels } = view;
@@ -653,15 +690,22 @@ function refresh(): void {
     faded = new Set<number>();
   // Hovering shows what is reachable through the point; a clicked point keeps
   // showing it, receding once one of its connections is selected or previewed.
-  const reach = hoverTarget?.reach ?? candidates?.reach ?? null;
+  // With picks, hovering previews the click: what remains with the hovered
+  // line or station picked too (or unpicked), the connections dropped faded.
+  const pv = previewOf(hoverTarget);
+  const reach = pv ? pv.reach : (hoverTarget?.reach ?? candidates?.reach ?? null);
   const reachFaded = !hoverTarget?.reach && strong.length > 0;
-  if (hoverTarget && !hoverTarget.reach) hoverTarget.chains.forEach((i) => soft.add(i));
-  if (hoverTarget?.reach?.with) hoverTarget.reach.with.forEach((i) => soft.add(i));
+  if (pv) pv.chains.forEach((i) => soft.add(i));
+  else if (hoverTarget && !hoverTarget.reach) hoverTarget.chains.forEach((i) => soft.add(i));
+  else if (hoverTarget?.reach?.with) hoverTarget.reach.with.forEach((i) => soft.add(i));
   if (softGroup !== null)
     D.chains.forEach((c, i) => {
       if (c.group === softGroup && !hidden.has(c.group)) soft.add(i);
     });
-  if (candidates) candidates.chains.forEach((i) => (strong.length ? faded : soft).add(i));
+  if (candidates)
+    candidates.chains.forEach((i) => {
+      if (!soft.has(i)) (strong.length || pv ? faded : soft).add(i);
+    });
   svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);
 
   // Overlay: previewed connections in train colours, the selection thick on top.
@@ -789,41 +833,62 @@ function refresh(): void {
   }
 
   if (hoverTarget) {
-    const { info, chains, trip } = hoverTarget;
+    const { info, trip } = hoverTarget;
     const swatch = trip === undefined ? "" : `<span style="color:${trainColor(trip)}">■</span> `;
-    let who: string;
-    const only = chains.length === 1 ? chains[0] : undefined;
-    if (hoverTarget.fallbacks) {
-      const at = [...new Set(hoverTarget.fallbacks.map((f) => f.at))];
-      who =
-        `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>` +
-        hoverTarget.fallbacks
-          .map((f) => `<br><span style="color:var(--muted)">• ${esc(f.line)} · arrive ${esc(f.arrive)}</span>`)
-          .join("");
-    } else if (only !== undefined) {
-      want([only]);
-      const route = routeOf(only);
-      who = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(route)}</span>`;
-    } else {
-      const groups = new Map<number, number>();
-      for (const i of chains) {
-        const g = item(D.chains, i).group;
-        groups.set(g, (groups.get(g) ?? 0) + 1);
-      }
-      const list = [...groups]
-        .sort((a, b) => b[1] - a[1])
-        .map(([g, n]) => `• ${esc(item(D.groups, g).label)} (${String(n)})`)
-        .join("<br>");
-      who = chains.length
-        ? `<br><span style="color:var(--muted)">${String(chains.length)} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them</span><br>${list}`
-        : `<br><span style="color:var(--muted)">none of the listed connections · on others within the limits</span>`;
-    }
+    const who = whoAt(hoverTarget, pv);
     tip.innerHTML = `<b>${swatch}${esc(info)}</b>${who}`;
     tip.style.display = "block";
   } else {
     tip.style.display = "none";
   }
   renderPanel();
+}
+
+const muted = (html: string): string => `<br><span style="color:var(--muted)">${html}</span>`;
+
+/**
+ * The tooltip below the hovered thing's name: the fallbacks there, or the
+ * listed connections passing it; with picks, what a click would leave.
+ */
+function whoAt(h: Hover, pv: Candidates | null): string {
+  if (h.fallbacks) {
+    const at = [...new Set(h.fallbacks.map((f) => f.at))];
+    return (
+      `<br><span style="color:var(--accent)">If the change at ${esc(at.join(" / "))} is missed:</span>` +
+      h.fallbacks.map((f) => muted(`• ${esc(f.line)} · arrive ${esc(f.arrive)}`)).join("")
+    );
+  }
+  const chains = pv ? pv.chains : h.chains;
+  const groups = new Map<number, number>();
+  for (const i of chains) {
+    const g = item(D.chains, i).group;
+    groups.set(g, (groups.get(g) ?? 0) + 1);
+  }
+  const k = String(chains.length);
+  let note: string;
+  const picked = "id" in h && picks.some((p) => p.id === h.id);
+  // The only pick leaves nothing to preview when removed.
+  if (picked)
+    note = pv ? `picked · click to remove it: ${k} connections pass the other picks` : "picked · click to remove it";
+  else if (pv === null)
+    note = chains.length
+      ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them`
+      : "none of the listed connections · on others within the limits";
+  else
+    note = chains.length
+      ? `${k} of the ${String(candidates?.chains.length ?? 0)} connections passing your picks · click to narrow to them`
+      : "none together with your picks";
+  const only = chains.length === 1 ? chains[0] : undefined;
+  if (only !== undefined) {
+    want([only]);
+    const one = `<br><b>${esc(item(D.chains, only).header)}</b><span style="color:var(--muted)">${esc(routeOf(only))}</span>`;
+    return pv === null && !picked ? one : muted(note) + one;
+  }
+  const list = [...groups]
+    .sort((a, b) => b[1] - a[1])
+    .map(([g, n]) => `• ${esc(item(D.groups, g).label)} (${String(n)})`)
+    .join("<br>");
+  return muted(note) + (list ? `<br>${list}` : "");
 }
 
 function moveTip(e: MouseEvent): void {

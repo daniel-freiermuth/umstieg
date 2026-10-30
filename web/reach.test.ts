@@ -5,6 +5,7 @@ import {
   type Route,
   type Segment,
   type Source,
+  covers,
   intersectReach,
   mergeIntervals,
   network,
@@ -847,5 +848,68 @@ describe("reach on random timetables", () => {
       }
     }
     expect(reaching).toBeGreaterThan(400);
+  });
+});
+
+describe("covers", () => {
+  // Train 1 from station 0 (10) to 1 (20), standing there until 25, on to 2 (40); a wait at 1, 20–30.
+  const lines = [
+    ride(1, [
+      [0, 10],
+      [1, 20, 25],
+      [2, 40],
+    ]),
+    wait(1, 20, 30),
+  ];
+  test("a stretch shares time with a segment of its piece", () => {
+    const seg: Segment[] = [[0, 15, 22]];
+    expect([
+      covers(seg, lines, { piece: 0, from: 10, to: 20 }),
+      covers(seg, lines, { piece: 0, from: 20, to: 25 }),
+      // Touching ends share nothing.
+      covers(seg, lines, { piece: 0, from: 5, to: 15 }),
+      covers(seg, lines, { piece: 0, from: 22, to: 40 }),
+      covers(seg, lines, { piece: 1, from: 20, to: 30 }),
+      // Any of several segments will do.
+      covers([[1, 0, 5], ...seg], lines, { piece: 0, from: 10, to: 20 }),
+    ]).toEqual([true, true, false, false, false, true]);
+  });
+  test("an instant stretch lies in a segment, ends included", () => {
+    const seg: Segment[] = [[0, 15, 22]];
+    expect([14, 15, 22, 23].map((t) => covers(seg, lines, { piece: 0, from: t, to: t }))).toEqual([
+      false,
+      true,
+      true,
+      false,
+    ]);
+  });
+  test("a moment at a station lies in a wait or a standing train there", () => {
+    const waiting: Segment[] = [[1, 20, 28]];
+    const standing: Segment[] = [[0, 21, 40]];
+    expect([
+      covers(waiting, lines, { station: 1, t: 28 }),
+      covers(waiting, lines, { station: 1, t: 29 }),
+      covers(standing, lines, { station: 1, t: 23 }),
+      // Riding on from the station is not being there.
+      covers(standing, lines, { station: 1, t: 30 }),
+      covers(standing, lines, { station: 2, t: 30 }),
+      covers(standing, lines, { station: 0, t: 21 }),
+      // Inside the segment's time but before (at) its start.
+      covers([[1, 22, 28]], lines, { station: 1, t: 21 }),
+      covers([[1, 22, 28]], lines, { station: 1, t: 22 }),
+      // In the segment's time, but before the wait there begins.
+      covers([[1, 15, 30]], lines, { station: 1, t: 19 }),
+      covers(
+        [
+          [0, 0, 5],
+          [1, 20, 28],
+        ],
+        lines,
+        { station: 1, t: 21 },
+      ),
+      // The wait's ends count.
+      covers([[1, 15, 35]], lines, { station: 1, t: 20 }),
+      covers([[1, 15, 35]], lines, { station: 1, t: 30 }),
+    ]).toEqual([true, false, true, false, false, false, false, true, false, true, true, true]);
   });
 });
