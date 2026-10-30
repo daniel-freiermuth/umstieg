@@ -95,7 +95,7 @@ fn plan_board_parses_trains_times_platforms_and_paths() {
     assert_eq!(ice.seq, 5);
     assert_eq!(
         (ice.number, ice.class, ice.category.as_deref(), ice.line.as_deref()),
-        (Some(591), Some('F'), Some("ICE"), None)
+        (Some(591), Some(ProductClass::LongDistance), Some("ICE"), None)
     );
     let arrival = ice.arrival.as_ref().unwrap();
     assert_eq!(arrival.planned, Some(at("06:30")), "08:30 CEST");
@@ -107,7 +107,7 @@ fn plan_board_parses_trains_times_platforms_and_paths() {
     // Negative run ids keep their sign; the line comes from the events.
     let s1 = labels["S1 (38114)"];
     assert_eq!(s1.trip, "-5139865393715302214-2610240636");
-    assert_eq!((s1.seq, s1.class), (32, Some('S')));
+    assert_eq!((s1.seq, s1.class), (32, Some(ProductClass::SBahn)));
 
     // Trains ending here have no departure, trains starting here no arrival.
     let ending = labels["RE70 (4557)"];
@@ -118,7 +118,7 @@ fn plan_board_parses_trains_times_platforms_and_paths() {
 
     // Foreign trains may lack the product class: long-distance categories give it.
     let ece = labels["ECE 151"];
-    assert_eq!((ece.class, ece.number), (Some('F'), Some(151)));
+    assert_eq!((ece.class, ece.number), (Some(ProductClass::LongDistance), Some(151)));
 }
 
 #[test]
@@ -129,15 +129,23 @@ fn trains_without_class_or_with_a_bare_line_number_get_category_labels() {
     };
     // FlixTrain: no class, the line is "10".
     let flx = board(r#"<tl t="p" o="FLX10" c="FLX" n="1236"/>"#, "10");
-    assert_eq!((flx.label(), flx.class), ("FLX 1236".to_owned(), Some('F')));
+    assert_eq!((flx.label(), flx.class), ("FLX 1236".to_owned(), Some(ProductClass::LongDistance)));
     // A line with letters names the train as before; an unknown category stays without class.
     let re = board(r#"<tl f="N" t="p" o="800" c="RE" n="17005"/>"#, "RE7");
-    assert_eq!((re.label(), re.class), ("RE7 (17005)".to_owned(), Some('N')));
+    assert_eq!((re.label(), re.class), ("RE7 (17005)".to_owned(), Some(ProductClass::Regional)));
     // S-Bahn lines also come as bare numbers: S1 keeps its line, not just its run number.
     let s1 = board(r#"<tl f="S" t="p" o="800244" c="S" n="34459"/>"#, "1");
-    assert_eq!((s1.label(), s1.class), ("1 (34459)".to_owned(), Some('S')));
+    assert_eq!((s1.label(), s1.class), ("1 (34459)".to_owned(), Some(ProductClass::SBahn)));
     let bus = board(r#"<tl t="p" o="X" c="Bus" n="4711"/>"#, "");
     assert_eq!((bus.label(), bus.class), ("Bus 4711".to_owned(), None));
+    // F is long-distance even for a category the fallback doesn't know.
+    let est = board(r#"<tl f="F" t="p" o="80" c="EST" n="9425"/>"#, "");
+    assert_eq!(est.class, Some(ProductClass::LongDistance));
+    // Codes other than F, N and S are no class: the category decides.
+    let unknown = board(r#"<tl f="D" t="p" o="80" c="ICE" n="1"/>"#, "");
+    assert_eq!(unknown.class, Some(ProductClass::LongDistance));
+    let unknown = board(r#"<tl f="D" t="p" o="80" c="RE" n="2"/>"#, "");
+    assert_eq!(unknown.class, None);
 }
 
 #[test]
@@ -216,7 +224,7 @@ fn merging_a_change_keeps_the_plan_and_applies_live_data() {
         trip: "1-2610240529".to_owned(),
         seq: 5,
         number: Some(591),
-        class: Some('F'),
+        class: Some(ProductClass::LongDistance),
         category: Some("ICE".to_owned()),
         line: None,
         arrival: Some(Event {
@@ -231,7 +239,7 @@ fn merging_a_change_keeps_the_plan_and_applies_live_data() {
         trip: "1-2610240529".to_owned(),
         seq: 5,
         number: Some(1),
-        class: Some('N'),
+        class: Some(ProductClass::Regional),
         category: Some("RE".to_owned()),
         line: Some("RE7".to_owned()),
         arrival: Some(Event {
@@ -246,7 +254,11 @@ fn merging_a_change_keeps_the_plan_and_applies_live_data() {
     };
     plan.merge(&change);
 
-    assert_eq!((plan.number, plan.class, plan.category.as_deref()), (Some(591), Some('F'), Some("ICE")), "plan wins");
+    assert_eq!(
+        (plan.number, plan.class, plan.category.as_deref()),
+        (Some(591), Some(ProductClass::LongDistance), Some("ICE")),
+        "plan wins"
+    );
     assert_eq!(plan.line.as_deref(), Some("RE7"), "missing fields are filled in");
     let arrival = plan.arrival.as_ref().unwrap();
     assert_eq!(arrival.planned, Some(at("06:30")), "planned time from the plan");
@@ -626,17 +638,16 @@ async fn visits_apply_live_changes_to_the_planned_board() {
     assert_eq!((s3.changed, s3.platform()), (None, Some("2")));
 
     let added = labels["ICE 9999"];
-    assert_eq!(added.class, Some('F'));
+    assert_eq!(added.class, Some(ProductClass::LongDistance));
     assert_eq!(added.departure.as_ref().unwrap().changed, Some(at("06:53")));
 
     // Coverage: classes with trains on the board, per hour.
-    for class in ['F', 'N', 'S'] {
-        assert!(coverage.covers(at("06:00"), class), "{class}");
-        assert!(coverage.covers(at("06:59"), class), "{class}");
-        assert!(!coverage.covers(at("07:00"), class), "{class} in the next hour");
-        assert!(!coverage.covers(at("05:59"), class), "{class} in the hour before");
+    for class in ProductClass::ALL {
+        assert!(coverage.covers(at("06:00"), class), "{class:?}");
+        assert!(coverage.covers(at("06:59"), class), "{class:?}");
+        assert!(!coverage.covers(at("07:00"), class), "{class:?} in the next hour");
+        assert!(!coverage.covers(at("05:59"), class), "{class:?} in the hour before");
     }
-    assert!(!coverage.covers(at("06:30"), 'X'));
 }
 
 #[tokio::test]
@@ -683,7 +694,10 @@ async fn added_trains_only_within_the_asked_hours() {
     let (visits, coverage) = db.visits("8000911", &[at("10:00")]).await.unwrap();
     let labels: Vec<String> = visits.iter().map(Visit::label).collect();
     assert_eq!(labels, ["ICE 9998"], "12:50 CEST is in the 12 o'clock board, 08:50 is not");
-    assert!(!coverage.covers(at("10:30"), 'F'), "no board, no coverage: added trains don't count");
+    assert!(
+        !coverage.covers(at("10:30"), ProductClass::LongDistance),
+        "no board, no coverage: added trains don't count"
+    );
 
     let (visits, _) = db.visits("8000911", &[at("07:00"), at("08:00")]).await.unwrap();
     assert!(visits.is_empty());

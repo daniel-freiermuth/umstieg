@@ -10,6 +10,7 @@ use serde_json::json;
 
 use super::*;
 use crate::testkit::{self, at};
+use crate::timetable::ProductClass;
 
 const TRIPS: &str = include_str!("../testdata/efa/trips_bad_duerkheim.json");
 
@@ -42,20 +43,20 @@ fn dhids_from_delfi_stop_ids() {
 #[test]
 fn product_classes_map_to_motis_modes() {
     let cases = [
-        (0, Some("REGIONAL_RAIL")),
-        (13, Some("REGIONAL_RAIL")),
-        (14, Some("HIGHSPEED_RAIL")),
-        (15, Some("HIGHSPEED_RAIL")),
-        (16, Some("HIGHSPEED_RAIL")),
-        (1, Some("SUBURBAN")),
-        (2, Some("SUBWAY")),
-        (3, Some("TRAM")),
-        (4, Some("TRAM")),
-        (9, Some("FERRY")),
-        (5, Some("BUS")),
-        (6, Some("BUS")),
-        (7, Some("BUS")),
-        (10, Some("BUS")),
+        (0, Some(Mode::RegionalRail)),
+        (13, Some(Mode::RegionalRail)),
+        (14, Some(Mode::HighspeedRail)),
+        (15, Some(Mode::HighspeedRail)),
+        (16, Some(Mode::HighspeedRail)),
+        (1, Some(Mode::Suburban)),
+        (2, Some(Mode::Subway)),
+        (3, Some(Mode::Tram)),
+        (4, Some(Mode::Tram)),
+        (9, Some(Mode::Ferry)),
+        (5, Some(Mode::Bus)),
+        (6, Some(Mode::Bus)),
+        (7, Some(Mode::Bus)),
+        (10, Some(Mode::Bus)),
         (99, None),
         (100, None),
         (105, None),
@@ -91,14 +92,14 @@ fn journeys_become_itineraries() {
     let [same_run, walk] = &all[1].legs[..] else { panic!("tram and walk") };
     assert_eq!(same_run.trip_id, rnv4.trip_id);
     assert!(!walk.is_transit());
-    assert_eq!(walk.mode, "WALK");
+    assert_eq!(walk.mode, Mode::Walk);
     assert_eq!((walk.from.name.as_str(), walk.to.name.as_str()), ("Mannheim, Universität", "Mannheim, Hauptbahnhof"));
     assert_eq!((walk.start_time, walk.end_time), (at("03:03"), at("03:13")));
 
     // A later run of the same line is another trip.
     let s6 = &all[2].legs[2];
     assert_ne!(all[2].legs[0].trip_id, rnv4.trip_id);
-    assert_eq!((s6.mode.as_str(), s6.class(), s6.train_number()), ("SUBURBAN", Some('S'), Some(38617)));
+    assert_eq!((s6.mode.as_str(), s6.class(), s6.train_number()), ("SUBURBAN", Some(ProductClass::SBahn), Some(38617)));
     assert_eq!(s6.label(), "S6 (38617)");
     assert_eq!((all[2].legs[1].start_time, all[2].legs[1].end_time), (at("04:40"), at("04:47")));
 
@@ -192,14 +193,14 @@ fn trains_are_labelled_with_the_category_in_their_name() {
     // (product class, name, number) → (label, DB class).
     let cases = [
         // VRN files ICEs under the generic class "Zug".
-        (0, Some("ICE 273 InterCityExpress"), "273", "ICE 273", Some('F')),
-        (0, Some("NJ 40420 nightjet"), "40420", "NJ 40420", Some('F')),
-        (15, Some("IC 2023 InterCity"), "2023", "IC 2023", Some('F')),
-        (0, Some("Zug 4711"), "4711", "Zug 4711", Some('N')),
+        (0, Some("ICE 273 InterCityExpress"), "273", "ICE 273", Some(ProductClass::LongDistance)),
+        (0, Some("NJ 40420 nightjet"), "40420", "NJ 40420", Some(ProductClass::LongDistance)),
+        (15, Some("IC 2023 InterCity"), "2023", "IC 2023", Some(ProductClass::LongDistance)),
+        (0, Some("Zug 4711"), "4711", "Zug 4711", Some(ProductClass::Regional)),
         // The number is the line: kept as it is.
-        (13, Some("R-Bahn RE2"), "RE2", "RE2", Some('N')),
-        (0, Some("ICE InterCityExpress"), "273", "273", Some('N')),
-        (0, None, "273", "273", Some('N')),
+        (13, Some("R-Bahn RE2"), "RE2", "RE2", Some(ProductClass::Regional)),
+        (0, Some("ICE InterCityExpress"), "273", "273", Some(ProductClass::Regional)),
+        (0, None, "273", "273", Some(ProductClass::Regional)),
     ];
     for (class, name, number, label, db_class) in cases {
         let text = journey(&[(
