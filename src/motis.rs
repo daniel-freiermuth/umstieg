@@ -300,6 +300,8 @@ impl Motis {
     /// geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
     /// "Hauptbahnhof"), so station words are also tried spelled differently,
     /// and stops with trains are preferred, then stations by name over bus stops.
+    /// Connecting words ("Frankfurt am Main", "an der Oder") are left out:
+    /// stop names drop them ("Frankfurt(Main) Hbf") and the geocoder ranks badly with them.
     pub async fn stop(&self, text: &str) -> Result<Stop> {
         let (stop, queries) = self.find_stop(text).await?;
         stop.with_context(|| format!("no stop named like {text:?} found (tried: {})", queries.join(", ")))
@@ -309,13 +311,17 @@ impl Motis {
     /// errors are only failures to ask.
     pub async fn find_stop(&self, text: &str) -> Result<(Option<Stop>, [String; 4])> {
         const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
+        const CONNECTING_WORDS: [&str; 6] = ["am", "an", "der", "im", "in", "ob"];
         let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
-        let (folded, plain) = (fold(text), unaccented(text));
+        let words: Vec<&str> =
+            text.split_whitespace().filter(|w| !CONNECTING_WORDS.contains(&fold(w).as_str())).collect();
+        let text = words.join(" ");
+        let (folded, plain) = (fold(&text), unaccented(&text));
         let place: Vec<(&str, &str)> =
             folded.split(' ').zip(plain.split(' ')).filter(|(w, _)| !STATION_WORDS.contains(w)).collect();
         // Queries keep the original spelling: the geocoder doesn't know "duerkheim".
-        let bare = text.split_whitespace().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
-        let queries = [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
+        let bare = words.iter().copied().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
+        let queries = [text.clone(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
         for query in &queries {
             let matches: Vec<GeocodeMatch> =
                 self.get("/api/v1/geocode", &[("text", query.clone()), ("type", "STOP".to_owned())]).await?;
