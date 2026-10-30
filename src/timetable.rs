@@ -707,6 +707,10 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
             *slot = new;
         }
     }
+    // The search rode the known calls at their times: only the added stops
+    // change, and those no later than the next known call.
+    let kept: Vec<Option<(Option<Time>, Option<Time>)>> =
+        all.iter().map(|(old, c)| old.map(|_| (c.arrival, c.departure))).collect();
     trip.calls = all.into_iter().map(|(_, c)| c).collect();
     // The added stops' times follow DB's delays the same way as every train's,
     // or none at all: Transitous' live times are delays too.
@@ -714,6 +718,17 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
         drop_delays(&mut trip.calls);
     } else {
         propagate_delays(&mut trip.calls);
+        let mut next: Option<DateTime<Utc>> = None;
+        for (call, kept) in trip.calls.iter_mut().zip(kept).rev() {
+            if let Some((arrival, departure)) = kept {
+                (call.arrival, call.departure) = (arrival, departure);
+                next = arrival.or(departure).map(|t| t.actual);
+            } else if let Some(next) = next {
+                for time in [&mut call.arrival, &mut call.departure].into_iter().flatten() {
+                    time.actual = time.actual.min(next);
+                }
+            }
+        }
     }
     Some(remap)
 }
