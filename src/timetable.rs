@@ -90,6 +90,8 @@ pub struct Call {
     /// Times from a station board feed (DB, Trafikverket): live data is
     /// authoritative there, elsewhere the last known delay is carried forward.
     pub from_board: bool,
+    /// The board feed is Trafikverket's rather than DB's.
+    pub trafikverket: bool,
 }
 
 impl Call {
@@ -641,6 +643,7 @@ fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut 
             platform: p.track.clone(),
             cancelled: p.cancelled,
             from_board: false,
+            trafikverket: false,
         })
         // Stops passed without times (Limburg Süd for ICE 616) can't be used.
         .filter(|c| c.arrival.is_some() || c.departure.is_some())
@@ -1091,6 +1094,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
             platform: stop.track.clone(),
             cancelled: [stop.arrival, stop.departure].into_iter().flatten().any(|m| m.cancelled),
             from_board: true,
+            trafikverket: true,
         });
     }
     let headsign = run.stops.last().and_then(|s| by_sig.get(s.signature.as_str())).map(|s| s.name.clone());
@@ -1174,6 +1178,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
                         .map(str::to_owned),
                     cancelled: [&v.arrival, &v.departure].into_iter().flatten().any(|e| e.cancelled),
                     from_board: true,
+                    trafikverket: false,
                 })
                 .collect(),
             transitous: false,

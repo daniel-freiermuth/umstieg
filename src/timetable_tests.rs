@@ -93,7 +93,15 @@ fn cover(boards: &mut Boards, station: usize, entries: &[(DateTime<Utc>, char)])
 }
 
 fn call(station: usize, from_board: bool, arrival: &str, departure: &str) -> Call {
-    Call { station, arrival: time(arrival), departure: time(departure), platform: None, cancelled: false, from_board }
+    Call {
+        station,
+        arrival: time(arrival),
+        departure: time(departure),
+        platform: None,
+        cancelled: false,
+        from_board,
+        trafikverket: false,
+    }
 }
 
 /// A MOTIS train; its numbers are the label's digits.
@@ -349,6 +357,7 @@ fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
             platform: None,
             cancelled: false,
             from_board: true,
+            trafikverket: false,
         },
         call(1, false, "09:00", ""),
     ];
@@ -391,7 +400,7 @@ proptest! {
             t += minutes(dwell);
             let departure =
                 has_departure.then(|| Time { planned: t, actual: t + minutes(departure_delay.unwrap_or(0)) });
-            calls.push(Call { station: 0, arrival, departure, platform: None, cancelled: false, from_board });
+            calls.push(Call { station: 0, arrival, departure, platform: None, cancelled: false, from_board, trafikverket: false });
         }
         let before: Vec<(bool, Time)> = calls
             .iter()
@@ -662,7 +671,7 @@ fn motis_itinerary_becomes_trips_keyed_by_trip_id() {
     assert_eq!(first.platform.as_deref(), Some("2"));
     assert_eq!((last.arrival, last.departure), (time("10:28+8"), None));
     assert_eq!(ice.calls[1].departure, time("06:39+12"));
-    assert!(ice.calls.iter().all(|c| !c.from_board));
+    assert!(ice.calls.iter().all(|c| !c.from_board && !c.trafikverket));
 
     let s4 = &rough.trips["20261024_07:06_de-DELFI_3449008863"];
     assert_eq!((s4.label.as_str(), s4.class), ("S4 (38415)", Some('S')));
@@ -1415,7 +1424,9 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let sj = trip("SJ Regional 319");
     assert_eq!(names(sj), ["Göteborg Centralstation", "Lessebo", "Emmaboda", "Nybro"]);
     assert_eq!((sj.class, &sj.numbers, sj.headsign.as_deref()), (Some('F'), &vec![319], Some("Nybro")));
-    assert!(sj.calls.iter().all(|c| c.from_board && !c.cancelled && c.platform.as_deref() == Some("1")));
+    assert!(
+        sj.calls.iter().all(|c| c.from_board && c.trafikverket && !c.cancelled && c.platform.as_deref() == Some("1"))
+    );
     assert_eq!(sj.calls[2].arrival, Some(Time { planned: at("09:27"), actual: at("09:30") }));
     let route = &found.trips.iter().find(|(t, _)| t.label == "SJ Regional 319").unwrap().1;
     assert_eq!(route, &HashSet::from(["Göteborg C", "Lessebo", "Emmaboda", "Nybro"].map(str::to_owned)));
