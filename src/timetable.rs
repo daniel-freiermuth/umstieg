@@ -1013,24 +1013,33 @@ async fn swedish(
         let at = Board { list: &list, by_sig: &by_sig, boarded: &boarded };
         return from_departures(motis, &at, stations, &first, line, discovered, warnings).await;
     }
+    // A board whose runs are missing would cover hours no fed train fills.
     let mut runs = match tv.runs(&keys).await {
         Ok(runs) => runs,
         Err(e) => {
             warnings.push(format!("Trafikverket runs: {e:#}"));
-            Vec::new()
+            return Swedish::default();
         }
     };
 
     let second = change_points(&runs, &by_sig, line, &first);
     let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != 'S', warnings).await;
-    match tv.runs(&keys).await {
-        Ok(found) => runs.extend(found),
-        Err(e) => warnings.push(format!("Trafikverket runs: {e:#}")),
-    }
+    let fed = match tv.runs(&keys).await {
+        Ok(found) => {
+            runs.extend(found);
+            true
+        }
+        Err(e) => {
+            warnings.push(format!("Trafikverket runs: {e:#}"));
+            false
+        }
+    };
     let mut found: Vec<String> = more.keys().filter_map(|sig| Some(by_sig.get(sig.as_str())?.name.clone())).collect();
     found.sort();
     discovered.extend(found);
-    listed.extend(more);
+    if fed {
+        listed.extend(more);
+    }
 
     let trips = runs.iter().map(|run| fed_trip(run, &by_sig, stations)).collect();
     let mut coverage = Vec::new();
