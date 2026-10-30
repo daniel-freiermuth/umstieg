@@ -7,7 +7,8 @@ use proptest::prelude::*;
 
 use super::{
     Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, angle_between, bearing, change_points, db_places,
-    fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station, whole_seconds,
+    fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station,
+    whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Place, Stop};
@@ -1641,7 +1642,10 @@ fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start(
     cancel(&mut both.stops[1].arrival);
     cancel(&mut both.stops[1].departure);
     let (trip, _) = fed_trip(&both, &by_sig, &mut interned);
-    assert!(trip.calls[1].cancelled && trip.calls[1].departure.is_some(), "a stop cancelled both ways is ridden through");
+    assert!(
+        trip.calls[1].cancelled && trip.calls[1].departure.is_some(),
+        "a stop cancelled both ways is ridden through"
+    );
 }
 
 #[test]
