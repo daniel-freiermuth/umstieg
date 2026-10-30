@@ -321,6 +321,32 @@ fn idx(v: &Value) -> usize {
     usize::try_from(v.as_u64().unwrap()).unwrap()
 }
 
+#[test]
+fn only_a_served_plot_links_its_logo_to_a_new_search() {
+    let tt = located();
+    let net = Network::new(&tt).unwrap();
+    let groups = chains(&net);
+    for back in [None, Some("/?from=A&to=C".to_owned())] {
+        let served = back.is_some();
+        let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+        let plot = Plot {
+            title: "A → C".to_owned(),
+            subtitle: "sub".to_owned(),
+            groups: &groups,
+            metric: Metric::Axis,
+            min_transfer: MIN,
+            zone: Berlin,
+            back,
+            details_url: None,
+            progress: &|_, _| {},
+        };
+        let html = render(&net, &mut fallbacks, &plot).unwrap().html;
+        assert_eq!(html.matches("class=\"brand\"").count(), 1);
+        // A file (`umstieg --html`) has no server at `/`: its logo is no link.
+        assert_eq!(html.contains("href=\"/\" title=\"New search\""), served, "served: {served}");
+    }
+}
+
 fn indexes(v: &Value) -> Vec<usize> {
     v.as_array().unwrap().iter().map(idx).collect()
 }
