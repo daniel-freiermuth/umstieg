@@ -189,7 +189,7 @@ var pickedNow = (text) => {
   return id === undefined ? null : { name: text, id };
 };
 var lists = 0;
-function stationText(id, typed) {
+function stationText(id, typed, chosen) {
   const list = element("ul", { className: "suggestions", id: `stops-${String(lists++)}`, hidden: true });
   list.setAttribute("role", "listbox");
   const input = element("input", { type: "text", id, autocomplete: "off" });
@@ -216,7 +216,7 @@ function stationText(id, typed) {
     known.set(s.name, s.id);
     input.value = s.name;
     open(false);
-    typed({ name: s.name, id: s.id });
+    chosen({ name: s.name, id: s.id });
   };
   const show = (stops) => {
     shown = stops;
@@ -257,7 +257,7 @@ function stationText(id, typed) {
     typed(pickedNow(input.value));
     clearTimeout(timer);
     const q = stationSearch(input.value);
-    if (q === null || pickedNow(input.value) !== null) {
+    if (q === null) {
       open(false);
       return;
     }
@@ -266,8 +266,7 @@ function stationText(id, typed) {
         if (stationSearch(input.value) !== q)
           return;
         typed(pickedNow(input.value));
-        if (stationSearch(input.value) === q)
-          show(stops);
+        show(stops);
       });
     }, 250);
   });
@@ -285,7 +284,7 @@ function stationField(f, id) {
     input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
     status.textContent = stop !== null || blank ? "" : NOT_PICKED;
   };
-  const { input, list } = stationText(id, show);
+  const { input, list } = stationText(id, show, show);
   Object.assign(input, { name: f.name, required: true, placeholder: "Station" });
   box.append(input, list, stationId, status);
   const [given2] = picked(SPEC.values, f.name);
@@ -329,12 +328,10 @@ function viaField(f, id) {
   const check = () => {
     input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
   };
-  const { input, list } = stationText(id, (stop) => {
-    if (stop !== null) {
-      stops.push(stop);
-      input.value = "";
-      render();
-    }
+  const { input, list } = stationText(id, check, (stop) => {
+    stops.push(stop);
+    input.value = "";
+    render();
     check();
   });
   input.placeholder = "Add a station";

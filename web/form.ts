@@ -51,7 +51,9 @@ const pickedNow = (text: string): Stop | null => {
 /**
  * A text input suggesting stations from Transitous as one types, each with
  * where it lies; `typed` runs on every change with the station the text
- * names exactly, if any. The list is our own, not a datalist: browsers match
+ * names exactly, if any, `chosen` with one chosen from the list. The list
+ * stays while the text names one exactly: "Markaryd" is a bus stop in
+ * Ödeshög, the town's is "Markaryd station". The list is our own, not a datalist: browsers match
  * the typed text against an option's label too, and Firefox shows only the
  * label, so "Markaryd st" found nothing and "Markaryd" three municipalities.
  */
@@ -59,6 +61,7 @@ let lists = 0;
 function stationText(
   id: string,
   typed: (stop: Stop | null) => void,
+  chosen: (stop: Stop) => void,
 ): { input: HTMLInputElement; list: HTMLUListElement } {
   const list = element("ul", { className: "suggestions", id: `stops-${String(lists++)}`, hidden: true });
   list.setAttribute("role", "listbox");
@@ -85,7 +88,7 @@ function stationText(
     known.set(s.name, s.id);
     input.value = s.name;
     open(false);
-    typed({ name: s.name, id: s.id });
+    chosen({ name: s.name, id: s.id });
   };
   const show = (stops: Suggestion[]): void => {
     shown = stops;
@@ -126,7 +129,7 @@ function stationText(
     typed(pickedNow(input.value));
     clearTimeout(timer);
     const q = stationSearch(input.value);
-    if (q === null || pickedNow(input.value) !== null) {
+    if (q === null) {
       open(false);
       return;
     }
@@ -134,10 +137,9 @@ function stationText(
       void lookup(q).then((stops) => {
         // Only if the text is still what was asked about.
         if (stationSearch(input.value) !== q) return;
-        // The text may name a suggestion exactly by now: a via becomes a chip
-        // and its text empties, leaving nothing to suggest.
+        // The text may name a suggestion exactly by now.
         typed(pickedNow(input.value));
-        if (stationSearch(input.value) === q) show(stops);
+        show(stops);
       });
     }, 250);
   });
@@ -165,7 +167,7 @@ function stationField(f: Field, id: string): StationField {
     input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
     status.textContent = stop !== null || blank ? "" : NOT_PICKED;
   };
-  const { input, list } = stationText(id, show);
+  const { input, list } = stationText(id, show, show);
   Object.assign(input, { name: f.name, required: true, placeholder: "Station" });
   box.append(input, list, stationId, status);
   const [given] = picked(SPEC.values, f.name);
@@ -214,12 +216,12 @@ function viaField(f: Field, id: string): HTMLElement {
   const check = (): void => {
     input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
   };
-  const { input, list } = stationText(id, (stop) => {
-    if (stop !== null) {
-      stops.push(stop);
-      input.value = "";
-      render();
-    }
+  // Only a station chosen from the list becomes a chip: typing "Lund C" on
+  // the way to "Lund Centralstation" adds nothing.
+  const { input, list } = stationText(id, check, (stop) => {
+    stops.push(stop);
+    input.value = "";
+    render();
     check();
   });
   input.placeholder = "Add a station";
