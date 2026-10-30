@@ -252,6 +252,17 @@ async fn stations_are_fetched_once_and_cached_on_disk() {
 }
 
 #[tokio::test]
+async fn each_api_has_its_own_cached_stations() {
+    let world = world();
+    let tv = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "key", "umstieg-test").unwrap();
+    assert_eq!(tv.stations().await.unwrap().len(), 2);
+    let other = TvWorld::new(vec![("Cst", "Stockholm C", "SE", 59.330, 18.058)], Vec::new());
+    let elsewhere = Trafikverket::new(&testkit::serve_trafikverket(&other).await, "key", "umstieg-test").unwrap();
+    assert_eq!(elsewhere.stations().await.unwrap()[0].signature, "Cst");
+    assert_eq!(other.log(), ["stations"]);
+}
+
+#[tokio::test]
 async fn a_wrong_key_fails() {
     let world = world();
     let tv = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "wrong", "umstieg-test").unwrap();
