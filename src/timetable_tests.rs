@@ -7,7 +7,7 @@ use proptest::prelude::*;
 
 use super::{
     Boards, Call, Footpath, Sighting, Station, Stations, Time, Trip, angle_between, bearing, change_points, db_places,
-    finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station, whole_seconds,
+    fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish, tv_station, whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Place, Stop};
@@ -1615,6 +1615,33 @@ fn junctions_are_stations_runs_reach_from_three_directions() {
     // The span: from the first run there to two hours after the last.
     let spans = change_points(&star, &by_sig, line, &ends);
     assert_eq!(spans["J"], (at("08:10"), at("10:20")));
+}
+
+#[test]
+fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start() {
+    let stations = tv_stations(&[("A", (57.0, 15.0)), ("B", (56.8, 15.0)), ("C", (56.6, 15.0)), ("D", (56.4, 15.0))]);
+    let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
+    let mut run = tv_run("1", 'N', &["A", "B", "C", "D"]);
+    let cancel = |m: &mut Option<crate::trafikverket::Moment>| m.as_mut().unwrap().cancelled = true;
+    // Trafikverket's short turn: B's arrival runs, its departure is cancelled;
+    // the train starts again at C, whose arrival is cancelled.
+    cancel(&mut run.stops[1].departure);
+    cancel(&mut run.stops[2].arrival);
+    let mut interned = Stations::default();
+    let (trip, _) = fed_trip(&run, &by_sig, &mut interned);
+    let calls: Vec<_> = trip.calls.iter().map(|c| (c.cancelled, c.arrival_time(), c.departure_time())).collect();
+    assert_eq!(
+        calls[1..3],
+        [(false, Some(at("08:10")), None), (false, Some(at("08:20")), Some(at("08:20")))],
+        "B: arrives, doesn't leave; C: leaves, isn't arrived at"
+    );
+    assert_eq!(trip.calls[2].arrival, None);
+
+    let mut both = tv_run("2", 'N', &["A", "B", "C"]);
+    cancel(&mut both.stops[1].arrival);
+    cancel(&mut both.stops[1].departure);
+    let (trip, _) = fed_trip(&both, &by_sig, &mut interned);
+    assert!(trip.calls[1].cancelled && trip.calls[1].departure.is_some(), "a stop cancelled both ways is ridden through");
 }
 
 #[test]
