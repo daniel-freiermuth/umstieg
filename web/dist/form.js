@@ -143,6 +143,13 @@ var decodeSuggestion = (v, path) => {
   return { ...decodeStop(v, path), area: field(o, "area", nullable(string), path) };
 };
 var decodeSuggestions = array(decodeSuggestion);
+function nextIndex(current, count, by) {
+  if (count === 0)
+    return -1;
+  if (current < 0)
+    return by === 1 ? 0 : count - 1;
+  return (current + by + count) % count;
+}
 function stationSearch(text) {
   const q = text.trim();
   return q.length < 3 ? null : q;
@@ -183,25 +190,88 @@ var pickedNow = (text) => {
 };
 var lists = 0;
 function stationText(id, typed) {
+  const list = element("ul", { className: "suggestions", id: `stops-${String(lists++)}`, hidden: true });
+  list.setAttribute("role", "listbox");
   const input = element("input", { type: "text", id, autocomplete: "off" });
-  const list = element("datalist", { id: `stops-${String(lists++)}` });
-  input.setAttribute("list", list.id);
-  document.body.append(list);
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", list.id);
+  input.setAttribute("aria-expanded", "false");
+  let shown = [];
+  let active = -1;
+  const highlight = (i) => {
+    active = i;
+    [...list.children].forEach((li, k) => li.classList.toggle("active", k === i));
+    if (i < 0)
+      input.removeAttribute("aria-activedescendant");
+    else
+      input.setAttribute("aria-activedescendant", `${list.id}-${String(i)}`);
+  };
+  const open = (yes) => {
+    list.hidden = !yes;
+    input.setAttribute("aria-expanded", String(yes));
+    highlight(-1);
+  };
+  const choose = (s) => {
+    known.set(s.name, s.id);
+    input.value = s.name;
+    open(false);
+    typed({ name: s.name, id: s.id });
+  };
+  const show = (stops) => {
+    shown = stops;
+    list.replaceChildren(...stops.map((s, i) => {
+      const li = element("li", { id: `${list.id}-${String(i)}` });
+      li.setAttribute("role", "option");
+      li.append(element("span", { className: "name", textContent: s.name }));
+      if (s.area !== null)
+        li.append(element("span", { className: "area", textContent: s.area }));
+      li.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        choose(s);
+      });
+      return li;
+    }));
+    open(stops.length > 0 && document.activeElement === input);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden)
+      return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      highlight(nextIndex(active, shown.length, e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter") {
+      const s = shown[active];
+      if (s !== undefined) {
+        e.preventDefault();
+        choose(s);
+      }
+    } else if (e.key === "Escape")
+      open(false);
+  });
+  input.addEventListener("blur", () => {
+    open(false);
+  });
   let timer;
   input.addEventListener("input", () => {
     typed(pickedNow(input.value));
     clearTimeout(timer);
     const q = stationSearch(input.value);
-    if (q === null || pickedNow(input.value) !== null)
+    if (q === null || pickedNow(input.value) !== null) {
+      open(false);
       return;
+    }
     timer = setTimeout(() => {
       lookup(q).then((stops) => {
-        list.replaceChildren(...stops.map((s) => Object.assign(new Option(s.name), { label: s.area ?? "" })));
+        if (stationSearch(input.value) !== q)
+          return;
         typed(pickedNow(input.value));
+        if (stationSearch(input.value) === q)
+          show(stops);
       });
     }, 250);
   });
-  return input;
+  return { input, list };
 }
 var hidden = (name) => element("input", { type: "hidden", name });
 function stationField(f, id) {
@@ -215,9 +285,9 @@ function stationField(f, id) {
     input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
     status.textContent = stop !== null || blank ? "" : NOT_PICKED;
   };
-  const input = stationText(id, show);
+  const { input, list } = stationText(id, show);
   Object.assign(input, { name: f.name, required: true, placeholder: "Station" });
-  box.append(input, stationId, status);
+  box.append(input, list, stationId, status);
   const [given2] = picked(SPEC.values, f.name);
   if (given2 !== undefined)
     known.set(given2.name, given2.id);
@@ -259,7 +329,7 @@ function viaField(f, id) {
   const check = () => {
     input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
   };
-  const input = stationText(id, (stop) => {
+  const { input, list } = stationText(id, (stop) => {
     if (stop !== null) {
       stops.push(stop);
       input.value = "";
@@ -268,7 +338,7 @@ function viaField(f, id) {
     check();
   });
   input.placeholder = "Add a station";
-  box.append(chips, input, names, ids);
+  box.append(chips, input, list, names, ids);
   render();
   const listed = unpicked(SPEC.values, f.name);
   const text = listed.join("; ");

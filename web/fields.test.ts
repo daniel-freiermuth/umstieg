@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseJson } from "./decode";
 import {
+  nextIndex,
   type Field,
   type Kind,
   changed,
@@ -235,4 +236,16 @@ describe("picked and unpicked stations", () => {
       expect(picked(values, "from")).toEqual(stops);
       expect(unpicked(values, "from")).toEqual(names);
     });
+});
+
+describe("nextIndex", () => {
+  test("the first move goes to either end", () => {
+    expect([nextIndex(-1, 3, 1), nextIndex(-1, 3, -1)]).toEqual([0, 2]);
+  });
+  test("moves wrap around", () => {
+    expect([nextIndex(0, 3, 1), nextIndex(2, 3, 1), nextIndex(0, 3, -1), nextIndex(1, 3, -1)]).toEqual([1, 0, 2, 0]);
+  });
+  test("nothing to highlight in an empty list", () => {
+    expect([nextIndex(-1, 0, 1), nextIndex(-1, 0, -1)]).toEqual([-1, -1]);
+  });
 });

@@ -355,11 +355,19 @@ async fn suggestions_say_where_a_stop_lies() {
     hamlet["areas"] = json!([area("Sverige", false), area("Ödeshögs kommun", true), area("Ödeshög", false)]);
     let mut town = stop("STOP", "Markaryd station", "rail");
     town["areas"] = json!([area("Markaryds kommun", false)]);
-    fake.geocode("Markaryd", json!([hamlet, town]));
+    // The same name elsewhere is another stop; another feed's name for one
+    // station in the same place is that station.
+    let mut namesake = stop("STOP", "Markaryd", "elsewhere");
+    namesake["areas"] = json!([area("Markaryds kommun", true)]);
+    let mut again = stop("STOP", "Markaryd St.", "copy");
+    again["areas"] = json!([area("Markaryds kommun", true)]);
+    fake.geocode("Markaryd", json!([hamlet, town, namesake, again]));
     let motis = client(&fake).await;
-    let areas: Vec<Option<String>> = motis.suggest("Markaryd").await.unwrap().into_iter().map(|s| s.area).collect();
+    let found: Vec<(String, Option<String>)> =
+        motis.suggest("Markaryd").await.unwrap().into_iter().map(|s| (s.id, s.area)).collect();
     // The area to show is the one marked so; none marked, none.
-    assert_eq!(areas, [Some("Ödeshögs kommun".to_owned()), None]);
+    let expected = [("bus", Some("Ödeshögs kommun")), ("rail", None), ("elsewhere", Some("Markaryds kommun"))];
+    assert_eq!(found, expected.map(|(id, area)| (id.to_owned(), area.map(str::to_owned))));
 }
 
 #[tokio::test]

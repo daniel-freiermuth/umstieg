@@ -72,6 +72,41 @@
       input.picked {
         border-color: color-mix(in srgb, var(--ok) 70%, var(--grid));
       }
+      .station {
+        position: relative;
+      }
+      .suggestions {
+        position: absolute;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        margin: 2px 0 0;
+        padding: 4px 0;
+        list-style: none;
+        background: var(--panel);
+        border: 1px solid var(--grid);
+        border-radius: 8px;
+        box-shadow: 0 6px 20px rgb(0 0 0 / 15%);
+        max-height: 320px;
+        overflow-y: auto;
+      }
+      .suggestions li {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      .suggestions li.active,
+      .suggestions li:hover {
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+      }
+      .suggestions .area {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
       .station .status {
         color: var(--warn);
         font-size: 12px;

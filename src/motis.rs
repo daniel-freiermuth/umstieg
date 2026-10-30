@@ -361,9 +361,12 @@ impl Motis {
         matches.retain(|m| m.kind == "STOP");
         matches.sort_by_key(|m| !m.has_trains());
         let mut found: Vec<Suggestion> = Vec::new();
+        // One per station: feeds name it alike ("Hässleholm C", "Hässleholm
+        // Central"); one name in two places is two.
         for m in matches {
-            if found.iter().all(|s| s.name != m.name) {
-                let area = m.areas.into_iter().find(|a| a.default).map(|a| a.name);
+            let area = m.areas.into_iter().find(|a| a.default).map(|a| a.name);
+            let key = crate::db::station_key(&m.name);
+            if found.iter().all(|s| crate::db::station_key(&s.name) != key || s.area != area) {
                 found.push(Suggestion { name: m.name, id: m.id, area });
             }
         }

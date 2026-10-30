@@ -12,6 +12,7 @@ import {
   decodeSuggestions,
   initial,
   label,
+  nextIndex,
   omitted,
   picked,
   sections,
@@ -48,31 +49,99 @@ const pickedNow = (text: string): Stop | null => {
 };
 
 /**
- * A text input suggesting stations from Transitous as one types; `typed`
- * runs on every change with the station the text names exactly, if any.
+ * A text input suggesting stations from Transitous as one types, each with
+ * where it lies; `typed` runs on every change with the station the text
+ * names exactly, if any. The list is our own, not a datalist: browsers match
+ * the typed text against an option's label too, and Firefox shows only the
+ * label, so "Markaryd st" found nothing and "Markaryd" three municipalities.
  */
 let lists = 0;
-function stationText(id: string, typed: (stop: Stop | null) => void): HTMLInputElement {
+function stationText(
+  id: string,
+  typed: (stop: Stop | null) => void,
+): { input: HTMLInputElement; list: HTMLUListElement } {
+  const list = element("ul", { className: "suggestions", id: `stops-${String(lists++)}`, hidden: true });
+  list.setAttribute("role", "listbox");
   const input = element("input", { type: "text", id, autocomplete: "off" });
-  const list = element("datalist", { id: `stops-${String(lists++)}` });
-  input.setAttribute("list", list.id);
-  document.body.append(list);
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", list.id);
+  input.setAttribute("aria-expanded", "false");
+  let shown: Suggestion[] = [];
+  let active = -1;
+  const highlight = (i: number): void => {
+    active = i;
+    [...list.children].forEach((li, k) => li.classList.toggle("active", k === i));
+    if (i < 0) input.removeAttribute("aria-activedescendant");
+    else input.setAttribute("aria-activedescendant", `${list.id}-${String(i)}`);
+  };
+  const open = (yes: boolean): void => {
+    list.hidden = !yes;
+    input.setAttribute("aria-expanded", String(yes));
+    highlight(-1);
+  };
+  const choose = (s: Suggestion): void => {
+    // The one chosen, also where another stop has the same name.
+    known.set(s.name, s.id);
+    input.value = s.name;
+    open(false);
+    typed({ name: s.name, id: s.id });
+  };
+  const show = (stops: Suggestion[]): void => {
+    shown = stops;
+    list.replaceChildren(
+      ...stops.map((s, i) => {
+        const li = element("li", { id: `${list.id}-${String(i)}` });
+        li.setAttribute("role", "option");
+        li.append(element("span", { className: "name", textContent: s.name }));
+        if (s.area !== null) li.append(element("span", { className: "area", textContent: s.area }));
+        // Before the input loses focus, which closes the list.
+        li.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          choose(s);
+        });
+        return li;
+      }),
+    );
+    open(stops.length > 0 && document.activeElement === input);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      highlight(nextIndex(active, shown.length, e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter") {
+      const s = shown[active];
+      if (s !== undefined) {
+        e.preventDefault();
+        choose(s);
+      }
+    } else if (e.key === "Escape") open(false);
+  });
+  input.addEventListener("blur", () => {
+    open(false);
+  });
   let timer: number | undefined;
   input.addEventListener("input", () => {
     typed(pickedNow(input.value));
     clearTimeout(timer);
     const q = stationSearch(input.value);
-    if (q === null || pickedNow(input.value) !== null) return;
+    if (q === null || pickedNow(input.value) !== null) {
+      open(false);
+      return;
+    }
     timer = setTimeout(() => {
       void lookup(q).then((stops) => {
-        // The area beside the name: which of two Markaryds.
-        list.replaceChildren(...stops.map((s) => Object.assign(new Option(s.name), { label: s.area ?? "" })));
-        // The text may name a suggestion exactly by now.
+        // Only if the text is still what was asked about.
+        if (stationSearch(input.value) !== q) return;
+        // The text may name a suggestion exactly by now: a via becomes a chip
+        // and its text empties, leaving nothing to suggest.
         typed(pickedNow(input.value));
+        if (stationSearch(input.value) === q) show(stops);
       });
     }, 250);
   });
-  return input;
+  return { input, list };
 }
 
 const hidden = (name: string): HTMLInputElement => element("input", { type: "hidden", name });
@@ -96,9 +165,9 @@ function stationField(f: Field, id: string): StationField {
     input.setCustomValidity(stop !== null || blank ? "" : NOT_PICKED);
     status.textContent = stop !== null || blank ? "" : NOT_PICKED;
   };
-  const input = stationText(id, show);
+  const { input, list } = stationText(id, show);
   Object.assign(input, { name: f.name, required: true, placeholder: "Station" });
-  box.append(input, stationId, status);
+  box.append(input, list, stationId, status);
   const [given] = picked(SPEC.values, f.name);
   if (given !== undefined) known.set(given.name, given.id);
   input.value = given?.name ?? unpicked(SPEC.values, f.name).join("; ");
@@ -145,7 +214,7 @@ function viaField(f: Field, id: string): HTMLElement {
   const check = (): void => {
     input.setCustomValidity(input.value.trim() === "" ? "" : `${NOT_PICKED}, or clear the field`);
   };
-  const input = stationText(id, (stop) => {
+  const { input, list } = stationText(id, (stop) => {
     if (stop !== null) {
       stops.push(stop);
       input.value = "";
@@ -154,7 +223,7 @@ function viaField(f: Field, id: string): HTMLElement {
     check();
   });
   input.placeholder = "Add a station";
-  box.append(chips, input, names, ids);
+  box.append(chips, input, list, names, ids);
   render();
   // Names without their ids (an older link): picked, in their order, once every
   // lookup is back, if Transitous suggests exactly them; the others stay as text,

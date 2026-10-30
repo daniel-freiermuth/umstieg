@@ -147,6 +147,16 @@ const decodeSuggestion: Decoder<Suggestion> = (v, path) => {
 /** The server's suggestions for a station input. */
 export const decodeSuggestions: Decoder<Suggestion[]> = array(decodeSuggestion);
 
+/**
+ * The suggestion highlighted after moving `by` (±1) from `current` among
+ * `count`, wrapping around; -1 (none) before the first move.
+ */
+export function nextIndex(current: number, count: number, by: 1 | -1): number {
+  if (count === 0) return -1;
+  if (current < 0) return by === 1 ? 0 : count - 1;
+  return (current + by + count) % count;
+}
+
 /** What to look up for a station input: the trimmed text, null below 3 characters. */
 export function stationSearch(text: string): string | null {
   const q = text.trim();
