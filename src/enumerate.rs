@@ -50,6 +50,14 @@ pub enum Step {
     Walk { footpath: usize },
 }
 
+/// One train of a chain: the trip and the calls where it is boarded and left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ride {
+    pub trip: usize,
+    pub board: usize,
+    pub alight: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Chain {
     pub steps: Vec<Step>,
@@ -72,9 +80,9 @@ impl Transfer {
 }
 
 impl Chain {
-    pub fn rides(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+    pub fn rides(&self) -> impl Iterator<Item = Ride> + '_ {
         self.steps.iter().filter_map(|s| match *s {
-            Step::Ride { trip, board, alight } => Some((trip, board, alight)),
+            Step::Ride { trip, board, alight } => Some(Ride { trip, board, alight }),
             Step::Walk { .. } => None,
         })
     }
@@ -112,7 +120,7 @@ impl Chain {
                 Step::Ride { .. } => break,
             }
         }
-        let (trip, _, alight) = self.rides().last().context("connection without a train")?;
+        let Ride { trip, alight, .. } = self.rides().last().context("connection without a train")?;
         let arrival = tt
             .call(trip, alight)?
             .arrival_time()
@@ -844,8 +852,8 @@ pub fn group(tt: &Timetable, chains: Vec<Chain>) -> Result<Vec<Group>> {
     };
     let mut groups: HashMap<(usize, usize), Vec<(Key, Chain)>> = HashMap::new();
     for chain in chains {
-        let first = chain.rides().next().context("connection without a train")?.0;
-        let last = chain.rides().last().map_or(first, |(trip, _, _)| trip);
+        let first = chain.rides().next().context("connection without a train")?.trip;
+        let last = chain.rides().last().map_or(first, |ride| ride.trip);
         groups.entry((first, last)).or_default().push((key(&chain)?, chain));
     }
     let mut out = groups

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 use chrono_tz::Tz;
 
-use crate::enumerate::{Chain, Step};
+use crate::enumerate::{Chain, Ride, Step};
 use crate::timetable::{Time, Timetable};
 
 /// "HH:MM" in `zone`, with the zone's abbreviation: "06:39 CEST".
@@ -88,7 +88,7 @@ pub fn route(
             Step::Ride { .. } => break,
         }
     }
-    for (i, (trip, board, alight)) in chain.rides().enumerate() {
+    for (i, Ride { trip, board, alight }) in chain.rides().enumerate() {
         // The change before this ride: none before the first.
         let transfer = match i.checked_sub(1) {
             Some(j) => Some(transfers.get(j).with_context(|| format!("no change before ride {i}"))?),

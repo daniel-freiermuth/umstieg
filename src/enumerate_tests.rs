@@ -237,7 +237,7 @@ fn changes_missed_by_up_to_missed_by_are_listed_with_negative_buffer() {
             .chains
             .iter()
             .map(|c| {
-                let second = c.rides().nth(1).unwrap().0;
+                let second = c.rides().nth(1).unwrap().trip;
                 (tt.trips[second].label.clone(), c.min_slack(&tt).unwrap().unwrap().num_minutes())
             })
             .collect();
@@ -543,7 +543,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
     ];
     assert_eq!(got, expected);
     for g in &groups {
-        let trips: Vec<usize> = g.chains[0].rides().map(|(trip, _, _)| trip).collect();
+        let trips: Vec<usize> = g.chains[0].rides().map(|ride| ride.trip).collect();
         assert_eq!((g.first, g.last), (trips[0], trips[trips.len() - 1]));
     }
 }
