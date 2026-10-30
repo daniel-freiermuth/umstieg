@@ -239,3 +239,29 @@ fn with_delays_ignored_added_stops_keep_planned_times() {
     let planned: Vec<_> = ["06:55", "06:58", "11:01", "11:18", "13:21"].into_iter().map(at).collect();
     assert_eq!(actual, planned);
 }
+
+#[test]
+fn added_stops_leave_the_known_calls_times_alone() {
+    // FLX 1236 leaves Frankfurt Süd 40 minutes late and is on time in Hamburg,
+    // where the search had it make a change; Transitous' copy, planned times
+    // only, adds Berlin Hbf in between, which takes on the 40 minutes.
+    let mut b = Builder::new();
+    b.trip("FLX 1236", &[("Frankfurt Süd", "06:55+40", "06:58+40"), ("Hamburg Hbf", "13:21", "")]);
+    let mut tt = b.build("Frankfurt Süd", "Hamburg Hbf");
+    let leg: Leg = serde_json::from_value(json!({
+        "mode": "LONG_DISTANCE",
+        "tripId": "t",
+        "startTime": "2026-10-24T06:58:00Z",
+        "endTime": "2026-10-24T13:21:00Z",
+        "from": { "name": "Frankfurt Süd", "scheduledDeparture": "2026-10-24T06:58:00Z" },
+        "intermediateStops": [{ "name": "Berlin Hbf", "scheduledArrival": "2026-10-24T11:01:00Z",
+                                "scheduledDeparture": "2026-10-24T11:18:00Z" }],
+        "to": { "name": "Hamburg Hbf", "scheduledArrival": "2026-10-24T13:21:00Z" },
+    }))
+    .unwrap();
+    add_stops(&mut tt, 0, &leg).unwrap();
+    let actual: Vec<_> =
+        tt.trips[0].calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().map(|t| t.actual).collect();
+    let expected: Vec<_> = ["07:35", "07:38", "11:41", "11:58", "13:21"].into_iter().map(at).collect();
+    assert_eq!(actual, expected);
+}
