@@ -11,6 +11,7 @@
     "connections.ts",
     "data.ts",
     "decode.ts",
+    "fallback.ts",
     "fields.ts",
     "geometry.ts",
     "picks.ts",

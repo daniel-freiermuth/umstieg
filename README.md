@@ -50,7 +50,9 @@ cut where they catch a train of the plan again ("back on plan"), e.g.
 `--html out.html` writes a self-contained interactive time–distance diagram
 (a Marey chart generalised to a network): x is time, y a fixed height per
 station with the goal at the bottom. Drawn is everything on some connection
-within the limits, listed or not, each stretch once: riding in one colour per
+within the limits, listed or not, and on the fallbacks of every change those
+can make (what to do when a change is missed: later trains, other routes),
+each stretch once: riding in one colour per
 train (follow a train across all connections), waiting as a thin horizontal
 line (merged per station; a listed connection's changes red below
 `--min-transfer`), walking dotted. The page carries this network once and
@@ -80,7 +82,10 @@ itself, over the drawn network by the server's rules (window, travel time,
 changes, changes missed by a little, walks, no station twice, no detours;
 `web/best.ts`), in milliseconds; without picks it finds exactly the listed
 ones. If one is left it is selected. Hovering a listed connection previews it,
-clicking selects it; a connection found through picks has no fallbacks. The
+clicking selects it. Fallbacks of a connection found through picks are found
+in the page too (`web/fallback.ts`, the server's rules), over the network,
+which holds every fallback's stretches: for the listed connections they come
+out exactly as the server's. The
 highlight is what is reachable through every pick; it and the other listed
 connections fade to 30 % once one is selected or previewed. Picks stay marked
 with an orange band. With picks, hovering previews the click: the highlight

@@ -52,9 +52,6 @@ the single hub. Both trains are in Transitous.
   departure forward, earliest arrival backward, per stretch and round) mark
   3× the stretches on Göteborg → Karlshamn without them (tried 2026-10-30).
   As pruning bounds for the enumeration they would speed it up exactly.
-- **Fallbacks for connections found through picks**: the page finds them
-  itself (`web/best.ts`), without what to do if a change is missed; the
-  server could compute those on request.
 - **Highlight from the found connections**: through picks, the highlight is
   still everything reachable over the network (loops included, e.g. Eslöv ↔
   Lund C); the union of the best connections found would be exact.

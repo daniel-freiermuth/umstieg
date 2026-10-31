@@ -28,7 +28,8 @@ import {
   zoom,
 } from "./geometry";
 import { type Connection, type Need, bestThrough } from "./best";
-import { header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
+import { type Drawn, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
+import { Fallbacks, arrive } from "./fallback";
 import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
 import { type Reach, type Ride, type Spot, covers, network, runsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
@@ -94,6 +95,16 @@ const clockFmt = new Intl.DateTimeFormat("en-GB", {
   timeZoneName: "short",
 });
 const clock = (ms: number): string => clockFmt.format(ms);
+/** Fallbacks of connections found through picks, over the network (which holds every fallback's stretches). */
+const alternatives = new Fallbacks({
+  pieces: D.pieces,
+  network: D.network,
+  stations: D.names.length,
+  limits: D.limits,
+  names: D.names,
+  trips: D.trips,
+  clock,
+});
 
 // Connections' routes and fallbacks: in the page of a plot file, otherwise
 // asked for when shown (`umstieg serve` keeps them; a night search can list
@@ -164,7 +175,8 @@ const timeFmt = new Intl.DateTimeFormat(undefined, {
 // One colour per train, so a train can be followed across all connections.
 const trainColor = (t: number): string => `hsl(${String((t * 137.508) % 360)}, 70%, 45%)`;
 const HINT =
-  "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " +
+  "Drawn is everything on some connection within the limits, or on its fallbacks; listed are the best " +
+  "connections. Hover a line " +
   "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " +
   "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " +
   "it; grey parts lead past your picks), a pick again to remove it.";
@@ -705,8 +717,13 @@ function withBest(n: Narrowed | null): Candidates | null {
 function chainOf(c: Connection): number {
   const listed = listedBySignature.get(signature(c.steps));
   if (listed !== undefined) return listed;
-  const pieces = piecesOf(c, D.names, D.trips, D.limits.minTransfer, clock).map((p): number => {
-    D.pieces.push({ ...p, pts: [] });
+  const add = (p: Drawn): Piece => {
+    const piece = { ...p, pts: [] };
+    D.pieces.push(piece);
+    return piece;
+  };
+  const pieces = piecesOf(c, D.names, D.trips, D.limits.minTransfer, clock).map((p) => {
+    add(p);
     return D.pieces.length - 1;
   });
   const rides = c.steps.flatMap((s) => (s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []));
@@ -715,7 +732,19 @@ function chainOf(c: Connection): number {
   if (group < 0) group = D.groups.push({ label, count: 0 }) - 1;
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
-  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks: [] });
+  // Fallbacks per change, as the server computes them for the listed ones.
+  const fallbacks = c.steps
+    .filter((s) => s.kind === "ride")
+    .slice(1)
+    .flatMap((_, change) =>
+      alternatives.forChange(c, change).map((a) => ({
+        at: item(D.names, a.station),
+        line: a.line,
+        pieces: a.pieces.map(add),
+        arrive: arrive(a.lands, c.arrival, clock),
+      })),
+    );
+  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks });
   listedBySignature.set(signature(c.steps), i);
   return i;
 }

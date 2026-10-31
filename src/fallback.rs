@@ -12,6 +12,7 @@ use chrono_tz::Tz;
 use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network};
 use crate::text;
+use crate::usable::Usable;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
 pub const WINDOW: TimeDelta = TimeDelta::hours(2);
@@ -68,6 +69,47 @@ impl<'n> Fallbacks<'n> {
                 Ok(slot.insert(enumerate::enumerate(net, &limits)?.chains))
             }
         }
+    }
+
+    /// Every fallback of every change a connection on `network` can make (a
+    /// train's arrival, maybe a walk, then any later train there, or one
+    /// missed by up to `missed_by`): with their stretches the page finds the
+    /// fallbacks of connections it finds itself.
+    pub fn for_network(&mut self, network: &Usable, missed_by: TimeDelta) -> Result<Vec<Chain>> {
+        let tt = self.net.tt;
+        // Per station where trains leave: (where the train arrived, when one is ready there).
+        let mut ready: HashMap<usize, Vec<(usize, DateTime<Utc>)>> = HashMap::new();
+        for run in &network.rides {
+            for k in run.from.saturating_add(1)..=run.to {
+                let call = tt.call(run.trip, k)?;
+                let Some(arrival) = call.arrival_time() else { continue };
+                ready.entry(call.station).or_default().push((call.station, arrival));
+                for walk in &network.walks {
+                    let fp = tt.footpath(walk.footpath)?;
+                    if fp.from == call.station {
+                        let there = checked::later(arrival, fp.duration, "walk after a train")?;
+                        ready.entry(fp.to).or_default().push((call.station, there));
+                    }
+                }
+            }
+        }
+        let mut changes = HashSet::new();
+        for run in &network.rides {
+            for k in run.from..run.to {
+                let call = tt.call(run.trip, k)?;
+                let Some(departure) = call.departure_time() else { continue };
+                for &(station, at) in ready.get(&call.station).into_iter().flatten() {
+                    if checked::earlier_or_min(at, missed_by) <= departure {
+                        changes.insert((station, departure, at));
+                    }
+                }
+            }
+        }
+        let mut all = Vec::new();
+        for (station, departure, at) in changes {
+            all.extend_from_slice(self.candidates(station, departure, at)?);
+        }
+        Ok(all)
     }
 
     /// The best fallbacks if the train after change `change` of `chain` is missed.

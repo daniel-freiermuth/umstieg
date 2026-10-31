@@ -74,6 +74,7 @@ export function route(
   trips: readonly string[],
   minTransfer: number,
   clock: Clock,
+  rejoin: number | null = null,
 ): string {
   const name = (s: number): string => item(names, s);
   const rides = c.steps.flatMap((s, i) => (s.kind === "ride" ? [i] : []));
@@ -86,6 +87,7 @@ export function route(
   // Where the last train arrived, when, and the walk since (counted in the next change).
   let last: [station: number, at: number] | null = null;
   let walked = 0;
+  let ride = 0;
   for (const s of c.steps) {
     if (s.kind === "walk") {
       walked += s.end - s.start;
@@ -100,9 +102,15 @@ export function route(
       parts.push(`‖${buffer(a.dep - last[1] - walked, minTransfer)}${walk}‖`);
       if (name(a.station) !== name(last[0])) from = ` ${name(a.station)}`;
     }
+    // A fallback ends where it catches a train of the plan again (ride `rejoin`).
+    if (ride === rejoin) {
+      parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} (back on plan)`);
+      return parts.join(" ");
+    }
     parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} → ${clock(b.arr)} ${name(b.station)}`);
     last = [b.station, b.arr];
     walked = 0;
+    ride++;
   }
   parts.push(...walks(c.steps.slice(final + 1)));
   return parts.join(" ");
@@ -119,11 +127,14 @@ export function piecesOf(
   trips: readonly string[],
   minTransfer: number,
   clock: Clock,
+  fallback: { start: [station: number, since: number]; until: number | null } | null = null,
 ): Drawn[] {
   const name = (s: number): string => item(names, s);
   const out: Drawn[] = [];
-  // Where and since when the connection is, once a train has been taken.
-  let here: [station: number, since: number] | null = null;
+  // Where and since when the connection is, once a train has been taken; a
+  // fallback from where the change was missed, waiting from the missed train.
+  let here: [station: number, since: number] | null = fallback?.start ?? null;
+  let ride = 0;
   for (const s of c.steps) {
     if (s.kind === "walk") {
       const start: number = here === null ? s.start : here[1];
@@ -146,10 +157,15 @@ export function piecesOf(
     if (!a || !b || a.dep === null || b.arr === null) continue;
     if (here !== null) {
       const wait = a.dep - here[1];
+      // Before the first train only a fallback waits (after the missed train):
+      // no change that could be too short.
+      const missed = ride === 0;
       out.push({
         kind: "wait",
-        info: `${buffer(wait, minTransfer)} at ${name(a.station)}`,
-        warn: wait < minTransfer,
+        info: missed
+          ? `${duration(wait)} at ${name(a.station)} after the missed train`
+          : `${buffer(wait, minTransfer)} at ${name(a.station)}`,
+        warn: !missed && wait < minTransfer,
         trip: null,
         raw: [
           [Math.min(here[1], a.dep), a.station],
@@ -157,6 +173,7 @@ export function piecesOf(
         ],
       });
     }
+    if (ride === fallback?.until) break;
     const raw: [number, number][] = [];
     s.calls.forEach((call, k) => {
       if (k > 0 && call.arr !== null) raw.push([call.arr, call.station]);
@@ -170,6 +187,7 @@ export function piecesOf(
       raw,
     });
     here = [b.station, b.arr];
+    ride++;
   }
   return out;
 }

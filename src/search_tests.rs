@@ -312,3 +312,24 @@ async fn sj_adds_rough_routes_only_through_sweden_and_its_failures_are_warnings(
     let off = super::Feeds { efa: None, db: None, tv: None, sj: None };
     assert!(!super::with_sj(&off, &sweden, &mut empty(), &events, asked).await);
 }
+
+/// The network drawn holds the connections and their changes' fallbacks.
+#[test]
+fn the_drawn_network_holds_the_fallbacks_too() {
+    let mut b = Builder::new();
+    let re1 = b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:50", "")]);
+    let re2 = b.trip("RE 2", &[("B", "", "09:00"), ("C", "09:30", "")]);
+    let re3 = b.trip("RE 3", &[("B", "", "09:30"), ("C", "10:30", "")]);
+    let tt = b.build("A", "C");
+    let net = Network::new(&tt).unwrap();
+    let mut fallbacks = crate::fallback::Fallbacks::new(&net, TimeDelta::minutes(5), UTC);
+    let chain = enumerate::Chain {
+        steps: vec![
+            enumerate::Step::Ride { trip: re1, board: 0, alight: 1 },
+            enumerate::Step::Ride { trip: re2, board: 0, alight: 1 },
+        ],
+    };
+    let drawn = super::drawn(&tt, &[chain], &mut fallbacks, TimeDelta::minutes(5)).unwrap();
+    let trips: Vec<usize> = drawn.rides.iter().map(|r| r.trip).collect();
+    assert_eq!(trips, [re1, re2, re3]);
+}

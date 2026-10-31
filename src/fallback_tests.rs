@@ -246,3 +246,69 @@ fn fallbacks_of_a_missed_change_leave_after_the_arrival() {
         expect(&[("S 1 Hamburg-Schleswig / RJ 384 from Schleswig (back on plan)", "17:00")])
     );
 }
+
+/// The fallbacks of every change a connection on the network can make: at
+/// Hamburg after ICE 2, and wherever RJ 384 stands (Altona, Schleswig), also
+/// when arriving a little late (missed by up to `missed_by`); nothing at the
+/// origin, where nothing arrives.
+#[test]
+fn every_change_on_the_network_gets_its_fallbacks() {
+    let tt = hamburg();
+    let net = Network::new(&tt).unwrap();
+    let p = plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
+    let network = crate::usable::of_chains(&tt, [&p]);
+    let station = |name: &str| tt.stations.iter().position(|s| s.name == name).unwrap();
+    let shows = |chains: &[Chain]| {
+        let mut out: Vec<String> = chains.iter().map(|c| show(&tt, &c.steps)).collect();
+        out.sort();
+        out.dedup();
+        out
+    };
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let all = fallbacks.for_network(&network, TimeDelta::minutes(5)).unwrap();
+    let mut expected = Vec::new();
+    for (name, missed, ready) in
+        [("Hamburg", "12:00", "11:51"), ("Altona", "12:25", "12:20"), ("Schleswig", "13:32", "13:30")]
+    {
+        expected.extend(fallbacks.candidates(station(name), at(missed), at(ready)).unwrap().to_vec());
+    }
+    assert!(!expected.is_empty());
+    assert_eq!(shows(&all), shows(&expected));
+
+    // ICE 2 arriving at 12:04, four minutes after RJ 384 left: still a change, the fallbacks from then.
+    let mut b = Builder::new();
+    b.trip("ICE 2", &[("Frankfurt", "", "08:00"), ("Hamburg", "12:04", "")]);
+    b.trip("RJ 384", &[("Hamburg", "", "12:00"), ("København", "17:00", "")]);
+    b.trip("S 1", &[("Hamburg", "", "12:05"), ("København", "17:20", "")]);
+    let late = b.build("Frankfurt", "København");
+    let net = Network::new(&late).unwrap();
+    let p = plan(&late, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let missed = fallbacks.for_network(&crate::usable::of_chains(&late, [&p]), TimeDelta::minutes(5)).unwrap();
+    assert_eq!(missed.iter().map(|c| show(&late, &c.steps)).collect::<Vec<_>>(), ["S 1 Hamburg-København"]);
+    let strict = fallbacks.for_network(&crate::usable::of_chains(&late, [&p]), TimeDelta::minutes(3)).unwrap();
+    assert!(strict.is_empty(), "missed by more than allowed: no change there");
+}
+
+#[test]
+fn a_change_with_a_walk_gets_the_fallbacks_from_where_the_train_arrived() {
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
+    b.walk("Zentrum", "Hbf", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let chain = Chain {
+        steps: vec![
+            ride(&tt, "STR 4", "Dorf", "Zentrum"),
+            Step::Walk { footpath: walk },
+            ride(&tt, "ICE 1", "Hbf", "Ziel"),
+        ],
+    };
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let all = fallbacks.for_network(&crate::usable::of_chains(&tt, [&chain]), TimeDelta::minutes(5)).unwrap();
+    let shown: Vec<String> = all.iter().map(|c| show(&tt, &c.steps)).collect();
+    assert!(shown.iter().any(|s| s.contains("ICE 3")), "{shown:?}");
+}

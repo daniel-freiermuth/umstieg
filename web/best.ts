@@ -58,6 +58,21 @@ export interface Connection {
   slack: number | null;
 }
 
+type Ride = Extract<Step, { kind: "ride" }>;
+/** When a ride leaves its first stop and reaches its last: rides always do. */
+export function boardAt(s: Ride): number {
+  const t = item(s.calls, 0).dep;
+  // Stryker disable next-line StringLiteral: unreachable, the search boards only where trains leave.
+  if (t === null) throw new Error("a ride leaves where it is boarded");
+  return t;
+}
+export function alightAt(s: Ride): number {
+  const t = item(s.calls, s.calls.length - 1).arr;
+  // Stryker disable next-line StringLiteral: unreachable, the search alights only where trains arrive.
+  if (t === null) throw new Error("a ride arrives where it is left");
+  return t;
+}
+
 /** A worst buffer this long is enough: longer ones don't count as better. */
 export const ENOUGH_BUFFER = 90 * 60e3;
 
@@ -206,6 +221,29 @@ export function bestThrough(
   needs: readonly Need[],
   maxNodes = 400_000,
 ): { found: Connection[]; complete: boolean } {
+  return search(pieces, network, stations, limits, needs, maxNodes, false);
+}
+
+/** Every connection within `limits`, latest departure first (what fallbacks are chosen from). */
+export function everyConnection(
+  pieces: readonly Stretch[],
+  network: readonly number[],
+  stations: number,
+  limits: Limits,
+  maxNodes = 400_000,
+): Connection[] {
+  return search(pieces, network, stations, limits, [], maxNodes, true).found;
+}
+
+function search(
+  pieces: readonly Stretch[],
+  network: readonly number[],
+  stations: number,
+  limits: Limits,
+  needs: readonly Need[],
+  maxNodes: number,
+  every: boolean,
+): { found: Connection[]; complete: boolean } {
   const runs: Run[] = [];
   const walks = new Map<number, Map<number, number>>();
   for (const p of network.map((pi) => item(pieces, pi))) {
@@ -251,8 +289,8 @@ export function bestThrough(
     if (!needs.every((n) => meets(steps, n))) return;
     const c: Connection = { steps: [...steps], departure: leave, arrival, changes: rides - 1, slack };
     const k = keyOf(c);
-    if (found.some((f) => beats(keyOf(f), k))) return;
-    found = [...found.filter((f) => !beats(k, keyOf(f))), c];
+    if (every) found.push(c);
+    else if (!found.some((f) => beats(keyOf(f), k))) found = [...found.filter((f) => !beats(k, keyOf(f))), c];
   };
   // Pruning only, so none of it changes what is found: nothing found yet beats
   // whatever the partial connection can become, and no need tied to a time
@@ -265,7 +303,7 @@ export function bestThrough(
       changes: rides - 1,
       slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER),
     };
-    if (found.some((f) => beats(keyOf(f), bound))) return true;
+    if (!every && found.some((f) => beats(keyOf(f), bound))) return true;
     return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
   };
   // Stryker restore all

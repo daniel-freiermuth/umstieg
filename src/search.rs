@@ -320,6 +320,19 @@ pub async fn run(
     blocking(events, move |updates| report.write(updates)).await
 }
 
+/// What all `chains` use, drawn whether listed or not, and what the fallbacks
+/// of every change on it use: so the page finds the fallbacks of connections
+/// it finds itself.
+fn drawn(
+    tt: &timetable::Timetable,
+    chains: &[Chain],
+    fallbacks: &mut Fallbacks<'_>,
+    missed_by: TimeDelta,
+) -> Result<usable::Usable> {
+    let extra = fallbacks.for_network(&usable::of_chains(tt, chains), missed_by)?;
+    Ok(usable::of_chains(tt, chains.iter().chain(&extra)))
+}
+
 /// What the search kept to, for the page's own search through picks.
 fn bounds(limits: &Limits, fastest: TimeDelta) -> plot::Bounds {
     plot::Bounds {
@@ -608,8 +621,9 @@ impl Report {
                 missed = missed.saturating_add(1);
             }
         }
-        // What all of them use, drawn whether listed or not.
-        let network = plot.is_some().then(|| usable::of_chains(tt, &result.chains));
+        let mut fallbacks = Fallbacks::new(&net, min_transfer, zone);
+        let network =
+            plot.is_some().then(|| drawn(tt, &result.chains, &mut fallbacks, limits.missed_by)).transpose()?;
         let listed = if args.all { result.chains } else { enumerate::best(tt, result.chains)? };
         let groups = enumerate::group(tt, listed)?;
         let listed = groups.iter().map(|g| g.chains.len()).sum();
@@ -647,7 +661,6 @@ impl Report {
             summarize(fastest, result.complete_up_to, &limits, (total, listed, groups.len()), missed);
         writeln!(out, "{summary} ({} states explored{completeness})\n", result.nodes)?;
 
-        let mut fallbacks = Fallbacks::new(&net, min_transfer, zone);
         write_groups(&mut out, tt, &groups, &args, &mut fallbacks, min_transfer, zone)?;
         let times = if args.planned { "planned times" } else { "live data where available" };
         writeln!(out, "Data: Transitous, https://transitous.org/sources/ — {times}.")?;

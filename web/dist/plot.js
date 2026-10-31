@@ -329,6 +329,18 @@ function distanceToLine(px, py, p) {
 }
 
 // best.ts
+function boardAt(s) {
+  const t = item(s.calls, 0).dep;
+  if (t === null)
+    throw new Error("a ride leaves where it is boarded");
+  return t;
+}
+function alightAt(s) {
+  const t = item(s.calls, s.calls.length - 1).arr;
+  if (t === null)
+    throw new Error("a ride arrives where it is left");
+  return t;
+}
 var ENOUGH_BUFFER = 90 * 60000;
 function callsOf(raw) {
   const calls = [];
@@ -411,6 +423,12 @@ function isDetour(presence2, earlier, dep, minTransfer) {
   return false;
 }
 function bestThrough(pieces, network, stations, limits, needs, maxNodes = 400000) {
+  return search(pieces, network, stations, limits, needs, maxNodes, false);
+}
+function everyConnection(pieces, network, stations, limits, maxNodes = 400000) {
+  return search(pieces, network, stations, limits, [], maxNodes, true).found;
+}
+function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const runs = [];
   const walks = new Map;
   for (const p of network.map((pi) => item(pieces, pi))) {
@@ -456,9 +474,10 @@ function bestThrough(pieces, network, stations, limits, needs, maxNodes = 400000
       return;
     const c = { steps: [...steps], departure: leave, arrival, changes: rides - 1, slack };
     const k = keyOf(c);
-    if (found.some((f) => beats(keyOf(f), k)))
-      return;
-    found = [...found.filter((f) => !beats(k, keyOf(f))), c];
+    if (every)
+      found.push(c);
+    else if (!found.some((f) => beats(keyOf(f), k)))
+      found = [...found.filter((f) => !beats(k, keyOf(f))), c];
   };
   const hopeless = (ready) => {
     const bound = {
@@ -467,7 +486,7 @@ function bestThrough(pieces, network, stations, limits, needs, maxNodes = 400000
       changes: rides - 1,
       slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER)
     };
-    if (found.some((f) => beats(keyOf(f), bound)))
+    if (!every && found.some((f) => beats(keyOf(f), bound)))
       return true;
     return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
   };
@@ -610,7 +629,7 @@ function header(c, minTransfer, clock) {
   const min = c.slack === null ? "direct" : `min ${buffer(c.slack, minTransfer)}`;
   return `${clock(c.departure)} → ${clock(c.arrival)}  ${duration(c.arrival - c.departure)}  ${String(c.changes)}×  ${min}`;
 }
-function route(c, names, trips, minTransfer, clock) {
+function route(c, names, trips, minTransfer, clock, rejoin = null) {
   const name = (s) => item(names, s);
   const rides = c.steps.flatMap((s, i) => s.kind === "ride" ? [i] : []);
   const [first, final] = [rides[0] ?? 0, rides[rides.length - 1] ?? 0];
@@ -618,6 +637,7 @@ function route(c, names, trips, minTransfer, clock) {
   const parts = walks(c.steps.slice(0, first));
   let last = null;
   let walked = 0;
+  let ride = 0;
   for (const s of c.steps) {
     if (s.kind === "walk") {
       walked += s.end - s.start;
@@ -633,17 +653,23 @@ function route(c, names, trips, minTransfer, clock) {
       if (name(a.station) !== name(last[0]))
         from = ` ${name(a.station)}`;
     }
+    if (ride === rejoin) {
+      parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} (back on plan)`);
+      return parts.join(" ");
+    }
     parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} → ${clock(b.arr)} ${name(b.station)}`);
     last = [b.station, b.arr];
     walked = 0;
+    ride++;
   }
   parts.push(...walks(c.steps.slice(final + 1)));
   return parts.join(" ");
 }
-function piecesOf(c, names, trips, minTransfer, clock) {
+function piecesOf(c, names, trips, minTransfer, clock, fallback = null) {
   const name = (s) => item(names, s);
   const out = [];
-  let here = null;
+  let here = fallback?.start ?? null;
+  let ride = 0;
   for (const s of c.steps) {
     if (s.kind === "walk") {
       const start = here === null ? s.start : here[1];
@@ -667,10 +693,11 @@ function piecesOf(c, names, trips, minTransfer, clock) {
       continue;
     if (here !== null) {
       const wait = a.dep - here[1];
+      const missed = ride === 0;
       out.push({
         kind: "wait",
-        info: `${buffer(wait, minTransfer)} at ${name(a.station)}`,
-        warn: wait < minTransfer,
+        info: missed ? `${duration(wait)} at ${name(a.station)} after the missed train` : `${buffer(wait, minTransfer)} at ${name(a.station)}`,
+        warn: !missed && wait < minTransfer,
         trip: null,
         raw: [
           [Math.min(here[1], a.dep), a.station],
@@ -678,6 +705,8 @@ function piecesOf(c, names, trips, minTransfer, clock) {
         ]
       });
     }
+    if (ride === fallback?.until)
+      break;
     const raw = [];
     s.calls.forEach((call, k) => {
       if (k > 0 && call.arr !== null)
@@ -693,9 +722,100 @@ function piecesOf(c, names, trips, minTransfer, clock) {
       raw
     });
     here = [b.station, b.arr];
+    ride++;
   }
   return out;
 }
+
+// fallback.ts
+var WINDOW = 2 * 60 * 60000;
+var EXTRA = 60 * 60000;
+var CHANGES = 3;
+var SHOWN = 3;
+function transfers(c) {
+  const out = [];
+  let arrived = null;
+  let walked = 0;
+  for (const s of c.steps) {
+    if (s.kind === "walk") {
+      walked += s.end - s.start;
+      continue;
+    }
+    const board = item(s.calls, 0), alight = item(s.calls, s.calls.length - 1);
+    if (arrived !== null && board.dep !== null)
+      out.push({ station: arrived[0], departure: board.dep, ready: arrived[1] + walked });
+    arrived = alight.arr === null ? null : [alight.station, alight.arr];
+    walked = 0;
+  }
+  return out;
+}
+
+class Fallbacks {
+  ground;
+  cache = new Map;
+  constructor(ground) {
+    this.ground = ground;
+  }
+  candidates(station, missed, ready) {
+    const after = Math.max(missed + 60000, ready);
+    const key = `${String(station)}@${String(after)}`;
+    const known = this.cache.get(key);
+    if (known)
+      return known;
+    const g = this.ground;
+    const limits = {
+      ...g.limits,
+      origin: station,
+      from: after,
+      until: after + WINDOW,
+      maxDuration: Infinity,
+      maxChanges: CHANGES,
+      missedBy: 0,
+      keepDetours: false
+    };
+    const all = everyConnection(g.pieces, g.network, g.stations, limits);
+    const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
+    const found = all.filter((c) => c.arrival - c.departure <= fastest + EXTRA);
+    this.cache.set(key, found);
+    return found;
+  }
+  forChange(plan, change) {
+    const g = this.ground;
+    const t = item(transfers(plan), change);
+    const rejoin = rejoins(plan);
+    const ranked = this.candidates(t.station, t.departure, t.ready).map((c) => {
+      const { back, changes, slack, lands } = standing(c, rejoin, plan.arrival);
+      const line = route(c, g.names, g.trips, g.limits.minTransfer, g.clock, back);
+      return { c, back, changes, slack, lands, line };
+    });
+    ranked.sort((a, b) => a.lands - b.lands || a.changes - b.changes || b.slack - a.slack || byText(a.line, b.line));
+    const seen = new Set;
+    const shown = ranked.filter((r) => !seen.has(r.line) && seen.add(r.line)).slice(0, SHOWN);
+    const since = Math.max(t.departure, t.ready);
+    return shown.map((r) => ({
+      station: t.station,
+      line: r.line,
+      lands: r.lands,
+      pieces: piecesOf(r.c, g.names, g.trips, g.limits.minTransfer, g.clock, {
+        start: [t.station, since],
+        until: r.back
+      })
+    }));
+  }
+}
+function rejoins(plan) {
+  return new Map(plan.steps.flatMap((s) => s.kind === "ride" ? [[s.trip, alightAt(s)]] : []));
+}
+function standing(c, rejoin, planned) {
+  const rides = c.steps.flatMap((s) => s.kind === "ride" ? [s] : []);
+  const at = rides.findIndex((r) => boardAt(r) < (rejoin.get(r.trip) ?? -Infinity));
+  const back = at < 0 ? null : at;
+  const changes = back ?? rides.length - 1;
+  const slack = Math.min(...transfers(c).slice(0, changes).map((x) => x.departure - x.ready));
+  return { back, changes, slack, lands: back === null ? c.arrival : planned };
+}
+var byText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+var arrive = (lands, planned, clock) => `${clock(lands)} (+${duration(Math.max(0, lands - planned))})`;
 
 // reach.ts
 function covers(segments, lines, spot) {
@@ -974,6 +1094,15 @@ var clockFmt = new Intl.DateTimeFormat("en-GB", {
   timeZoneName: "short"
 });
 var clock = (ms) => clockFmt.format(ms);
+var alternatives = new Fallbacks({
+  pieces: D.pieces,
+  network: D.network,
+  stations: D.names.length,
+  limits: D.limits,
+  names: D.names,
+  trips: D.trips,
+  clock
+});
 var DETAILS_AT_ONCE = 500;
 var MAX_LISTED = 200;
 var asked = new Set;
@@ -1032,7 +1161,7 @@ var timeFmt = new Intl.DateTimeFormat(undefined, {
   timeZoneName: "short"
 });
 var trainColor = (t) => `hsl(${String(t * 137.508 % 360)}, 70%, 45%)`;
-var HINT = "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " + "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " + "it; grey parts lead past your picks), a pick again to remove it.";
+var HINT = "Drawn is everything on some connection within the limits, or on its fallbacks; listed are the best " + "connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " + "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " + "it; grey parts lead past your picks), a pick again to remove it.";
 var hidden = new Set;
 var pinned = null;
 var picks = [];
@@ -1487,8 +1616,13 @@ function chainOf(c) {
   const listed = listedBySignature.get(signature(c.steps));
   if (listed !== undefined)
     return listed;
+  const add = (p) => {
+    const piece = { ...p, pts: [] };
+    D.pieces.push(piece);
+    return piece;
+  };
   const pieces = piecesOf(c, D.names, D.trips, D.limits.minTransfer, clock).map((p) => {
-    D.pieces.push({ ...p, pts: [] });
+    add(p);
     return D.pieces.length - 1;
   });
   const rides = c.steps.flatMap((s) => s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []);
@@ -1498,7 +1632,13 @@ function chainOf(c) {
     group = D.groups.push({ label, count: 0 }) - 1;
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
-  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks: [] });
+  const fallbacks = c.steps.filter((s) => s.kind === "ride").slice(1).flatMap((_, change) => alternatives.forChange(c, change).map((a) => ({
+    at: item(D.names, a.station),
+    line: a.line,
+    pieces: a.pieces.map(add),
+    arrive: arrive(a.lands, c.arrival, clock)
+  })));
+  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks });
   listedBySignature.set(signature(c.steps), i);
   return i;
 }

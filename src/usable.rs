@@ -52,7 +52,7 @@ fn time(s: Secs) -> DateTime<Utc> {
 /// What `chains` use: their rides as runs of a train (split where none of
 /// them rides through a stop), their waits merged per station (a change missed
 /// by a little from the departure to the arrival), their walks.
-pub fn of_chains(tt: &Timetable, chains: &[Chain]) -> Usable {
+pub fn of_chains<'c>(tt: &Timetable, chains: impl IntoIterator<Item = &'c Chain>) -> Usable {
     // (trip, call k): stretch k → k + 1 ridden; standing at call k.
     let mut stretches: BTreeSet<(usize, usize)> = BTreeSet::new();
     let mut through: HashSet<(usize, usize)> = HashSet::new();
