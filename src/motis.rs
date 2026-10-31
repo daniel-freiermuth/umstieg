@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use crate::cache::DiskCache;
 use crate::db::fold;
 use crate::sync::lock;
+use crate::timetable::ProductClass;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
@@ -50,10 +51,79 @@ impl Place {
     }
 }
 
+/// MOTIS transport mode of a leg. Modes this program doesn't tell apart are
+/// `Other`; EFA and SJ legs get theirs from their own product codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Mode {
+    Walk,
+    Tram,
+    Subway,
+    Metro,
+    Ferry,
+    Airplane,
+    Bus,
+    Coach,
+    Rail,
+    HighspeedRail,
+    LongDistance,
+    NightRail,
+    RegionalFastRail,
+    RegionalRail,
+    Suburban,
+    Funicular,
+    AerialLift,
+    CableCar,
+    #[serde(other)]
+    Other,
+}
+
+impl Mode {
+    /// The API's name, e.g. `HIGHSPEED_RAIL`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Walk => "WALK",
+            Self::Tram => "TRAM",
+            Self::Subway => "SUBWAY",
+            Self::Metro => "METRO",
+            Self::Ferry => "FERRY",
+            Self::Airplane => "AIRPLANE",
+            Self::Bus => "BUS",
+            Self::Coach => "COACH",
+            Self::Rail => "RAIL",
+            Self::HighspeedRail => "HIGHSPEED_RAIL",
+            Self::LongDistance => "LONG_DISTANCE",
+            Self::NightRail => "NIGHT_RAIL",
+            Self::RegionalFastRail => "REGIONAL_FAST_RAIL",
+            Self::RegionalRail => "REGIONAL_RAIL",
+            Self::Suburban => "SUBURBAN",
+            Self::Funicular => "FUNICULAR",
+            Self::AerialLift => "AERIAL_LIFT",
+            Self::CableCar => "CABLE_CAR",
+            Self::Other => "OTHER",
+        }
+    }
+
+    /// DB product class of trains of this mode; `None` for non-rail (and bare `RAIL`).
+    pub const fn class(self) -> Option<ProductClass> {
+        match self {
+            Self::HighspeedRail | Self::LongDistance | Self::NightRail => Some(ProductClass::LongDistance),
+            Self::RegionalFastRail | Self::RegionalRail => Some(ProductClass::Regional),
+            Self::Suburban => Some(ProductClass::SBahn),
+            _ => None,
+        }
+    }
+
+    /// Whether it is a train of any kind.
+    const fn is_train(self) -> bool {
+        matches!(self, Self::Rail) || self.class().is_some()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Leg {
-    pub mode: String,
+    pub mode: Mode,
     pub from: Place,
     pub to: Place,
     pub start_time: DateTime<Utc>,
@@ -91,7 +161,7 @@ impl Leg {
             .flatten()
             .map(str::trim)
             .find(|s| !s.is_empty())
-            .unwrap_or(&self.mode);
+            .unwrap_or(self.mode.as_str());
         let long_name = self.route_long_name.as_deref().is_some_and(|l| l.trim() == base);
         let mut label = match &self.agency_name {
             Some(agency) if long_name => agency.clone(),
@@ -118,14 +188,9 @@ impl Leg {
         digits.parse().ok().filter(|&n| n > 0)
     }
 
-    /// DB product class: 'F' long distance, 'N' regional, 'S' S-Bahn; `None` for non-rail.
-    pub fn class(&self) -> Option<char> {
-        match self.mode.as_str() {
-            "HIGHSPEED_RAIL" | "LONG_DISTANCE" | "NIGHT_RAIL" => Some('F'),
-            "REGIONAL_FAST_RAIL" | "REGIONAL_RAIL" => Some('N'),
-            "SUBURBAN" => Some('S'),
-            _ => None,
-        }
+    /// DB product class; `None` for non-rail.
+    pub const fn class(&self) -> Option<ProductClass> {
+        self.mode.class()
     }
 }
 
@@ -149,7 +214,7 @@ struct GeocodeMatch {
     lat: Option<f64>,
     lon: Option<f64>,
     #[serde(default)]
-    modes: Vec<String>,
+    modes: Vec<Mode>,
     #[serde(default)]
     areas: Vec<Area>,
 }
@@ -166,7 +231,7 @@ struct Area {
 impl GeocodeMatch {
     /// Whether trains call there; a coach stop may be named "… train station".
     fn has_trains(&self) -> bool {
-        self.modes.iter().any(|m| m.ends_with("RAIL") || m == "LONG_DISTANCE" || m == "SUBURBAN")
+        self.modes.iter().any(|m| m.is_train())
     }
 }
 
@@ -184,7 +249,7 @@ pub struct Suggestion {
 #[serde(rename_all = "camelCase")]
 pub struct StopTime {
     pub place: Place,
-    pub mode: String,
+    pub mode: Mode,
     pub trip_id: String,
     pub display_name: Option<String>,
     pub route_short_name: Option<String>,

@@ -94,19 +94,49 @@ fn a_train_without_trip_name_has_its_route_names_number() {
 #[test]
 fn classes_follow_db_product_classes() {
     let cases = [
-        ("HIGHSPEED_RAIL", Some('F')),
-        ("LONG_DISTANCE", Some('F')),
-        ("NIGHT_RAIL", Some('F')),
-        ("REGIONAL_FAST_RAIL", Some('N')),
-        ("REGIONAL_RAIL", Some('N')),
-        ("SUBURBAN", Some('S')),
+        ("HIGHSPEED_RAIL", Some(ProductClass::LongDistance)),
+        ("LONG_DISTANCE", Some(ProductClass::LongDistance)),
+        ("NIGHT_RAIL", Some(ProductClass::LongDistance)),
+        ("REGIONAL_FAST_RAIL", Some(ProductClass::Regional)),
+        ("REGIONAL_RAIL", Some(ProductClass::Regional)),
+        ("SUBURBAN", Some(ProductClass::SBahn)),
         ("BUS", None),
         ("COACH", None),
         ("TRAM", None),
         ("WALK", None),
+        ("A_MODE_MOTIS_ADDS_LATER", None),
     ];
     for (mode, expected) in cases {
         assert_eq!(leg(&json!({ "mode": mode })).class(), expected, "{mode}");
+    }
+}
+
+#[test]
+fn mode_names_are_the_api_names() {
+    use Mode::*;
+    let modes = [
+        Walk,
+        Tram,
+        Subway,
+        Metro,
+        Ferry,
+        Airplane,
+        Bus,
+        Coach,
+        Rail,
+        HighspeedRail,
+        LongDistance,
+        NightRail,
+        RegionalFastRail,
+        RegionalRail,
+        Suburban,
+        Funicular,
+        AerialLift,
+        CableCar,
+        Other,
+    ];
+    for mode in modes {
+        assert_eq!(serde_json::from_value::<Mode>(json!(mode.as_str())).unwrap(), mode, "{}", mode.as_str());
     }
 }
 
@@ -116,9 +146,9 @@ fn legs_and_places_from_a_real_answer() {
     assert_eq!(plan.itineraries.len(), 6);
     let legs = &plan.itineraries[0].legs;
     let walks: Vec<&Leg> = legs.iter().filter(|l| !l.is_transit()).collect();
-    assert!(walks.iter().all(|l| l.mode == "WALK"), "only walks lack a trip");
+    assert!(walks.iter().all(|l| l.mode == Mode::Walk), "only walks lack a trip");
     let ice = legs.iter().find(|l| l.label() == "ICE 772").unwrap();
-    assert_eq!((ice.class(), ice.train_number()), (Some('F'), Some(772)));
+    assert_eq!((ice.class(), ice.train_number()), (Some(ProductClass::LongDistance), Some(772)));
     assert_eq!(ice.duration(), ice.end_time - ice.start_time);
     assert!(ice.duration() > TimeDelta::hours(4));
     // Station ids: the parent station where the feed has one, else the stop.

@@ -41,7 +41,7 @@ fn legs(itinerary: &Itinerary) -> Vec<String> {
             let local = |t: DateTime<Utc>| t.with_timezone(&Stockholm).format("%H:%M").to_string();
             format!(
                 "{} {} #{} {}→{} {}–{}",
-                l.mode,
+                l.mode.as_str(),
                 if l.is_transit() { l.label() } else { "-".to_owned() },
                 l.train_number().map(|n| n.to_string()).unwrap_or_default(),
                 id(&l.from),
@@ -169,7 +169,7 @@ fn route(stops: &[(&str, &str)]) -> Itinerary {
     };
     let places: Vec<Place> = stops.iter().map(place).collect();
     let leg = Leg {
-        mode: "REGIONAL_RAIL".to_owned(),
+        mode: Mode::RegionalRail,
         from: places[0].clone(),
         to: places[places.len().saturating_sub(1)].clone(),
         start_time: swedish("06:00"),
@@ -305,6 +305,6 @@ fn modes_follow_sj_s_transport_methods() {
         ("TAXI", "", "BUS"),
     ];
     for (method, modality, mode) in cases {
-        assert_eq!(ride(&leg(method, modality), &[]).mode, mode, "{method} {modality}");
+        assert_eq!(ride(&leg(method, modality), &[]).mode.as_str(), mode, "{method} {modality}");
     }
 }
