@@ -62,7 +62,6 @@ impl Builder {
             eva: None,
             tv: None,
             board_name: None,
-            tz: None,
             position: None,
             motis_id: None,
         });
