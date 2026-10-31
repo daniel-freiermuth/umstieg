@@ -230,6 +230,30 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05")), ("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
 }
 
+#[test]
+fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
+    // The walk goes both ways: from Hbf the tram is found again behind a walk back.
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
+    b.walk("Zentrum", "Hbf", 8);
+    b.walk("Hbf", "Zentrum", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let chain = Chain {
+        steps: vec![
+            ride(&tt, "STR 4", "Dorf", "Zentrum"),
+            Step::Walk { footpath: walk },
+            ride(&tt, "ICE 1", "Hbf", "Ziel"),
+        ],
+    };
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| f.line.clone()).collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
 /// A change listed although missed (`--missed-by`): the fallbacks leave
 /// once the traveller is there, not right after the missed train.
 #[test]
