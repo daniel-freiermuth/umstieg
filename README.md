@@ -72,15 +72,20 @@ the axis work the same way: hovering shows every connection touching the
 station and what is reachable through it at any time.
 
 Clicking a line or station name picks it: picks are shown at the top of the side
-panel, and clicking a pick (or its line again) removes it. The listed connections
-passing every pick are shown below (e.g. 63 on ICE 378 Mannheim → Frankfurt
-Süd; narrowed further by also picking Ludwigshafen Mitte); if one is left it is
-selected. Hovering a listed connection previews it, clicking selects it. The
+panel, and clicking a pick (or its line again) removes it. The best connections
+passing every pick are shown below, also ones beaten overall (marked so): picking
+ICE 593 Ulm → Augsburg lists the 09:21 via Stuttgart, adding ICE 374 Freiburg →
+Offenburg the 08:55 via Mannheim, which the 09:21 beats. The page finds them
+itself, over the drawn network by the server's rules (window, travel time,
+changes, changes missed by a little, walks, no station twice, no detours;
+`web/best.ts`), in milliseconds; without picks it finds exactly the listed
+ones. If one is left it is selected. Hovering a listed connection previews it,
+clicking selects it; a connection found through picks has no fallbacks. The
 highlight is what is reachable through every pick; it and the other listed
 connections fade to 30 % once one is selected or previewed. Picks stay marked
 with an orange band. With picks, hovering previews the click: the highlight
-through the picks and the hovered line together, the connections that would
-remain ("1 of the 4 connections passing your picks"), the others faded; on a
+through the picks and the hovered line together, the best connections passing
+both ("1 best connection passes your picks and this"), the others faded; on a
 pick, what removing it leaves. What the picks' highlight leaves grey can be
 neither hovered nor picked.
 `↑`/`↓` step through the list, `Esc` or clicking the background clears. The selection gets its changes

@@ -268,6 +268,18 @@ fn identical_stretches_are_stored_once() {
     assert_eq!(plot.pieces[start[0]].pts, plot.pieces[first[1]].pts);
 }
 
+/// Limits of a search from 07:00 to 09:00, five hours, three changes.
+fn bounds() -> super::Bounds {
+    super::Bounds {
+        depart_from: at("07:00"),
+        depart_until: at("09:00"),
+        max_duration: TimeDelta::hours(5),
+        max_changes: 3,
+        missed_by: TimeDelta::minutes(5),
+        keep_detours: false,
+    }
+}
+
 fn located() -> Timetable {
     let mut b = testkit::Builder::new();
     b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
@@ -303,6 +315,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
     // Shown in Berlin, whatever the stations' zones (here none).
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
+        bounds: bounds(),
         usable: &crate::usable::Usable::default(),
         title: "A → C".to_owned(),
         subtitle: "sub".to_owned(),
@@ -332,6 +345,16 @@ fn rendered_data_is_consistent() {
     assert_eq!(data["back"], "/?from=A&to=C");
     assert_eq!(data["title"], "A → C");
     assert_eq!(data["tz"], "Europe/Berlin", "the zone of the plot's time axis");
+    // The page's own search keeps to the search's limits: unix minutes, minutes.
+    let minutes = |hhmm: &str| at(hhmm).timestamp() / 60;
+    assert_eq!(
+        data["limits"],
+        serde_json::json!({
+            "origin": tt.origin, "destination": tt.destination,
+            "depart_from": minutes("07:00"), "depart_until": minutes("09:00"),
+            "max_duration": 300, "max_changes": 3, "missed_by": 5, "min_transfer": 5, "keep_detours": false,
+        })
+    );
 
     let ids: Vec<&str> = data["metrics"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["remaining-time", "fastest-real", "hyperbolic", "axis", "ratio"]);
@@ -408,6 +431,7 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
     let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }]).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
+        bounds: bounds(),
         usable: &crate::usable::Usable::default(),
         title: String::new(),
         subtitle: String::new(),
@@ -493,6 +517,7 @@ fn drawing_reports_the_connections_done() {
     let reports = std::sync::Mutex::new(Vec::new());
     let progress = |done, total| reports.lock().unwrap().push((done, total));
     let plot = Plot {
+        bounds: bounds(),
         usable: &crate::usable::Usable::default(),
         title: String::new(),
         subtitle: String::new(),
@@ -530,6 +555,7 @@ fn the_network_is_drawn_from_what_the_connections_use() {
     let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
+        bounds: bounds(),
         usable: &used,
         title: String::new(),
         subtitle: String::new(),

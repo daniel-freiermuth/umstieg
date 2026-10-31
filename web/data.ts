@@ -1,5 +1,6 @@
 // The plot's data as serialized by src/plot.rs, decoded and linked up.
 
+import type { Limits } from "./best";
 import { type Decoder, array, boolean, field, nullable, number, object, oneOf, pair, string } from "./decode";
 import type { Domain, Pt } from "./geometry";
 import { item } from "./util";
@@ -24,6 +25,19 @@ export interface Data {
   details: DetailData[] | null;
   /** Where to fetch details (`?ids=`), when not in the page. */
   details_url: string | null;
+  /** The search's limits: unix minutes, minutes. */
+  limits: LimitsData;
+}
+interface LimitsData {
+  origin: number;
+  destination: number;
+  depart_from: number;
+  depart_until: number;
+  max_duration: number;
+  max_changes: number;
+  missed_by: number;
+  min_transfer: number;
+  keep_detours: boolean;
 }
 /** What a connection's selection shows: its route and fallbacks (index, arrival). */
 export interface DetailData {
@@ -126,6 +140,26 @@ export const decodeData: Decoder<Data> = (v, path) => {
     ),
     details: field(o, "details", nullable(decodeDetails), path),
     details_url: field(o, "details_url", nullable(string), path),
+    limits: field(
+      o,
+      "limits",
+      (l, p): LimitsData => {
+        const ol = object(l, p);
+        const n = (name: string): number => field(ol, name, number, p);
+        return {
+          origin: n("origin"),
+          destination: n("destination"),
+          depart_from: n("depart_from"),
+          depart_until: n("depart_until"),
+          max_duration: n("max_duration"),
+          max_changes: n("max_changes"),
+          missed_by: n("missed_by"),
+          min_transfer: n("min_transfer"),
+          keep_detours: field(ol, "keep_detours", boolean, p),
+        };
+      },
+      path,
+    ),
   };
 };
 
@@ -152,7 +186,9 @@ export interface Detail {
   route: string;
   fallbacks: Fallback[];
 }
-export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains" | "details"> {
+export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains" | "details" | "limits"> {
+  /** The search's limits in ms, for searching through picks. */
+  limits: Limits;
   pieces: Piece[];
   fallbacks: Omit<Fallback, "arrive">[];
   chains: Chain[];
@@ -166,7 +202,18 @@ export interface Plot extends Omit<Data, "pieces" | "fallbacks" | "chains" | "de
  * apply to both. `pts` is empty until heights are applied.
  */
 export function load(data: Data): Plot {
-  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, ...rest } = data;
+  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, limits: l, ...rest } = data;
+  const limits: Limits = {
+    origin: l.origin,
+    destination: l.destination,
+    from: l.depart_from * 60e3,
+    until: l.depart_until * 60e3,
+    maxDuration: l.max_duration * 60e3,
+    maxChanges: l.max_changes,
+    missedBy: l.missed_by * 60e3,
+    minTransfer: l.min_transfer * 60e3,
+    keepDetours: l.keep_detours,
+  };
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts }): Piece => ({
     kind,
     info,
@@ -176,7 +223,14 @@ export function load(data: Data): Plot {
     pts: [],
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
-  const plot: Plot = { ...rest, pieces, fallbacks, chains, details: new Map() };
+  const plot: Plot = {
+    ...rest,
+    limits,
+    pieces,
+    fallbacks,
+    chains,
+    details: new Map(),
+  };
   addDetails(
     plot,
     (rawDetails ?? []).map((d, i) => [i, d]),

@@ -161,6 +161,22 @@ struct Data {
     details: Option<Vec<Detail>>,
     /// Where to ask for details (`?ids=` comma-separated), when not in the page.
     details_url: Option<String>,
+    limits: LimitsOut,
+}
+
+/// The search's limits, times in unix minutes, durations in minutes: the page
+/// finds the best connections through picked lines by them.
+#[derive(Serialize)]
+struct LimitsOut {
+    origin: usize,
+    destination: usize,
+    depart_from: i64,
+    depart_until: i64,
+    max_duration: i64,
+    max_changes: usize,
+    missed_by: i64,
+    min_transfer: i64,
+    keep_detours: bool,
 }
 
 #[derive(Serialize)]
@@ -337,8 +353,20 @@ impl Builder<'_> {
     }
 }
 
+/// What the search kept to, for the page's own search through picks.
+#[derive(Clone, Copy)]
+pub struct Bounds {
+    pub depart_from: DateTime<Utc>,
+    pub depart_until: DateTime<Utc>,
+    pub max_duration: TimeDelta,
+    pub max_changes: usize,
+    pub missed_by: TimeDelta,
+    pub keep_detours: bool,
+}
+
 pub struct Plot<'a> {
     pub title: String,
+    pub bounds: Bounds,
     /// Everything on some connection within the limits, drawn as the network.
     pub usable: &'a Usable,
     pub subtitle: String,
@@ -533,6 +561,17 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         chains,
         details: plot.details_url.is_none().then(|| details.clone()),
         details_url: plot.details_url.clone(),
+        limits: LimitsOut {
+            origin: tt.origin,
+            destination: tt.destination,
+            depart_from: plot.bounds.depart_from.timestamp().div_euclid(60),
+            depart_until: plot.bounds.depart_until.timestamp().div_euclid(60),
+            max_duration: plot.bounds.max_duration.num_minutes(),
+            max_changes: plot.bounds.max_changes,
+            missed_by: plot.bounds.missed_by.num_minutes(),
+            min_transfer: plot.min_transfer.num_minutes(),
+            keep_detours: plot.bounds.keep_detours,
+        },
     };
     Ok(Rendered { html: page::PLOT.render(Some(&data))?, details })
 }

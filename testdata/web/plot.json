@@ -390,5 +390,16 @@
    ]
   }
  ],
- "details_url": null
+ "details_url": null,
+ "limits": {
+  "origin": 0,
+  "destination": 3,
+  "depart_from": 29337300,
+  "depart_until": 29337420,
+  "max_duration": 300,
+  "max_changes": 15,
+  "missed_by": 5,
+  "min_transfer": 5,
+  "keep_detours": false
+ }
 }

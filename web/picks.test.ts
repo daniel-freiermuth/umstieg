@@ -2,52 +2,42 @@ import { describe, expect, test } from "bun:test";
 import { type Picked, narrow, pinAfter, step, toggle } from "./picks";
 import type { Segment } from "./reach";
 
-const pick = (id: string, chains: number[], segments: Segment[] | null = null): Picked => ({
+const pick = (id: string, station: number | null, segments: Segment[] | null = null): Picked => ({
   id,
   info: id,
   pts: [],
-  chains,
+  need: station === null ? null : { kind: "station", station },
   reach: segments === null ? null : { key: `r:${id}`, segments },
 });
-const all = (): boolean => true;
 const sorted = (segments: readonly Segment[]): Segment[] =>
   [...segments].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
 
 describe("narrow", () => {
   test("nothing picked lists nothing", () => {
-    expect(narrow([], all)).toBeNull();
+    expect(narrow([])).toBeNull();
   });
 
-  test("lists the connections passing every pick, in the first pick's order", () => {
-    const c = narrow([pick("ICE 378", [5, 1, 3, 2]), pick("Ludwigshafen", [2, 3, 9])], all);
-    expect(c?.chains).toEqual([3, 2]);
-    expect(c?.info).toBe("ICE 378 + Ludwigshafen");
-  });
-
-  test("hidden connections are not listed", () => {
-    expect(narrow([pick("a", [1, 2, 3]), pick("b", [3, 2])], (i) => i !== 2)?.chains).toEqual([3]);
+  test("connections must pass every pick that asks something of them", () => {
+    const c = narrow([pick("Mannheim", 5), pick("anything", null), pick("Ludwigshafen", 2)]);
+    expect(c?.needs).toEqual([
+      { kind: "station", station: 5 },
+      { kind: "station", station: 2 },
+    ]);
+    expect(c?.info).toBe("Mannheim + anything + Ludwigshafen");
   });
 
   test("the highlight is what every highlighted pick reaches, whatever the order", () => {
-    const a = pick(
-      "a",
-      [1],
-      [
-        [0, 0, 10],
-        [1, 5, 20],
-      ],
-    );
-    const b = pick(
-      "b",
-      [1],
-      [
-        [0, 5, 15],
-        [2, 0, 9],
-      ],
-    );
-    const plain = pick("c", [1]);
-    const ab = narrow([a, plain, b], all)?.reach;
-    const ba = narrow([b, a, plain], all)?.reach;
+    const a = pick("a", null, [
+      [0, 0, 10],
+      [1, 5, 20],
+    ]);
+    const b = pick("b", null, [
+      [0, 5, 15],
+      [2, 0, 9],
+    ]);
+    const plain = pick("c", null);
+    const ab = narrow([a, plain, b])?.reach;
+    const ba = narrow([b, a, plain])?.reach;
     expect(sorted(ab?.segments ?? [])).toEqual([[0, 5, 10]]);
     expect(sorted(ba?.segments ?? [])).toEqual([[0, 5, 10]]);
     // The key changes with the picks, so the highlight is redrawn.
@@ -55,7 +45,7 @@ describe("narrow", () => {
   });
 
   test("picks without a highlight have none together", () => {
-    expect(narrow([pick("a", [1]), pick("b", [1])], all)?.reach).toBeNull();
+    expect(narrow([pick("a", 1), pick("b", 1)])?.reach).toBeNull();
   });
 });
 
@@ -98,12 +88,12 @@ describe("step", () => {
 
 describe("toggle", () => {
   test("adds a new pick at the end and removes a picked one by id", () => {
-    const a = pick("a", [1]),
-      b = pick("b", [2]);
+    const a = pick("a", 1),
+      b = pick("b", 2);
     const picks = toggle(toggle([], a), b);
     expect(picks.map((p) => p.id)).toEqual(["a", "b"]);
     // The same line clicked again is a new object with the same id.
-    expect(toggle(picks, pick("a", [1])).map((p) => p.id)).toEqual(["b"]);
+    expect(toggle(picks, pick("a", 1)).map((p) => p.id)).toEqual(["b"]);
     expect(picks.map((p) => p.id)).toEqual(["a", "b"]);
   });
 });

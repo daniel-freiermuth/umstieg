@@ -320,6 +320,18 @@ pub async fn run(
     blocking(events, move |updates| report.write(updates)).await
 }
 
+/// What the search kept to, for the page's own search through picks.
+fn bounds(limits: &Limits, fastest: TimeDelta) -> plot::Bounds {
+    plot::Bounds {
+        depart_from: limits.depart_from,
+        depart_until: limits.depart_until,
+        max_duration: checked::sum(fastest, limits.extra_time),
+        max_changes: limits.max_changes,
+        missed_by: limits.missed_by,
+        keep_detours: limits.keep_detours,
+    }
+}
+
 /// Often there is a connection, only leaving after the window (the last bus
 /// has gone): when the planner's first one leaves and arrives, if any.
 fn later(planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>, zone: Tz) -> String {
@@ -658,6 +670,7 @@ impl Report {
                 };
                 let plot = plot::Plot {
                     title,
+                    bounds: bounds(&limits, fastest),
                     usable: &network.unwrap_or_default(),
                     subtitle: format!("{departing} · {summary}{completeness}"),
                     groups: &groups,

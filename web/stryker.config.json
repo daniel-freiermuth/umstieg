@@ -6,7 +6,18 @@
   },
   "checkers": ["typescript"],
   "tsconfigFile": "tsconfig.json",
-  "mutate": ["data.ts", "decode.ts", "fields.ts", "geometry.ts", "picks.ts", "reach.ts", "status.ts", "util.ts"],
+  "mutate": [
+    "best.ts",
+    "connections.ts",
+    "data.ts",
+    "decode.ts",
+    "fields.ts",
+    "geometry.ts",
+    "picks.ts",
+    "reach.ts",
+    "status.ts",
+    "util.ts"
+  ],
   "reporters": ["clear-text", "progress", "html"],
   "htmlReporter": {
     "fileName": "reports/mutation/index.html"

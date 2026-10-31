@@ -27,7 +27,9 @@ import {
   tickStep,
   zoom,
 } from "./geometry";
-import { type Candidates, type Picked, narrow, pinAfter, step, toggle } from "./picks";
+import { type Connection, type Need, bestThrough } from "./best";
+import { header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
+import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
 import { type Reach, type Ride, type Spot, covers, network, runsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
 
@@ -42,6 +44,8 @@ interface Hover {
 }
 interface Target extends Hover {
   id: string;
+  /** What a connection passing it does there. */
+  need?: Need;
   /** Where it lies, to tell whether the picks' highlight covers it; none for a station's row. */
   spot?: Spot;
 }
@@ -77,6 +81,19 @@ interface View {
 }
 
 const D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
+/** The server's best connections come first in `D.chains`; those found through picks follow. */
+const LISTED = D.chains.length;
+const listedBySignature = new Map(
+  D.chains.map((c, i) => [signatureOfPieces(c.pieces.map((pi) => item(D.pieces, pi))), i]),
+);
+const clockFmt = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: D.tz,
+  timeZoneName: "short",
+});
+const clock = (ms: number): string => clockFmt.format(ms);
 
 // Connections' routes and fallbacks: in the page of a plot file, otherwise
 // asked for when shown (`umstieg serve` keeps them; a night search can list
@@ -148,15 +165,15 @@ const timeFmt = new Intl.DateTimeFormat(undefined, {
 const trainColor = (t: number): string => `hsl(${String((t * 137.508) % 360)}, 70%, 45%)`;
 const HINT =
   "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " +
-  "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " +
-  "it are shown (one alone is selected). Click more to narrow down (hovering previews it; grey parts lead past " +
-  "your picks), a pick again to remove it.";
+  "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " +
+  "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " +
+  "it; grey parts lead past your picks), a pick again to remove it.";
 
 // Interaction state. Selection only changes on click; hovering only previews.
 const hidden = new Set<number>(); // hidden groups
 let pinned: number | null = null; // selected connection
 let picks: Picked[] = []; // clicked lines/stations narrowing the list
-let candidates: Candidates | null = null; // connections passing every pick
+let candidates: Candidates | null = null; // the picks and the best connections passing them all
 let hoverTarget: Hover | null = null; // line under the mouse
 let preview: number | null = null; // connection hovered in the candidate list
 let softGroup: number | null = null; // group hovered in the group list
@@ -242,7 +259,7 @@ applyMetric(D.metric);
 // target; stays are resolved by the time under the mouse. Depends only on
 // the heights and which groups are hidden, not on zoom.
 function buildModel(): void {
-  const net = network(D.pieces, D.network, D.chains, (i) => !hidden.has(item(D.chains, i).group));
+  const net = network(D.pieces, D.network, D.chains.slice(0, LISTED), (i) => !hidden.has(item(D.chains, i).group));
   const { stays, walks, touching, chainsAt, reach: closure } = net;
   const edges = net.rides.map((r): Edge => {
     const [a, b] = r.pts;
@@ -268,6 +285,7 @@ function buildModel(): void {
           chains: [...e.chains],
           pts: e.pts,
           spot: { piece: e.piece, from: a[0], to: b[0] },
+          need: { kind: "ride", trip: e.trip, from: a[2], at: a[0], to: b[2], until: b[0] },
           reach: {
             key: id,
             with: e.chains,
@@ -307,6 +325,7 @@ function buildModel(): void {
             reach: r,
             pts,
             spot: { station: s, t },
+            need: { kind: "stay", station: s, at: t },
           };
         },
       });
@@ -314,13 +333,17 @@ function buildModel(): void {
   for (const [pi, chains] of walks) {
     const p = item(D.pieces, pi);
     const [first, last] = [p.pts[0], p.pts[p.pts.length - 1]];
-    const spot = first && last ? { piece: pi, from: first[0], to: last[0] } : undefined;
     const t: Target = {
       id: `walk:${String(pi)}`,
       info: p.info,
       chains: [...chains],
       pts: p.pts,
-      ...(spot ? { spot } : {}),
+      ...(first && last
+        ? {
+            spot: { piece: pi, from: first[0], to: last[0] },
+            need: { kind: "walk", from: first[2], to: last[2], at: first[0] },
+          }
+        : {}),
     };
     targets.push({ pts: t.pts, at: () => t });
   }
@@ -336,6 +359,7 @@ function buildModel(): void {
       return {
         id: `station:${String(s)}`,
         info: `${item(D.names, s)} · any time`,
+        need: { kind: "station", station: s },
         chains: [...chains],
         pts: [
           [full.t0, h, s],
@@ -637,19 +661,63 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
 // picks narrow down: the listed connections pass all of them, the highlight is
 // what is reachable through each. One connection left is selected directly.
 function choose(target: Target | Picked): void {
-  picks = toggle(picks, {
-    id: target.id,
-    info: target.info,
-    pts: target.pts,
-    chains: target.chains,
-    reach: target.reach ?? null,
-  });
+  picks = toggle(picks, asPick(target));
   applyPicks();
   refresh();
 }
+const asPick = (t: Target | Picked): Picked => ({
+  id: t.id,
+  info: t.info,
+  pts: t.pts,
+  need: t.need ?? null,
+  reach: t.reach ?? null,
+});
 function applyPicks(): void {
-  candidates = narrow(picks, (i) => !hidden.has(item(D.chains, i).group));
+  candidates = withBest(narrow(picks));
   pinned = candidates === null ? null : pinAfter(candidates.chains, pinned);
+}
+
+/**
+ * The picks together with the best connections passing all of them, found
+ * in the page over the drawn network (best.ts): the server's listed ones,
+ * and others beaten overall but best through the picks. Searches are kept.
+ */
+interface Candidates extends Narrowed {
+  chains: number[];
+  /** Whether the search finished (it is cut short past a step limit). */
+  complete: boolean;
+}
+const searched = new Map<string, { chains: number[]; complete: boolean }>();
+function withBest(n: Narrowed | null): Candidates | null {
+  if (n === null) return null;
+  const key = JSON.stringify(n.needs);
+  let found = searched.get(key);
+  if (found === undefined) {
+    const { found: conns, complete } = bestThrough(D.pieces, D.network, D.names.length, D.limits, n.needs);
+    found = { chains: conns.map(chainOf), complete };
+    searched.set(key, found);
+    applyHeights(D, metricIndex);
+  }
+  return { ...n, chains: found.chains.filter((i) => !hidden.has(item(D.chains, i).group)), complete: found.complete };
+}
+
+/** The connection's index in `D.chains`: a listed one's, else a new one, drawn and described here. */
+function chainOf(c: Connection): number {
+  const listed = listedBySignature.get(signature(c.steps));
+  if (listed !== undefined) return listed;
+  const pieces = piecesOf(c, D.names, D.trips, D.limits.minTransfer, clock).map((p): number => {
+    D.pieces.push({ ...p, pts: [] });
+    return D.pieces.length - 1;
+  });
+  const rides = c.steps.flatMap((s) => (s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []));
+  const label = `${rides[0] ?? ""} … ${rides[rides.length - 1] ?? ""}`;
+  let group = D.groups.findIndex((g) => g.label === label);
+  if (group < 0) group = D.groups.push({ label, count: 0 }) - 1;
+  D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
+  const i = D.chains.length - 1;
+  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks: [] });
+  listedBySignature.set(signature(c.steps), i);
+  return i;
 }
 function clearPicks(): void {
   picks = [];
@@ -673,10 +741,9 @@ function live(t: Target): boolean {
 let hoverPick: { key: string; result: Candidates | null } | null = null;
 function previewOf(h: Hover | null): Candidates | null {
   if (h === null || !("id" in h) || typeof h.id !== "string" || picks.length === 0) return null;
-  const target: Picked = { id: h.id, info: h.info, pts: h.pts, chains: h.chains, reach: h.reach ?? null };
+  const target = asPick({ ...h, id: h.id });
   const key = JSON.stringify([target.id, target.reach?.key, picks.map((p) => p.id), [...hidden]]);
-  if (hoverPick?.key !== key)
-    hoverPick = { key, result: narrow(toggle(picks, target), (i) => !hidden.has(item(D.chains, i).group)) };
+  if (hoverPick?.key !== key) hoverPick = { key, result: withBest(narrow(toggle(picks, target))) };
   return hoverPick.result;
 }
 
@@ -700,7 +767,7 @@ function refresh(): void {
   else if (hoverTarget?.reach?.with) hoverTarget.reach.with.forEach((i) => soft.add(i));
   if (softGroup !== null)
     D.chains.forEach((c, i) => {
-      if (c.group === softGroup && !hidden.has(c.group)) soft.add(i);
+      if (i < LISTED && c.group === softGroup && !hidden.has(c.group)) soft.add(i);
     });
   if (candidates)
     candidates.chains.forEach((i) => {
@@ -869,15 +936,15 @@ function whoAt(h: Hover, pv: Candidates | null): string {
   const picked = "id" in h && picks.some((p) => p.id === h.id);
   // The only pick leaves nothing to preview when removed.
   if (picked)
-    note = pv ? `picked · click to remove it: ${k} connections pass the other picks` : "picked · click to remove it";
+    note = pv ? `picked · click to remove it: ${k} best connections pass the others` : "picked · click to remove it";
   else if (pv === null)
     note = chains.length
-      ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them`
-      : "none of the listed connections · on others within the limits";
+      ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click for the best through it`
+      : "none of the listed connections · click for the best through it";
   else
     note = chains.length
-      ? `${k} of the ${String(candidates?.chains.length ?? 0)} connections passing your picks · click to narrow to them`
-      : "none together with your picks";
+      ? `${k} best connection${chains.length > 1 ? "s pass" : " passes"} your picks and this · click to narrow to ${chains.length > 1 ? "them" : "it"}`
+      : "no connection passes your picks and this";
   const only = chains.length === 1 ? chains[0] : undefined;
   if (only !== undefined) {
     want([only]);
@@ -944,10 +1011,10 @@ function renderPanel(): void {
       refresh();
     });
   } else if (candidates) {
+    const n = String(candidates.chains.length);
     panelTitle.textContent =
-      picks.length > 1
-        ? `${String(candidates.chains.length)} connections pass all ${String(picks.length)}`
-        : `${String(candidates.chains.length)} listed connections use it`;
+      (picks.length > 1 ? `${n} best connections pass all ${String(picks.length)}` : `${n} best connections pass it`) +
+      (candidates.complete ? "" : " (search cut short)");
     details.replaceChildren();
     // The first ones: the rest takes picks to narrow down, not scrolling.
     const shown = candidates.chains.slice(0, MAX_LISTED);
@@ -957,7 +1024,9 @@ function renderPanel(): void {
       const row = document.createElement("div");
       row.className = "candidate";
       const route = routeOf(i);
-      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(route)}</div>`;
+      // Found through the picks: not among the best overall.
+      const note = i < LISTED ? "" : ` <span class="unlisted">· beaten overall</span>`;
+      row.innerHTML = `<b>${esc(c.header)}</b>${note}<div class="route">${esc(route)}</div>`;
       row.addEventListener("mouseenter", () => {
         preview = i;
         refresh();

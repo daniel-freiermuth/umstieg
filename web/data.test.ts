@@ -103,6 +103,20 @@ describe("load", () => {
     expect(second?.pieces.map((p) => plot.pieces.indexOf(p))).toEqual([7, 8, 9, 10]);
   });
 
+  test("the search's limits come in milliseconds", () => {
+    expect(load(fresh()).limits).toEqual({
+      origin: 0,
+      destination: 3,
+      from: 29337300 * MIN,
+      until: 29337420 * MIN,
+      maxDuration: 300 * MIN,
+      maxChanges: 15,
+      missedBy: 5 * MIN,
+      minTransfer: 5 * MIN,
+      keepDetours: false,
+    });
+  });
+
   test("details not in the page are added as they arrive, linked up the same way", () => {
     const plot = load(decodeData(patched(["details"], null), "data"));
     expect(plot.details.size).toBe(0);

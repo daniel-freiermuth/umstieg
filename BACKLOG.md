@@ -52,9 +52,12 @@ the single hub. Both trains are in Transitous.
   departure forward, earliest arrival backward, per stretch and round) mark
   3× the stretches on Göteborg → Karlshamn without them (tried 2026-10-30).
   As pruning bounds for the enumeration they would speed it up exactly.
-- **Picks as server queries**: picking a line lists the listed connections
-  through it; a query for the best connections through the picks would list
-  those not among them too.
+- **Fallbacks for connections found through picks**: the page finds them
+  itself (`web/best.ts`), without what to do if a change is missed; the
+  server could compute those on request.
+- **Highlight from the found connections**: through picks, the highlight is
+  still everything reachable over the network (loops included, e.g. Eslöv ↔
+  Lund C); the union of the best connections found would be exact.
 - **Canvas instead of SVG**, with own hit-testing (`distanceToLine` exists);
   WebGL beyond that. Calculation in a Web Worker; less detail when zoomed out.
 - **Headless-browser tests** for the DOM code (form, pointer handling, plot

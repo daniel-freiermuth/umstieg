@@ -1,6 +1,7 @@
-// Narrowing down by picks, without the DOM: clicked lines and stations, the
-// connections passing all of them, and what is reachable through each.
+// Narrowing down by picks, without the DOM: clicked lines and stations, what
+// connections must pass, and what is reachable through each.
 
+import type { Need } from "./best";
 import type { XY } from "./geometry";
 import { type Reach, intersectReach } from "./reach";
 import { item } from "./util";
@@ -10,28 +11,24 @@ export interface Picked {
   info: string;
   /** Where it is drawn: a stretch, a stay, or a station's row. */
   pts: readonly XY[];
-  chains: number[];
+  /** What a connection passing it must do there. */
+  need: Need | null;
   reach: Reach | null;
 }
-export interface Candidates {
+/** Together, the picks: their names, what connections must pass, the shared highlight. */
+export interface Narrowed {
   info: string;
-  chains: number[];
+  needs: Need[];
   reach: Reach | null;
 }
 
 /**
- * The connections passing every pick (in the first pick's order, hidden ones
- * left out) and the highlight reachable through every pick that has one:
- * per piece, the stretch all their highlights share. None without picks.
+ * What connections must pass to pass every pick, and the highlight
+ * reachable through every pick that has one: per piece, the stretch all their
+ * highlights share. Nothing without picks.
  */
-export function narrow(picks: readonly Picked[], visible: (chain: number) => boolean): Candidates | null {
-  const [first, ...rest] = picks;
-  if (!first) return null;
-  let chains = first.chains.filter(visible);
-  for (const p of rest) {
-    const s = new Set(p.chains);
-    chains = chains.filter((i) => s.has(i));
-  }
+export function narrow(picks: readonly Picked[]): Narrowed | null {
+  if (picks.length === 0) return null;
   const reaches = picks.map((p) => p.reach).filter((r): r is Reach => r !== null);
   const reach = reaches.length
     ? {
@@ -39,7 +36,8 @@ export function narrow(picks: readonly Picked[], visible: (chain: number) => boo
         segments: intersectReach(reaches.map((r) => r.segments)),
       }
     : null;
-  return { info: picks.map((p) => p.info).join(" + "), chains, reach };
+  const needs = picks.flatMap((p) => (p.need === null ? [] : [p.need]));
+  return { info: picks.map((p) => p.info).join(" + "), needs, reach };
 }
 
 /** The selection after the candidates change: the only one, else the old one if still listed. */

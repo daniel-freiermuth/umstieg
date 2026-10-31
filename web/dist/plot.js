@@ -125,11 +125,37 @@ var decodeData = (v, path) => {
       };
     }), path),
     details: field(o, "details", nullable(decodeDetails), path),
-    details_url: field(o, "details_url", nullable(string), path)
+    details_url: field(o, "details_url", nullable(string), path),
+    limits: field(o, "limits", (l, p) => {
+      const ol = object(l, p);
+      const n = (name) => field(ol, name, number, p);
+      return {
+        origin: n("origin"),
+        destination: n("destination"),
+        depart_from: n("depart_from"),
+        depart_until: n("depart_until"),
+        max_duration: n("max_duration"),
+        max_changes: n("max_changes"),
+        missed_by: n("missed_by"),
+        min_transfer: n("min_transfer"),
+        keep_detours: field(ol, "keep_detours", boolean, p)
+      };
+    }, path)
   };
 };
 function load(data) {
-  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, ...rest } = data;
+  const { pieces: rawPieces, fallbacks: rawFallbacks, chains, details: rawDetails, limits: l, ...rest } = data;
+  const limits = {
+    origin: l.origin,
+    destination: l.destination,
+    from: l.depart_from * 60000,
+    until: l.depart_until * 60000,
+    maxDuration: l.max_duration * 60000,
+    maxChanges: l.max_changes,
+    missedBy: l.missed_by * 60000,
+    minTransfer: l.min_transfer * 60000,
+    keepDetours: l.keep_detours
+  };
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts }) => ({
     kind,
     info,
@@ -139,7 +165,14 @@ function load(data) {
     pts: []
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
-  const plot = { ...rest, pieces, fallbacks, chains, details: new Map };
+  const plot = {
+    ...rest,
+    limits,
+    pieces,
+    fallbacks,
+    chains,
+    details: new Map
+  };
   addDetails(plot, (rawDetails ?? []).map((d, i) => [i, d]));
   return plot;
 }
@@ -293,6 +326,375 @@ function distanceToLine(px, py, p) {
     best = Math.min(best, Math.hypot(px - a.x - u * dx, py - a.y - u * dy));
   }
   return best;
+}
+
+// best.ts
+var ENOUGH_BUFFER = 90 * 60000;
+function callsOf(raw) {
+  const calls = [];
+  for (const [t, s] of raw) {
+    const last = calls[calls.length - 1];
+    if (last?.station === s)
+      last.dep = t;
+    else
+      calls.push({ station: s, arr: t, dep: t });
+  }
+  const first = calls[0], end = calls[calls.length - 1];
+  if (first)
+    first.arr = null;
+  if (end)
+    end.dep = null;
+  return calls;
+}
+var keyOf = (c) => ({
+  dep: c.departure,
+  arr: c.arrival,
+  changes: c.changes,
+  slack: Math.min(c.slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER)
+});
+var beats = (a, b) => (a.dep !== b.dep || a.arr !== b.arr || a.changes !== b.changes || a.slack !== b.slack) && a.dep >= b.dep && a.arr <= b.arr && a.changes <= b.changes && a.slack >= b.slack;
+var needTime = (n) => n.kind === "station" ? null : n.at;
+function meets(steps, n) {
+  switch (n.kind) {
+    case "ride":
+      return steps.some((s) => s.kind === "ride" && s.trip === n.trip && s.calls.some((c, k) => {
+        const next = s.calls[k + 1];
+        return c.station === n.from && c.dep === n.at && next?.station === n.to && next.arr === n.until;
+      }));
+    case "walk":
+      return steps.some((s) => s.kind === "walk" && s.from === n.from && s.to === n.to && s.start === n.at);
+    case "station":
+      return steps.some((s) => s.kind === "walk" ? s.from === n.station || s.to === n.station : s.calls.some((c) => c.station === n.station));
+    case "stay":
+      return presence(steps).some(([s, a, b]) => s === n.station && a <= n.at && n.at <= b);
+  }
+}
+function presence(steps) {
+  const out = [];
+  let here = null;
+  for (const s of steps) {
+    if (s.kind === "walk") {
+      if (here)
+        out.push([here[0], here[1], s.start]);
+      here = [s.to, s.end];
+      continue;
+    }
+    const first = s.calls[0], last = s.calls[s.calls.length - 1];
+    if (!first || !last)
+      continue;
+    if (here && first.dep !== null)
+      out.push([here[0], Math.min(here[1], first.dep), Math.max(here[1], first.dep)]);
+    for (const c of s.calls.slice(1, -1))
+      if (c.arr !== null && c.dep !== null)
+        out.push([c.station, c.arr, c.dep]);
+    here = last.arr === null ? null : [last.station, last.arr];
+  }
+  return out;
+}
+function isDetour(presence2, earlier, dep, minTransfer) {
+  const here = presence2[presence2.length - 1];
+  if (!here)
+    return false;
+  let worst = here.arrival === null ? Infinity : dep - here.arrival;
+  for (let i = presence2.length - 2;i >= 0; i--) {
+    const p = item(presence2, i);
+    const caught = earlier.find((c) => c.station === p.station)?.dep ?? null;
+    if (caught !== null && caught >= p.since) {
+      if (p.arrival === null)
+        return true;
+      const direct = caught - p.arrival;
+      if (direct >= minTransfer && direct >= Math.min(worst, p.slackOut ?? Infinity))
+        return true;
+    }
+    worst = Math.min(worst, p.slackOut ?? Infinity);
+  }
+  return false;
+}
+function bestThrough(pieces, network, stations, limits, needs, maxNodes = 400000) {
+  const runs = [];
+  const walks = new Map;
+  for (const p of network.map((pi) => item(pieces, pi))) {
+    if (p.trip !== null) {
+      runs.push({ trip: p.trip, calls: callsOf(p.raw) });
+      continue;
+    }
+    if (p.kind !== "walk")
+      continue;
+    const [a, b] = [item(p.raw, 0), item(p.raw, p.raw.length - 1)];
+    const from = walks.get(a[1]) ?? new Map;
+    walks.set(a[1], from);
+    from.set(b[1], Math.min(from.get(b[1]) ?? Infinity, b[0] - a[0]));
+  }
+  const tripCalls = new Map;
+  for (const run of runs)
+    tripCalls.set(run.trip, [...tripCalls.get(run.trip) ?? [], ...run.calls]);
+  for (const calls of tripCalls.values())
+    calls.sort((a, b) => (a.dep ?? a.arr ?? 0) - (b.dep ?? b.arr ?? 0));
+  const departures = new Map;
+  for (const run of runs)
+    run.calls.forEach((c, k) => {
+      if (c.dep === null)
+        return;
+      const list = departures.get(c.station) ?? [];
+      departures.set(c.station, list);
+      list.push([run, k, c.dep]);
+    });
+  for (const list of departures.values())
+    list.sort((a, b) => a[2] - b[2]);
+  const visited = new Uint8Array(stations);
+  const presence2 = [];
+  const used = new Set;
+  const steps = [];
+  let found = [];
+  let nodes = 0;
+  let complete = true;
+  let rides = 0;
+  let leave = 0;
+  let slack = null;
+  const record2 = (arrival) => {
+    if (!needs.every((n) => meets(steps, n)))
+      return;
+    const c = { steps: [...steps], departure: leave, arrival, changes: rides - 1, slack };
+    const k = keyOf(c);
+    if (found.some((f) => beats(keyOf(f), k)))
+      return;
+    found = [...found.filter((f) => !beats(k, keyOf(f))), c];
+  };
+  const hopeless = (ready) => {
+    const bound = {
+      dep: leave,
+      arr: ready,
+      changes: rides - 1,
+      slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER)
+    };
+    if (found.some((f) => beats(keyOf(f), bound)))
+      return true;
+    return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
+  };
+  const explore = (station, ready, deadline, walked, lead) => {
+    if (++nodes > maxNodes) {
+      complete = false;
+      return;
+    }
+    if (station === limits.destination) {
+      record2(ready);
+      return;
+    }
+    if (hopeless(ready))
+      return;
+    if (!walked)
+      for (const [to, d] of walks.get(station) ?? []) {
+        if (visited[to])
+          continue;
+        let start;
+        if (deadline === null) {
+          if (to === limits.destination)
+            continue;
+          start = limits.from;
+        } else {
+          start = ready;
+          if (start + d > deadline)
+            continue;
+        }
+        const end = start + d;
+        visited[to] = 1;
+        steps.push({ kind: "walk", from: station, to, start, end });
+        const marks = deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null }] : [];
+        marks.push({ station: to, arrival: end, since: end, slackOut: null });
+        presence2.push(...marks);
+        explore(to, end, deadline, true, d);
+        presence2.length -= marks.length;
+        steps.pop();
+        visited[to] = 0;
+      }
+    if (rides > limits.maxChanges)
+      return;
+    for (const [run, k, dep] of departures.get(station) ?? []) {
+      if (used.has(run.trip))
+        continue;
+      let limit;
+      if (deadline === null) {
+        const out = dep - lead;
+        if (out < limits.from)
+          continue;
+        if (out > limits.until)
+          break;
+        limit = out + limits.maxDuration;
+      } else {
+        if (dep > deadline)
+          break;
+        if (dep < ready - limits.missedBy)
+          continue;
+        limit = deadline;
+      }
+      const all = tripCalls.get(run.trip) ?? [];
+      const before = all.slice(0, all.indexOf(item(run.calls, k)));
+      if (!limits.keepDetours && isDetour(presence2, before, dep, limits.minTransfer))
+        continue;
+      const saved = { leave, slack };
+      const here = presence2[presence2.length - 1];
+      const first = rides === 0;
+      if (first || !here)
+        presence2.push({ station, arrival: null, since: dep, slackOut: null });
+      else
+        here.slackOut = here.arrival === null ? null : dep - here.arrival;
+      if (first) {
+        leave = dep - lead;
+        const walk = steps[0];
+        if (walk?.kind === "walk")
+          steps[0] = { ...walk, start: leave, end: leave + walk.end - walk.start };
+      } else
+        slack = Math.min(slack ?? Infinity, dep - ready);
+      used.add(run.trip);
+      rides++;
+      const passed = [];
+      for (let j = k + 1;j < run.calls.length; j++) {
+        const c = item(run.calls, j);
+        if (visited[c.station] || c.arr === null || c.arr > limit || c.arr < dep)
+          break;
+        visited[c.station] = 1;
+        passed.push(c.station);
+        steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1) });
+        presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
+        explore(c.station, c.arr, limit, false, 0);
+        presence2.pop();
+        steps.pop();
+      }
+      for (const s of passed)
+        visited[s] = 0;
+      if (first || !here)
+        presence2.pop();
+      else
+        here.slackOut = null;
+      rides--;
+      used.delete(run.trip);
+      ({ leave, slack } = saved);
+    }
+  };
+  visited[limits.origin] = 1;
+  explore(limits.origin, limits.from, null, false, 0);
+  found.sort((a, b) => b.departure - a.departure || a.arrival - b.arrival);
+  return { found, complete };
+}
+
+// connections.ts
+function duration(ms) {
+  const m = Math.round(ms / 60000);
+  return m >= 60 ? `${String(Math.floor(m / 60))}h${String(m % 60).padStart(2, "0")}` : `${String(m)}m`;
+}
+function buffer(ms, minTransfer) {
+  if (ms < 0)
+    return `missed ${duration(-ms)}✗`;
+  return `${duration(ms)}${ms < minTransfer ? "⚠" : ""}`;
+}
+var trainName = (trip) => trip.split(" → ")[0] ?? trip;
+function signature(steps) {
+  return steps.map((s) => {
+    if (s.kind === "walk")
+      return `w${String(s.from)}>${String(s.to)}@${String(s.start)}`;
+    const a = s.calls[0], b = s.calls[s.calls.length - 1];
+    return `${String(s.trip)}:${String(a?.station)}@${String(a?.dep)}>${String(b?.station)}@${String(b?.arr)}`;
+  }).join(" ");
+}
+function signatureOfPieces(pieces) {
+  return pieces.flatMap((p) => {
+    const a = p.raw[0], b = p.raw[p.raw.length - 1];
+    if (!a || !b || p.kind === "wait")
+      return [];
+    if (p.kind === "walk")
+      return [`w${String(a[1])}>${String(b[1])}@${String(a[0])}`];
+    return [`${String(p.trip)}:${String(a[1])}@${String(a[0])}>${String(b[1])}@${String(b[0])}`];
+  }).join(" ");
+}
+function header(c, minTransfer, clock) {
+  const min = c.slack === null ? "direct" : `min ${buffer(c.slack, minTransfer)}`;
+  return `${clock(c.departure)} → ${clock(c.arrival)}  ${duration(c.arrival - c.departure)}  ${String(c.changes)}×  ${min}`;
+}
+function route(c, names, trips, minTransfer, clock) {
+  const name = (s) => item(names, s);
+  const rides = c.steps.flatMap((s, i) => s.kind === "ride" ? [i] : []);
+  const [first, final] = [rides[0] ?? 0, rides[rides.length - 1] ?? 0];
+  const walks = (steps) => steps.flatMap((s) => s.kind === "walk" ? [`walk ${duration(s.end - s.start)} to ${name(s.to)}`] : []);
+  const parts = walks(c.steps.slice(0, first));
+  let last = null;
+  let walked = 0;
+  for (const s of c.steps) {
+    if (s.kind === "walk") {
+      walked += s.end - s.start;
+      continue;
+    }
+    const a = item(s.calls, 0), b = item(s.calls, s.calls.length - 1);
+    if (a.dep === null || b.arr === null)
+      continue;
+    let from = "";
+    if (last !== null) {
+      const walk = walked > 0 ? ` walk ${duration(walked)}` : "";
+      parts.push(`‖${buffer(a.dep - last[1] - walked, minTransfer)}${walk}‖`);
+      if (name(a.station) !== name(last[0]))
+        from = ` ${name(a.station)}`;
+    }
+    parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} → ${clock(b.arr)} ${name(b.station)}`);
+    last = [b.station, b.arr];
+    walked = 0;
+  }
+  parts.push(...walks(c.steps.slice(final + 1)));
+  return parts.join(" ");
+}
+function piecesOf(c, names, trips, minTransfer, clock) {
+  const name = (s) => item(names, s);
+  const out = [];
+  let here = null;
+  for (const s of c.steps) {
+    if (s.kind === "walk") {
+      const start = here === null ? s.start : here[1];
+      const end = start + s.end - s.start;
+      out.push({
+        kind: "walk",
+        info: `walk ${duration(s.end - s.start)} to ${name(s.to)}`,
+        warn: false,
+        trip: null,
+        raw: [
+          [start, s.from],
+          [end, s.to]
+        ]
+      });
+      if (here !== null)
+        here = [s.to, end];
+      continue;
+    }
+    const a = s.calls[0], b = s.calls[s.calls.length - 1];
+    if (!a || !b || a.dep === null || b.arr === null)
+      continue;
+    if (here !== null) {
+      const wait = a.dep - here[1];
+      out.push({
+        kind: "wait",
+        info: `${buffer(wait, minTransfer)} at ${name(a.station)}`,
+        warn: wait < minTransfer,
+        trip: null,
+        raw: [
+          [Math.min(here[1], a.dep), a.station],
+          [Math.max(here[1], a.dep), a.station]
+        ]
+      });
+    }
+    const raw = [];
+    s.calls.forEach((call, k) => {
+      if (k > 0 && call.arr !== null)
+        raw.push([call.arr, call.station]);
+      if (k < s.calls.length - 1 && call.dep !== null)
+        raw.push([call.dep, call.station]);
+    });
+    out.push({
+      kind: "ride",
+      info: `${item(trips, s.trip)} · ${clock(a.dep)} ${name(a.station)} → ${clock(b.arr)} ${name(b.station)}`,
+      warn: false,
+      trip: s.trip,
+      raw
+    });
+    here = [b.station, b.arr];
+  }
+  return out;
 }
 
 // reach.ts
@@ -535,21 +937,16 @@ function network(pieces, base, chains, visible) {
 }
 
 // picks.ts
-function narrow(picks, visible) {
-  const [first, ...rest] = picks;
-  if (!first)
+function narrow(picks) {
+  if (picks.length === 0)
     return null;
-  let chains = first.chains.filter(visible);
-  for (const p of rest) {
-    const s = new Set(p.chains);
-    chains = chains.filter((i) => s.has(i));
-  }
   const reaches = picks.map((p) => p.reach).filter((r) => r !== null);
   const reach = reaches.length ? {
     key: picks.map((p) => p.reach?.key ?? p.id).join("|"),
     segments: intersectReach(reaches.map((r) => r.segments))
   } : null;
-  return { info: picks.map((p) => p.info).join(" + "), chains, reach };
+  const needs = picks.flatMap((p) => p.need === null ? [] : [p.need]);
+  return { info: picks.map((p) => p.info).join(" + "), needs, reach };
 }
 function pinAfter(chains, pinned) {
   if (chains.length === 1)
@@ -567,6 +964,16 @@ function toggle(picks, target) {
 
 // plot.ts
 var D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
+var LISTED = D.chains.length;
+var listedBySignature = new Map(D.chains.map((c, i) => [signatureOfPieces(c.pieces.map((pi) => item(D.pieces, pi))), i]));
+var clockFmt = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: D.tz,
+  timeZoneName: "short"
+});
+var clock = (ms) => clockFmt.format(ms);
 var DETAILS_AT_ONCE = 500;
 var MAX_LISTED = 200;
 var asked = new Set;
@@ -625,7 +1032,7 @@ var timeFmt = new Intl.DateTimeFormat(undefined, {
   timeZoneName: "short"
 });
 var trainColor = (t) => `hsl(${String(t * 137.508 % 360)}, 70%, 45%)`;
-var HINT = "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the listed connections passing " + "it are shown (one alone is selected). Click more to narrow down (hovering previews it; grey parts lead past " + "your picks), a pick again to remove it.";
+var HINT = "Drawn is everything on some connection within the limits; listed are the best connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " + "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " + "it; grey parts lead past your picks), a pick again to remove it.";
 var hidden = new Set;
 var pinned = null;
 var picks = [];
@@ -698,7 +1105,7 @@ metricSelect.addEventListener("change", () => {
 });
 applyMetric(D.metric);
 function buildModel() {
-  const net = network(D.pieces, D.network, D.chains, (i) => !hidden.has(item(D.chains, i).group));
+  const net = network(D.pieces, D.network, D.chains.slice(0, LISTED), (i) => !hidden.has(item(D.chains, i).group));
   const { stays, walks, touching, chainsAt, reach: closure } = net;
   const edges = net.rides.map((r) => {
     const [a, b] = r.pts;
@@ -722,6 +1129,7 @@ function buildModel() {
           chains: [...e.chains],
           pts: e.pts,
           spot: { piece: e.piece, from: a[0], to: b[0] },
+          need: { kind: "ride", trip: e.trip, from: a[2], at: a[0], to: b[2], until: b[0] },
           reach: {
             key: id,
             with: e.chains,
@@ -756,7 +1164,8 @@ function buildModel() {
             chains: chainsAt(s, t),
             reach: r,
             pts,
-            spot: { station: s, t }
+            spot: { station: s, t },
+            need: { kind: "stay", station: s, at: t }
           };
         }
       });
@@ -764,13 +1173,15 @@ function buildModel() {
   for (const [pi, chains] of walks) {
     const p = item(D.pieces, pi);
     const [first, last] = [p.pts[0], p.pts[p.pts.length - 1]];
-    const spot = first && last ? { piece: pi, from: first[0], to: last[0] } : undefined;
     const t = {
       id: `walk:${String(pi)}`,
       info: p.info,
       chains: [...chains],
       pts: p.pts,
-      ...spot ? { spot } : {}
+      ...first && last ? {
+        spot: { piece: pi, from: first[0], to: last[0] },
+        need: { kind: "walk", from: first[2], to: last[2], at: first[0] }
+      } : {}
     };
     targets.push({ pts: t.pts, at: () => t });
   }
@@ -783,6 +1194,7 @@ function buildModel() {
     return {
       id: `station:${String(s)}`,
       info: `${item(D.names, s)} · any time`,
+      need: { kind: "station", station: s },
       chains: [...chains],
       pts: [
         [full.t0, h, s],
@@ -1042,19 +1454,53 @@ byId("reset", HTMLButtonElement).addEventListener("click", () => {
   scheduleRender();
 });
 function choose(target) {
-  picks = toggle(picks, {
-    id: target.id,
-    info: target.info,
-    pts: target.pts,
-    chains: target.chains,
-    reach: target.reach ?? null
-  });
+  picks = toggle(picks, asPick(target));
   applyPicks();
   refresh();
 }
+var asPick = (t) => ({
+  id: t.id,
+  info: t.info,
+  pts: t.pts,
+  need: t.need ?? null,
+  reach: t.reach ?? null
+});
 function applyPicks() {
-  candidates = narrow(picks, (i) => !hidden.has(item(D.chains, i).group));
+  candidates = withBest(narrow(picks));
   pinned = candidates === null ? null : pinAfter(candidates.chains, pinned);
+}
+var searched = new Map;
+function withBest(n) {
+  if (n === null)
+    return null;
+  const key = JSON.stringify(n.needs);
+  let found = searched.get(key);
+  if (found === undefined) {
+    const { found: conns, complete } = bestThrough(D.pieces, D.network, D.names.length, D.limits, n.needs);
+    found = { chains: conns.map(chainOf), complete };
+    searched.set(key, found);
+    applyHeights(D, metricIndex);
+  }
+  return { ...n, chains: found.chains.filter((i) => !hidden.has(item(D.chains, i).group)), complete: found.complete };
+}
+function chainOf(c) {
+  const listed = listedBySignature.get(signature(c.steps));
+  if (listed !== undefined)
+    return listed;
+  const pieces = piecesOf(c, D.names, D.trips, D.limits.minTransfer, clock).map((p) => {
+    D.pieces.push({ ...p, pts: [] });
+    return D.pieces.length - 1;
+  });
+  const rides = c.steps.flatMap((s) => s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []);
+  const label = `${rides[0] ?? ""} … ${rides[rides.length - 1] ?? ""}`;
+  let group = D.groups.findIndex((g) => g.label === label);
+  if (group < 0)
+    group = D.groups.push({ label, count: 0 }) - 1;
+  D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
+  const i = D.chains.length - 1;
+  D.details.set(i, { route: route(c, D.names, D.trips, D.limits.minTransfer, clock), fallbacks: [] });
+  listedBySignature.set(signature(c.steps), i);
+  return i;
 }
 function clearPicks() {
   picks = [];
@@ -1072,10 +1518,10 @@ var hoverPick = null;
 function previewOf(h) {
   if (h === null || !("id" in h) || typeof h.id !== "string" || picks.length === 0)
     return null;
-  const target = { id: h.id, info: h.info, pts: h.pts, chains: h.chains, reach: h.reach ?? null };
+  const target = asPick({ ...h, id: h.id });
   const key = JSON.stringify([target.id, target.reach?.key, picks.map((p) => p.id), [...hidden]]);
   if (hoverPick?.key !== key)
-    hoverPick = { key, result: narrow(toggle(picks, target), (i) => !hidden.has(item(D.chains, i).group)) };
+    hoverPick = { key, result: withBest(narrow(toggle(picks, target))) };
   return hoverPick.result;
 }
 function refresh() {
@@ -1095,7 +1541,7 @@ function refresh() {
     hoverTarget.reach.with.forEach((i) => soft.add(i));
   if (softGroup !== null)
     D.chains.forEach((c, i) => {
-      if (c.group === softGroup && !hidden.has(c.group))
+      if (i < LISTED && c.group === softGroup && !hidden.has(c.group))
         soft.add(i);
     });
   if (candidates)
@@ -1246,11 +1692,11 @@ function whoAt(h, pv) {
   let note;
   const picked = "id" in h && picks.some((p) => p.id === h.id);
   if (picked)
-    note = pv ? `picked · click to remove it: ${k} connections pass the other picks` : "picked · click to remove it";
+    note = pv ? `picked · click to remove it: ${k} best connections pass the others` : "picked · click to remove it";
   else if (pv === null)
-    note = chains.length ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click to list them` : "none of the listed connections · on others within the limits";
+    note = chains.length ? `${k} of the listed connections in ${String(groups.size)} group${groups.size > 1 ? "s" : ""} · click for the best through it` : "none of the listed connections · click for the best through it";
   else
-    note = chains.length ? `${k} of the ${String(candidates?.chains.length ?? 0)} connections passing your picks · click to narrow to them` : "none together with your picks";
+    note = chains.length ? `${k} best connection${chains.length > 1 ? "s pass" : " passes"} your picks and this · click to narrow to ${chains.length > 1 ? "them" : "it"}` : "no connection passes your picks and this";
   const only = chains.length === 1 ? chains[0] : undefined;
   if (only !== undefined) {
     want([only]);
@@ -1293,9 +1739,9 @@ function renderPanel() {
     const c = item(D.chains, pinned);
     const d = detailOf(pinned);
     let html = candidates && candidates.chains.length > 1 ? `<span class="back" id="back">← all ${String(candidates.chains.length)} connections</span>` : "";
-    const route = routeOf(pinned);
+    const route2 = routeOf(pinned);
     html += `<b>${esc(c.header)}</b>
-${esc(route).replaceAll(" ‖", `
+${esc(route2).replaceAll(" ‖", `
 ‖`).replaceAll("‖ ", `‖
 `)}`;
     let at = null;
@@ -1315,7 +1761,8 @@ ${esc(route).replaceAll(" ‖", `
       refresh();
     });
   } else if (candidates) {
-    panelTitle.textContent = picks.length > 1 ? `${String(candidates.chains.length)} connections pass all ${String(picks.length)}` : `${String(candidates.chains.length)} listed connections use it`;
+    const n = String(candidates.chains.length);
+    panelTitle.textContent = (picks.length > 1 ? `${n} best connections pass all ${String(picks.length)}` : `${n} best connections pass it`) + (candidates.complete ? "" : " (search cut short)");
     details.replaceChildren();
     const shown = candidates.chains.slice(0, MAX_LISTED);
     want(shown);
@@ -1323,8 +1770,9 @@ ${esc(route).replaceAll(" ‖", `
       const c = item(D.chains, i);
       const row = document.createElement("div");
       row.className = "candidate";
-      const route = routeOf(i);
-      row.innerHTML = `<b>${esc(c.header)}</b><div class="route">${esc(route)}</div>`;
+      const route2 = routeOf(i);
+      const note = i < LISTED ? "" : ` <span class="unlisted">· beaten overall</span>`;
+      row.innerHTML = `<b>${esc(c.header)}</b>${note}<div class="route">${esc(route2)}</div>`;
       row.addEventListener("mouseenter", () => {
         preview = i;
         refresh();
