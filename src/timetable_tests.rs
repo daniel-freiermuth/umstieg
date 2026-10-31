@@ -2070,3 +2070,43 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
     let nybro = asked.iter().find(|q| q.get("center").is_some_and(|c| c == "56.744,15.906")).unwrap();
     assert_eq!((nybro.get("stopId"), nybro["radius"].as_str()), (None, "200"));
 }
+
+#[tokio::test]
+async fn when_trafikverket_runs_fail_the_transitous_trains_in_sweden_stay() {
+    // Trafikverket answers the boards but refuses every query for runs.
+    let upstream = crate::testkit::serve_trafikverket(&tv_world()).await;
+    let forward = move |body: String| {
+        let upstream = upstream.clone();
+        async move {
+            if body.contains("name=\"AdvertisedTrainIdent\" value=") {
+                return (axum::http::StatusCode::BAD_REQUEST, "runs failed".to_owned());
+            }
+            let answer = reqwest::Client::new().post(&upstream).body(body).send().await.unwrap();
+            (axum::http::StatusCode::OK, answer.text().await.unwrap())
+        }
+    };
+    let url = crate::testkit::serve(axum::Router::new().fallback(forward)).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let located = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(position.0), Some(position.1));
+        p
+    };
+    let end = |name: &str, position: (f64, f64)| Stop {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        position: Some(position),
+    };
+    let (g, kh) = (north(GOTEBORG, 50.0), north(KARLSHAMN, 50.0));
+    let swedish = Itinerary {
+        legs: vec![ride(
+            "t",
+            vec![located("Göteborg Centralstation", g, "", "06:55"), located("Karlshamn Resecentrum", kh, "11:21", "")],
+        )],
+    };
+    let (from, to) = (end("Göteborg Centralstation", g), end("Karlshamn Resecentrum", kh));
+    let built = super::build(&motis, None, Some(&tv), &[swedish], &from, &to, false).await;
+    assert!(built.warnings.iter().any(|w| w.starts_with("Trafikverket runs:")), "{:?}", built.warnings);
+    assert_eq!(built.timetable.trips.len(), 1, "the Transitous train, Karlshamn and all");
+}
