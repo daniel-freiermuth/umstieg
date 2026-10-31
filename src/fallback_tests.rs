@@ -254,6 +254,30 @@ fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
     assert_eq!(found.len(), 1, "{found:?}");
 }
 
+#[test]
+fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
+    // ICE 1 missed at 09:00: the window from Hbf ends at 11:01, but walking
+    // from Zentrum at 10:57 still catches ICE 5 at 11:05.
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
+    b.walk("Zentrum", "Hbf", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("ICE 5", &[("Hbf", "", "11:05"), ("Ziel", "12:05", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let chain = Chain {
+        steps: vec![
+            ride(&tt, "STR 4", "Dorf", "Zentrum"),
+            Step::Walk { footpath: walk },
+            ride(&tt, "ICE 1", "Hbf", "Ziel"),
+        ],
+    };
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
+    assert_eq!(found, [("ICE 5 Hbf-Ziel".to_owned(), at("12:05"))]);
+}
+
 /// A change listed although missed (`--missed-by`): the fallbacks leave
 /// once the traveller is there, not right after the missed train.
 #[test]
