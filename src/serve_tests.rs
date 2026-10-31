@@ -10,7 +10,9 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::{ADVANCED, App, FieldKind, Form, Job, KEEP_JOBS, MAX_DETAILS, NOT_IN_FORM, admit, fields, parse, router};
+use super::{
+    ADVANCED, App, FieldKind, Form, Job, JobOutcome, KEEP_JOBS, MAX_DETAILS, NOT_IN_FORM, admit, fields, parse, router,
+};
 use crate::plot::Metric;
 use crate::plot::{Detail, Rendered};
 use crate::search::Endpoints;
@@ -21,17 +23,17 @@ fn params(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|&(k, v)| (k.to_owned(), v.to_owned())).collect()
 }
 
-fn job(result: Option<Result<&str, &str>>) -> Job {
-    let result = result.map(|r| {
-        r.map(|html| Rendered {
-            html: html.to_owned(),
-            details: vec![
-                Detail { route: "08:00 ICE 1 → 09:00 B".to_owned(), fallbacks: vec![(0, "10:00 (+1h)".to_owned())] },
-                Detail { route: "08:30 RE 2 → 10:00 B".to_owned(), fallbacks: Vec::new() },
-            ],
-        })
-        .map_err(str::to_owned)
-    });
+fn plotted(html: &str) -> JobOutcome {
+    JobOutcome::Plot(Rendered {
+        html: html.to_owned(),
+        details: vec![
+            Detail { route: "08:00 ICE 1 → 09:00 B".to_owned(), fallbacks: vec![(0, "10:00 (+1h)".to_owned())] },
+            Detail { route: "08:30 RE 2 → 10:00 B".to_owned(), fallbacks: Vec::new() },
+        ],
+    })
+}
+
+fn job(result: Option<JobOutcome>) -> Job {
     Job { query: String::new(), key: String::new(), started: Instant::now(), log: Vec::new(), now: None, result }
 }
 
@@ -208,7 +210,7 @@ fn admit_forgets_the_oldest_finished_jobs_beyond_the_limit() {
     let mut jobs = HashMap::new();
     let finished = KEEP_JOBS as u64 + 5;
     for id in 1..=finished {
-        admit(&mut jobs, id, job(Some(Ok(""))));
+        admit(&mut jobs, id, job(Some(plotted(""))));
     }
     // A long-running search older than all of them is never dropped.
     jobs.insert(0, job(None));
@@ -220,7 +222,8 @@ fn admit_forgets_the_oldest_finished_jobs_beyond_the_limit() {
     assert_eq!(ids, want);
 
     // At the limit, nothing goes.
-    let mut jobs: HashMap<u64, Job> = (1..=KEEP_JOBS as u64).map(|id| (id, job(Some(Err(""))))).collect();
+    let mut jobs: HashMap<u64, Job> =
+        (1..=KEEP_JOBS as u64).map(|id| (id, job(Some(JobOutcome::Failed(String::new()))))).collect();
     admit(&mut jobs, 100, job(None));
     assert_eq!(jobs.len(), KEEP_JOBS + 1);
 }
@@ -408,26 +411,34 @@ async fn a_search_link_finds_its_search_again_and_shows_its_plot_once_done() {
     assert_ne!(key("from=A&to=B&window=60"), key("from=A&to=B&window=61"));
     let mut running = job(None);
     running.key = key("from=A&to=B&at=2026-11-03T08:00");
-    let mut done = job(Some(Ok("<html>plot</html>")));
+    let mut done = job(Some(plotted("<html>plot</html>")));
     done.key = key("from=A&to=C&at=2026-11-03T08:00");
-    let mut failed = job(Some(Err("No connection found.")));
+    let mut nothing = job(Some(JobOutcome::NoConnection { report: "No connection found.".to_owned() }));
+    nothing.key = key("from=A&to=C&at=2026-11-03T08:00");
+    let mut failed = job(Some(JobOutcome::Failed("no stop named like \"C\"".to_owned())));
     failed.key = key("from=A&to=C&at=2026-11-03T08:00");
     lock(&app.jobs).insert(1, running);
     lock(&app.jobs).insert(2, done);
-    lock(&app.jobs).insert(3, failed);
+    lock(&app.jobs).insert(3, nothing);
+    lock(&app.jobs).insert(4, failed);
     let (_, _, page) = get_page(&app, "/search?at=2026-11-03T08:00&to=B&from=A").await;
     assert_eq!(embedded_json(&page, "data"), json!({"status": "/job/1/status"}), "still running: its progress");
     let (code, headers, page) = get_page(&app, "/search?from=A&to=C&at=2026-11-03T08:00").await;
     assert_eq!((code, page.as_str()), (StatusCode::OK, "<html>plot</html>"), "done: its plot, not the later failure");
     assert_eq!(headers[header::CACHE_CONTROL.as_str()], "no-cache");
-    assert_eq!(lock(&app.jobs).len(), 3, "nothing started");
+    assert_eq!(lock(&app.jobs).len(), 4, "nothing started");
 
     let (_, _, body) = get_page(&app, "/job/1/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!((&status["done"], &status["error"]), (&json!(false), &Value::Null));
+    let ending = |status: &Value| (status["done"].clone(), status["error"].clone(), status["no_connection"].clone());
+    assert_eq!(ending(&status), (json!(false), Value::Null, Value::Null));
+    // Finding nothing and failing to search are told apart.
     let (_, _, body) = get_page(&app, "/job/3/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!((&status["done"], &status["error"]), (&json!(true), &json!("No connection found.")));
+    assert_eq!(ending(&status), (json!(true), Value::Null, json!("No connection found.")));
+    let (_, _, body) = get_page(&app, "/job/4/status").await;
+    let status: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(ending(&status), (json!(true), json!("no stop named like \"C\""), Value::Null));
 }
 
 #[tokio::test]
@@ -439,7 +450,7 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
     // The same links opened days ago: "now" and "08:00 today" were then.
     let zone = "time_zone=Europe/Berlin";
     for (id, query) in [(1, format!("from=A&to=C&{zone}")), (2, format!("from=A&to=C&{zone}&at=08:00"))] {
-        let mut old = job(Some(Ok("<html>old plot</html>")));
+        let mut old = job(Some(plotted("<html>old plot</html>")));
         old.key = key(&query);
         lock(&app.jobs).insert(id, old);
     }
@@ -477,7 +488,7 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
 async fn connection_details_are_handed_out_by_index() {
     let app = app("http://127.0.0.1:9");
     lock(&app.jobs).insert(1, job(None));
-    lock(&app.jobs).insert(3, job(Some(Ok("<html>plot</html>"))));
+    lock(&app.jobs).insert(3, job(Some(plotted("<html>plot</html>"))));
     let (code, headers, body) = get_page(&app, "/job/3/chains?ids=1,0,1").await;
     assert_eq!(code, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL.as_str()], "private, max-age=3600");

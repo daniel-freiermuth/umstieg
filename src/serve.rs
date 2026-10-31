@@ -51,8 +51,19 @@ struct Job {
     log: Vec<String>,
     /// How the current stage is getting on, as the last progress said.
     now: Option<String>,
-    /// The plot, or why there is none.
-    result: Option<Result<plot::Rendered, String>>,
+    /// How the search ended; `None` while it runs.
+    result: Option<JobOutcome>,
+}
+
+/// How a finished search ended.
+enum JobOutcome {
+    Plot(plot::Rendered),
+    /// The search ran but found nothing: its text report, which says so.
+    NoConnection {
+        report: String,
+    },
+    /// The search could not run (no such stop, a service unreachable, …): why.
+    Failed(String),
 }
 
 impl Job {
@@ -286,7 +297,14 @@ async fn search(
     }
     let key = search_key(&params);
     let mut jobs = lock(&app.jobs);
-    let found = jobs.iter().filter(|(_, j)| j.key == key && !matches!(j.result, Some(Err(_)))).map(|(&id, _)| id).max();
+    // A search that found nothing runs again too: the trains may have changed.
+    let found = jobs
+        .iter()
+        .filter(|(_, j)| {
+            j.key == key && !matches!(j.result, Some(JobOutcome::Failed(_) | JobOutcome::NoConnection { .. }))
+        })
+        .map(|(&id, _)| id)
+        .max();
     let id = found.unwrap_or_else(|| {
         let id = app.next.fetch_add(1, Ordering::Relaxed);
         let query = raw.unwrap_or_default();
@@ -295,7 +313,7 @@ async fn search(
         tokio::spawn(run(app.clone(), id, args));
         id
     });
-    let page = if let Some(Ok(plot)) = jobs.get(&id).and_then(|j| j.result.as_ref()) {
+    let page = if let Some(JobOutcome::Plot(plot)) = jobs.get(&id).and_then(|j| j.result.as_ref()) {
         plot.html.clone()
     } else {
         let progress = Progress { status: format!("/job/{id}/status") };
@@ -370,14 +388,17 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     let result = match result {
         Ok(outcome) => {
             tracing::info!(secs, "search done");
-            outcome.plot.ok_or(outcome.text)
+            match outcome.plot {
+                Some(plot) => JobOutcome::Plot(plot),
+                None => JobOutcome::NoConnection { report: outcome.text },
+            }
         }
         Err(e) => {
             tracing::error!(secs, "search failed: {e:#}");
-            Err(format!("{e:#}"))
+            JobOutcome::Failed(format!("{e:#}"))
         }
     };
-    note(if result.is_ok() { "Done" } else { "Failed" }, false);
+    note(if matches!(result, JobOutcome::Failed(_)) { "Failed" } else { "Done" }, false);
     if let Some(job) = lock(&app.jobs).get_mut(&id) {
         job.result = Some(result);
     }
@@ -390,8 +411,10 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         /// How the current stage is getting on.
         now: Option<&'a str>,
         done: bool,
-        /// Why no plot: an error, or the report saying no connection was found.
+        /// Why the search could not run.
         error: Option<&'a str>,
+        /// The text report of a search that found no connection.
+        no_connection: Option<&'a str>,
         back: String,
     }
     let jobs = lock(&app.jobs);
@@ -401,7 +424,11 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         now: job.now.as_deref(),
         done: job.result.is_some(),
         error: match &job.result {
-            Some(Err(e)) => Some(e),
+            Some(JobOutcome::Failed(e)) => Some(e),
+            _ => None,
+        },
+        no_connection: match &job.result {
+            Some(JobOutcome::NoConnection { report }) => Some(report),
             _ => None,
         },
         back: format!("/?{}", job.query),
@@ -427,7 +454,7 @@ async fn chains(
         return (StatusCode::BAD_REQUEST, format!("at most {MAX_DETAILS} ids at once")).into_response();
     }
     let jobs = lock(&app.jobs);
-    let Some(Some(Ok(plot))) = jobs.get(&id).map(|j| j.result.as_ref()) else {
+    let Some(Some(JobOutcome::Plot(plot))) = jobs.get(&id).map(|j| j.result.as_ref()) else {
         return (StatusCode::NOT_FOUND, "No plot for this search.").into_response();
     };
     let found: Option<Vec<&plot::Detail>> = ids.iter().map(|&i| plot.details.get(i)).collect();

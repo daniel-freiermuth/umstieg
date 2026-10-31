@@ -1262,8 +1262,9 @@ async fn web_front_end_reports_bad_input() {
     )
     .await;
     let status = wait_until_done(&http, &started.status).await;
-    let error = status["error"].as_str().unwrap_or_else(|| panic!("no error in {status}"));
-    assert!(error.ends_with("\nNo connection found.\n"), "{error}");
+    assert_eq!(status["error"], Value::Null, "{status}");
+    let report = status["no_connection"].as_str().unwrap_or_else(|| panic!("no report in {status}"));
+    assert!(report.ends_with("\nNo connection found.\n"), "{report}");
 }
 
 // ---------------------------------------------------------------------------

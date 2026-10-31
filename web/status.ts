@@ -7,8 +7,10 @@ export interface Status {
   /** How the current stage is getting on, if it said. */
   now: string | null;
   done: boolean;
-  /** Why there is no plot: an error, or the report saying nothing was found. */
+  /** Why the search could not run. */
   error: string | null;
+  /** The text report of a search that found no connection. */
+  no_connection: string | null;
   back: string;
 }
 
@@ -19,6 +21,7 @@ export const decodeStatus: Decoder<Status> = (v, path) => {
     now: field(o, "now", nullable(string), path),
     done: field(o, "done", boolean, path),
     error: field(o, "error", nullable(string), path),
+    no_connection: field(o, "no_connection", nullable(string), path),
     back: field(o, "back", string, path),
   };
 };
@@ -29,8 +32,10 @@ export const decodeProgress: Decoder<{ status: string }> = (v, path) => ({
 });
 
 /** What the page does next: poll again, open the plot, or show why there is none. */
-export type Next = { poll: true } | { plot: true } | { error: string };
+export type Next = { poll: true } | { plot: true } | { error: string } | { noConnection: string };
 export function next(status: Status): Next {
   if (!status.done) return { poll: true };
-  return status.error === null ? { plot: true } : { error: status.error };
+  if (status.error !== null) return { error: status.error };
+  if (status.no_connection !== null) return { noConnection: status.no_connection };
+  return { plot: true };
 }
