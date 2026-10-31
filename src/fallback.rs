@@ -12,6 +12,7 @@ use chrono_tz::Tz;
 use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::text;
+use crate::timetable::Timetable;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
 pub const WINDOW: TimeDelta = TimeDelta::hours(2);
@@ -97,17 +98,11 @@ impl<'n> Fallbacks<'n> {
         if let Some((trip, board, _)) = chain.rides().nth(after_change) {
             let boards_at = tt.call(trip, board)?.station;
             if boards_at != transfer.station {
-                // Those walking there first are found from there too, with the earlier window.
-                let mut walked_there = Vec::with_capacity(candidates.len());
-                for c in &candidates {
-                    walked_there.push(match c.steps.first() {
-                        Some(Step::Walk { footpath }) => tt.footpath(*footpath)?.to == boards_at,
-                        _ => false,
-                    });
-                }
-                let mut walked = walked_there.into_iter();
-                candidates.retain(|_| !walked.next().unwrap_or(false));
-                candidates.extend_from_slice(self.candidates(boards_at, transfer.departure, ready)?);
+                // A fallback walking from one start to the other first is also
+                // found from the other, with the earlier window: kept only there.
+                candidates = not_walking_to(tt, candidates, boards_at)?;
+                let from_boarding = self.candidates(boards_at, transfer.departure, ready)?.to_vec();
+                candidates.extend(not_walking_to(tt, from_boarding, transfer.station)?);
             }
         }
         let mut ranked = candidates
@@ -134,6 +129,21 @@ impl<'n> Fallbacks<'n> {
             .map(|(lands, _, _, line, rejoins_at, chain)| Fallback { chain: chain.clone(), lands, rejoins_at, line })
             .collect())
     }
+}
+
+/// `chains` without those starting with a walk to `to`.
+fn not_walking_to(tt: &Timetable, chains: Vec<Chain>, to: usize) -> Result<Vec<Chain>> {
+    let mut kept = Vec::with_capacity(chains.len());
+    for c in chains {
+        let walks_there = match c.steps.first() {
+            Some(Step::Walk { footpath }) => tt.footpath(*footpath)?.to == to,
+            _ => false,
+        };
+        if !walks_there {
+            kept.push(c);
+        }
+    }
+    Ok(kept)
 }
 
 #[cfg(test)]
