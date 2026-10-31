@@ -144,7 +144,7 @@ impl Sj {
             let url = format!("{}/departures/search/{}", self.base, search.departure_search_id);
             self.send(self.http.get(url)).await
         };
-        let text = self.cache.get_or_fetch(&format!("{from} {to} {date}"), fetch).await?;
+        let text = self.cache.get_or_fetch(&format!("{} {from} {to} {date}", self.base), fetch).await?;
         let answer: Answer = serde_json::from_str(&text).context("SJ's departures")?;
         Ok(answer.travels.into_iter().flat_map(|t| t.departures).collect())
     }
