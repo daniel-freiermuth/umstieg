@@ -324,7 +324,10 @@ export function network(
           const since = boarded.get(r.trip);
           if (ahead.has(r) || !((since !== undefined && a[0] >= since) || atMost(ea.get(a[2]), a[0]))) continue;
           boarded.set(r.trip, a[0]);
-          early(b[2], b[0]);
+          // The picked train standing where it is boarded: being on it there
+          // is no getting off to wait for a later one.
+          const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
+          if (!boarding) early(b[2], b[0]);
           ahead.add(r);
           // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
           again ||= b[0] === a[0];

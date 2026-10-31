@@ -772,7 +772,9 @@ describe("reach on random timetables", () => {
         const there = ea.get(a[2]),
           on = boarded.get(trip);
         if (there !== undefined && there <= a[0]) changed = earlier(boarded, trip, a[0]) || changed;
-        if (on !== undefined && on <= a[0]) changed = earlier(ea, b[2], b[0]) || changed;
+        // Standing where the picked train is boarded leads nowhere else.
+        const boarding = src.ride?.trip === trip && b[0] <= src.ride.from;
+        if (on !== undefined && on <= a[0] && !boarding) changed = earlier(ea, b[2], b[0]) || changed;
         const by = ld.get(b[2]),
           off = alighted.get(trip);
         if (by !== undefined && by >= b[0]) changed = later(alighted, trip, b[0]) || changed;
@@ -848,6 +850,34 @@ describe("reach on random timetables", () => {
       }
     }
     expect(reaching).toBeGreaterThan(400);
+  });
+});
+
+describe("a picked stretch", () => {
+  test("leads on from where it ends, not from where it starts", () => {
+    // Train 1 calls at B (standing 10–10) on its way from A to C; train 2 an
+    // hour later. On train 1 from B to C one is never at B to wait for train 2,
+    // but at C for anything leaving after 20 (train 3).
+    const plot = new Plot({
+      T1: ride(1, [
+        [A, 0],
+        [B, 10, 10],
+        [C, 20],
+      ]),
+      T2: ride(2, [
+        [A, 60],
+        [B, 70, 70],
+        [C, 80],
+      ]),
+      T3: ride(3, [
+        [C, 30],
+        [D, 40],
+      ]),
+    });
+    expect(plot.reach({ at: [], back: [[B, 10]], ride: { trip: 1, from: 10, until: 10 } })).toEqual([
+      "T1 0-20",
+      "T3 30-40",
+    ]);
   });
 });
 

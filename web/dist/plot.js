@@ -479,7 +479,9 @@ function network(pieces, base, chains, visible) {
           if (ahead.has(r) || !(since !== undefined && a[0] >= since || atMost(ea.get(a[2]), a[0])))
             continue;
           boarded.set(r.trip, a[0]);
-          early(b[2], b[0]);
+          const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
+          if (!boarding)
+            early(b[2], b[0]);
           ahead.add(r);
           again ||= b[0] === a[0];
         }
