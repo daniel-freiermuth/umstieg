@@ -212,6 +212,7 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
     b.walk("Zentrum", "Hbf", 8);
     b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -225,7 +226,8 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     };
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
-    assert_eq!(found, [("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
+    // ICE 2 leaves within the walk's length after ICE 1, yet the traveller is at Hbf.
+    assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05")), ("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
 }
 
 /// A change listed although missed (`--missed-by`): the fallbacks leave
