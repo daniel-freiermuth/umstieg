@@ -534,6 +534,29 @@ fn a_coach_stop_names_a_station_only_until_a_train_stops_there() {
 }
 
 #[test]
+fn stations_named_without_their_place_go_by_dbs_name() {
+    let mut stations = Stations::default();
+    let db = |name: &'static str, eva: &'static str, board: &'static str| Sighting {
+        name,
+        eva: Some(eva),
+        board_name: Some(board),
+        ..Sighting::default()
+    };
+    let origin = stations.intern(db("Hauptbahnhof", "8000001", "Freiburg(Breisgau) Hbf"));
+    let stuttgart = stations.intern(db("Hauptbahnhof", "8000096", "Stuttgart Hbf"));
+    let mannheim = stations.intern(db("Mannheim, Hauptbahnhof", "8000244", "Mannheim Hbf"));
+    // A name from another board feed, without an EVA number: not DB's to give.
+    let unknown =
+        stations.intern(Sighting { name: "Bahnhof", board_name: Some("Lörrach Hbf"), ..Sighting::default() });
+    let destination = stations.intern(db("Hbf", "8000013", "Augsburg Hbf"));
+    stations.name_by_db((origin, destination));
+    let names: Vec<&str> =
+        [origin, stuttgart, mannheim, unknown, destination].iter().map(|&i| stations.list[i].name.as_str()).collect();
+    assert_eq!(names, ["Hauptbahnhof", "Stuttgart Hbf", "Mannheim, Hauptbahnhof", "Bahnhof", "Hbf"]);
+    assert_eq!(stations.intern(Sighting { name: "Stuttgart Hbf", ..Sighting::default() }), stuttgart);
+}
+
+#[test]
 fn train_stations_go_by_trafikverkets_names_but_not_the_ends_or_bus_stops() {
     let tv = |sig: &str, name: &str, position: (f64, f64)| crate::trafikverket::Station {
         signature: sig.to_owned(),
@@ -646,7 +669,7 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
     });
     stations.intern(Sighting {
         name: "Fulda",
-        eva: Some("1234567"),
+        eva: None,
         tv: None,
         board_name: Some("Fulda Bf"),
         tz: Some("Europe/Paris"),
@@ -654,8 +677,11 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
         motis_id: Some("other"),
         bus: false,
     });
+    // The same name with another EVA number is another station.
+    let other = stations.intern(Sighting { name: "Fulda", eva: Some("1234567"), ..Sighting::default() });
+    assert_ne!(other, a);
     let s = &stations.list[a];
-    assert_eq!(stations.list.len(), 1);
+    assert_eq!(stations.list.len(), 2);
     assert_eq!(
         (s.eva.as_deref(), s.board_name.as_deref(), s.tz.as_deref(), s.position, s.motis_id.as_deref()),
         (

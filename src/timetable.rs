@@ -262,6 +262,21 @@ impl Stations {
         self.by_key.insert(format!("name:{}", db::station_key(&station.name)), idx);
     }
 
+    /// Stations whose name doesn't say where they are ("Hauptbahnhof": a
+    /// local feed's name for Stuttgart Hbf) go by DB's name; not `ends`,
+    /// named as asked for. Names that do ("Mannheim, Hauptbahnhof") stay.
+    fn name_by_db(&mut self, ends: (usize, usize)) {
+        for (idx, st) in self.list.iter_mut().enumerate() {
+            if idx == ends.0 || idx == ends.1 || st.eva.is_none() {
+                continue;
+            }
+            if let Some(db) = st.board_name.as_ref().filter(|db| !db::same_place(db, &st.name)) {
+                st.name.clone_from(db);
+                self.by_key.insert(format!("name:{}", db::station_key(db)), idx);
+            }
+        }
+    }
+
     /// Train stations Trafikverket knows (by signature, else position or
     /// name) go by its names ("Malmö C", "Landskrona"), whatever a feed called
     /// them first ("Landskrona St.", "Malmö Centralstation"); not `ends`,
@@ -284,24 +299,26 @@ impl Stations {
     }
 
     /// One index per physical station, unified by EVA number, Trafikverket
-    /// signature, folded name or proximity. Nearby stations with different EVA
-    /// numbers or signatures stay separate (S-Bahn vs. long-distance station)
-    /// and get a footpath instead.
+    /// signature, folded name or proximity. Stations with different EVA
+    /// numbers or signatures stay separate: nearby (S-Bahn vs. long-distance
+    /// station) they get a footpath instead; alike named (two local feeds'
+    /// "Hauptbahnhof") they are different places.
     fn intern(&mut self, s: Sighting<'_>) -> usize {
         let name_key = format!("name:{}", db::station_key(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
         let tv_key = s.tv.map(|t| format!("tv:{t}"));
+        let differ = |a: Option<&String>, b: Option<&str>| matches!((a, b), (Some(a), Some(b)) if a != b);
+        let compatible = |st: &Station| !differ(st.eva.as_ref(), s.eva) && !differ(st.tv.as_ref(), s.tv);
         let found = [&eva_key, &tv_key]
             .into_iter()
             .flatten()
             .find_map(|k| self.by_key.get(k))
-            .or_else(|| self.by_key.get(&name_key))
+            .or_else(|| self.by_key.get(&name_key).filter(|&&i| self.list.get(i).is_some_and(compatible)))
             .copied()
             .or_else(|| {
                 let here = s.position?;
                 self.list.iter().position(|st| {
-                    let compatible = (st.eva.is_none() || s.eva.is_none()) && (st.tv.is_none() || s.tv.is_none());
-                    compatible && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
+                    compatible(st) && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
                 })
             });
         if let Some(idx) = found.filter(|i| !s.bus && self.bus_named.remove(i))
@@ -447,6 +464,7 @@ pub async fn build(
         }
         None => Vec::new(),
     };
+    stations.name_by_db((origin_idx, destination_idx));
     let from_trafikverket = !swedish.is_empty() && !sweden_from_transitous;
     let trips = if db.is_none() && tv.is_none() {
         rough.trips.into_values().collect()
