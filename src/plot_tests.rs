@@ -346,7 +346,7 @@ fn rendered_data_is_consistent() {
     assert_eq!(data["title"], "A → C");
     assert_eq!(data["tz"], "Europe/Berlin", "the zone of the plot's time axis");
     // The page's own search keeps to the search's limits: unix minutes, minutes.
-    let minutes = |hhmm: &str| at(hhmm).timestamp() / 60;
+    let minutes = |hhmm: &str| at(hhmm).timestamp().div_euclid(60);
     assert_eq!(
         data["limits"],
         serde_json::json!({
