@@ -10,7 +10,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use chrono_tz::Tz;
 
 use crate::checked;
-use crate::enumerate::{self, Chain, Limits, Network};
+use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::text;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
@@ -89,9 +89,27 @@ impl<'n> Fallbacks<'n> {
         // A change listed although missed (negative buffer): the traveller is
         // there only after the missed train left; nothing leaves before that.
         // From where the train arrived: after a change with a walk, fallbacks
-        // walk there too, or elsewhere.
+        // walk there too, or elsewhere. And from where the missed train left:
+        // a walk starting there counts only from after the missed departure,
+        // but the traveller already stands there, and may leave right after it.
         let ready = transfer.ready();
-        let candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
+        let mut candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
+        if let Some((trip, board, _)) = chain.rides().nth(after_change) {
+            let boards_at = tt.call(trip, board)?.station;
+            if boards_at != transfer.station {
+                // Those walking there first are found from there too, with the earlier window.
+                let mut walked_there = Vec::with_capacity(candidates.len());
+                for c in &candidates {
+                    walked_there.push(match c.steps.first() {
+                        Some(Step::Walk { footpath }) => tt.footpath(*footpath)?.to == boards_at,
+                        _ => false,
+                    });
+                }
+                let mut walked = walked_there.into_iter();
+                candidates.retain(|_| !walked.next().unwrap_or(false));
+                candidates.extend_from_slice(self.candidates(boards_at, transfer.departure, ready)?);
+            }
+        }
         let mut ranked = candidates
             .iter()
             .map(|fallback| {
