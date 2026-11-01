@@ -10,8 +10,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use chrono_tz::Tz;
 
 use crate::checked;
-use crate::enumerate::{self, Chain, Limits, Network};
+use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::text;
+use crate::timetable::Timetable;
 use crate::usable::Usable;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
@@ -131,9 +132,51 @@ impl<'n> Fallbacks<'n> {
         // A change listed although missed (negative buffer): the traveller is
         // there only after the missed train left; nothing leaves before that.
         // From where the train arrived: after a change with a walk, fallbacks
-        // walk there too, or elsewhere.
+        // walk there too, or elsewhere. And from where the missed train left:
+        // a walk starting there counts only from after the missed departure,
+        // but the traveller already stands there, and may leave right after it.
         let ready = transfer.ready();
-        let candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
+        let mut candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
+        if let Some((trip, board, _)) = chain.rides().nth(after_change) {
+            let boards_at = tt.call(trip, board)?.station;
+            if boards_at != transfer.station {
+                // From there, only what boards a train right there, and doesn't
+                // come back for what is listed from where the train arrived:
+                // the fallbacks are shown from there, so a walk first would be
+                // shown as one from there, and the rest is a second copy.
+                let listed: HashSet<&[Step]> = candidates.iter().map(|c| c.steps.as_slice()).collect();
+                let mut from_boarding = Vec::new();
+                for c in self.candidates(boards_at, transfer.departure, ready)? {
+                    if !walks_first(c) && !rides_back(tt, c, transfer.station, &listed)? {
+                        from_boarding.push(c.clone());
+                    }
+                }
+                // The same chain from its first train on, boarded without a walk,
+                // is one fallback: boarded where it calls first. Walked to, it is
+                // one of its own, unless also boarded at that call without a walk.
+                // Earliest boarding first: of the copies in a slot, the first stays.
+                // Copies tying on boarding and walk are the same chain.
+                let mut copies: Vec<(Onward, Boarding, Chain)> = candidates
+                    .into_iter()
+                    .chain(from_boarding)
+                    // Every fallback has a ride.
+                    .filter_map(|c| onward(&c).map(|(key, rank)| (key, rank, c)))
+                    .collect();
+                copies.sort_by_key(|&(_, rank, _)| rank);
+                let mut kept: HashMap<(Onward, Option<usize>), Chain> = HashMap::new();
+                let mut direct: HashMap<Onward, HashSet<usize>> = HashMap::new();
+                for (key, (board, walk), c) in copies {
+                    if walk.is_none() {
+                        direct.entry(key.clone()).or_default().insert(board);
+                    }
+                    kept.entry((key, walk.map(|_| board))).or_insert(c);
+                }
+                kept.retain(|(key, walked_to), _| {
+                    walked_to.is_none_or(|board| !direct.get(key).is_some_and(|boards| boards.contains(&board)))
+                });
+                candidates = kept.into_values().collect();
+            }
+        }
         let mut ranked = candidates
             .iter()
             .map(|fallback| {
@@ -146,7 +189,8 @@ impl<'n> Fallbacks<'n> {
                 let lands = if back.is_some() { arrival } else { fallback.arrival(tt)? };
                 let marked: HashSet<usize> =
                     back.and_then(|i| rides.get(i)).map(|&(trip, _, _)| trip).into_iter().collect();
-                let line = text::route(tt, fallback, min_transfer, &marked, self.zone)?;
+                // A first train from where the missed one left is named with its station.
+                let line = text::route_from(tt, fallback, Some(transfer.station), min_transfer, &marked, self.zone)?;
                 Ok((lands, changes, Reverse(slack), line, back, fallback))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -158,6 +202,58 @@ impl<'n> Fallbacks<'n> {
             .map(|(lands, _, _, line, rejoins_at, chain)| Fallback { chain: chain.clone(), lands, rejoins_at, line })
             .collect())
     }
+}
+
+fn walks_first(chain: &Chain) -> bool {
+    matches!(chain.steps.first(), Some(Step::Walk { .. }))
+}
+
+/// The first train of a chain, where it is left, and all steps after it.
+type Onward = (usize, usize, Vec<Step>);
+/// Where the first train is boarded, and the walk there if any.
+type Boarding = (usize, Option<usize>);
+
+/// `chain` from its first train on, without where that train is boarded; and that boarding.
+fn onward(chain: &Chain) -> Option<(Onward, Boarding)> {
+    let first = chain.steps.iter().position(|s| matches!(s, Step::Ride { .. }))?;
+    let Step::Ride { trip, board, alight } = *chain.steps.get(first)? else { return None };
+    let walk = match chain.steps.first() {
+        Some(&Step::Walk { footpath }) => Some(footpath),
+        _ => None,
+    };
+    Some(((trip, alight, chain.steps.get(first.saturating_add(1)..)?.to_vec()), (board, walk)))
+}
+
+/// Whether `chain` gets to `station` (by train or on foot, or riding through
+/// it after a change) and goes on from there as one of the `listed` chains does.
+/// Riding through on the first train is that chain boarded elsewhere (`onward`).
+fn rides_back(tt: &Timetable, chain: &Chain, station: usize, listed: &HashSet<&[Step]>) -> Result<bool> {
+    let mut changed = false;
+    for (i, step) in chain.steps.iter().enumerate() {
+        let rest = chain.steps.get(i.saturating_add(1)..).unwrap_or_default();
+        let reached = match *step {
+            Step::Ride { trip, board, alight } => {
+                if changed {
+                    for k in board.saturating_add(1)..alight {
+                        if tt.call(trip, k)?.station == station {
+                            let mut on = vec![Step::Ride { trip, board: k, alight }];
+                            on.extend_from_slice(rest);
+                            if listed.contains(on.as_slice()) {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+                changed = true;
+                tt.call(trip, alight)?.station
+            }
+            Step::Walk { footpath } => tt.footpath(footpath)?.to,
+        };
+        if reached == station && listed.contains(rest) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
