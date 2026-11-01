@@ -1682,7 +1682,7 @@ async fn junction_boards_cover_nothing_when_their_runs_fail() {
     let (emmaboda, karlskrona) = (index_of(&stations, "Emmaboda"), index_of(&stations, "Karlskrona C"));
     let motis = motis_trip("Krösatågen 7200", Some('N'), &[(emmaboda, "", "09:40"), (karlskrona, "10:15", "")]);
     let boards: Boards = found.coverage.into_iter().map(|(idx, coverage)| (idx, (Vec::new(), coverage))).collect();
-    let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips);
+    let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips, false);
     let kt = trips.iter().find(|t| t.label == "Krösatågen 7200").expect("the Transitous train");
     assert_eq!(calls_of(kt).len(), 2);
 }
