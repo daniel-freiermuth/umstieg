@@ -233,7 +233,17 @@ command line logs nothing unless `RUST_LOG` is set.
    offered.
 
 Without DB credentials or a Trafikverket key, that part of step 2 is skipped;
-without both, the timetable consists of the MOTIS trains only.
+without both, the timetable consists of the MOTIS trains only, copies from
+several feeds matched by train number alone (shared times at stations also
+fit a split train's halves, a trunk's lines and a line's runs passing).
+An EFA train named by its category ("ICE 273") counts as numbered by it here,
+and so does a FlixTrain copy whose trip id carries its number; with DB or
+Trafikverket these copies join by shared times, as other trains without a
+number do. Copies are merged only where nothing of either is lost and they
+are of one run (they share two stations or more in one order and don't part):
+EFA's rides end or start at hubs the other copy passes, so the copy fills in
+the half of the call there that EFA's ride lacks, and where they disagree at
+such a stop both copies stay.
 
 ## Data
 
