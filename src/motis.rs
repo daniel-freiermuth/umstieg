@@ -152,10 +152,25 @@ struct GeocodeMatch {
     modes: Vec<String>,
 }
 
+/// Words that name a station, not a place: "Mannheim Hbf", "Altona Bahnhof".
+const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
+/// Words that join a town to its river or region: "Frankfurt am Main", "an der Oder".
+const CONNECTING_WORDS: [&str; 6] = ["am", "an", "der", "im", "in", "ob"];
+
 impl GeocodeMatch {
     /// Whether trains call there; a coach stop may be named "… train station".
     fn has_trains(&self) -> bool {
         self.modes.iter().any(|m| m.ends_with("RAIL") || m == "LONG_DISTANCE" || m == "SUBURBAN")
+    }
+
+    /// Whether its name says it is a station: "Mannheim Hbf", "Malmö C".
+    fn named_station(&self) -> bool {
+        fold(&self.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c")
+    }
+
+    /// A station by its trains or its name.
+    fn is_station(&self) -> bool {
+        self.has_trains() || self.named_station()
     }
 }
 
@@ -300,6 +315,13 @@ impl Motis {
     /// geocoder can rank badly ("Bad Dürkheim Hbf" → Stuttgart
     /// "Hauptbahnhof"), so station words are also tried spelled differently,
     /// and stops with trains are preferred, then stations by name over bus stops.
+    /// When text with connecting words ("Frankfurt am Main Hbf") finds no station,
+    /// it is asked again without them, as the geocoder ranks badly with them and
+    /// station names drop them ("Frankfurt(Main) Hbf"). That answer is taken only if
+    /// it is a station whose name, apart from station words, is the place without
+    /// them and nothing more: the qualifier alone fits other places
+    /// ("Hanau-Steinheim (Main) Bahnhof"), and the geocoder names the stops the
+    /// text finds differently ("Rottenburg (Neckar)").
     pub async fn stop(&self, text: &str) -> Result<Stop> {
         let (stop, queries) = self.find_stop(text).await?;
         stop.with_context(|| format!("no stop named like {text:?} found (tried: {})", queries.join(", ")))
@@ -307,37 +329,58 @@ impl Motis {
 
     /// [`Motis::stop`], with `None` (and the queries tried) when no stop fits:
     /// errors are only failures to ask.
-    pub async fn find_stop(&self, text: &str) -> Result<(Option<Stop>, [String; 4])> {
-        const STATION_WORDS: [&str; 6] = ["hbf", "hauptbahnhof", "bahnhof", "bf", "centralstation", "station"];
-        let is_station_word = |w: &str| STATION_WORDS.contains(&fold(w).as_str());
+    pub async fn find_stop(&self, text: &str) -> Result<(Option<Stop>, Vec<String>)> {
         let (folded, plain) = (fold(text), unaccented(text));
         let place: Vec<(&str, &str)> =
             folded.split(' ').zip(plain.split(' ')).filter(|(w, _)| !STATION_WORDS.contains(w)).collect();
-        // Queries keep the original spelling: the geocoder doesn't know "duerkheim".
-        let bare = text.split_whitespace().filter(|w| !is_station_word(w)).collect::<Vec<_>>().join(" ");
-        let queries = [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare.clone()];
-        for query in &queries {
+        let names_place = |m: &GeocodeMatch| {
+            let (name, plain_name) = (fold(&m.name), unaccented(&m.name));
+            place.iter().all(|(w, p)| name.split(' ').any(|n| n == *w) || plain_name.split(' ').any(|n| n == *p))
+        };
+        let mut queries = stop_queries(text).to_vec();
+        let mut found = self.first_fitting(&queries, names_place).await?;
+        let connecting = |w: &&str| CONNECTING_WORDS.contains(&fold(w).as_str());
+        if !found.as_ref().is_some_and(GeocodeMatch::is_station) && text.split_whitespace().any(|w| connecting(&w)) {
+            let (full, full_plain): (Vec<&str>, Vec<&str>) = place.iter().copied().unzip();
+            let (short, short_plain): (Vec<&str>, Vec<&str>) =
+                place.iter().copied().filter(|(w, _)| !CONNECTING_WORDS.contains(w)).unzip();
+            let names_only = |name: &str, place: &[&str]| {
+                name.split(' ').filter(|n| !STATION_WORDS.contains(n)).eq(place.iter().copied())
+            };
+            // "Prien am Chiemsee" or "Frankfurt(Main) Hbf", not "Esslingen am Neckar, Oberessl. Bahnhof".
+            let station_of_place = |m: &GeocodeMatch| {
+                let (name, plain_name) = (fold(&m.name), unaccented(&m.name));
+                m.is_station()
+                    && [(&full, &full_plain), (&short, &short_plain)]
+                        .iter()
+                        .any(|(words, plain)| names_only(&name, words) || names_only(&plain_name, plain))
+            };
+            let short_text = text.split_whitespace().filter(|w| !connecting(w)).collect::<Vec<_>>().join(" ");
+            let short_queries = stop_queries(&short_text);
+            let station = self.first_fitting(&short_queries, station_of_place).await?;
+            queries.extend(short_queries);
+            found = station.or(found);
+        }
+        Ok((found.map(|m| Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name }), queries))
+    }
+
+    /// The first query's best answer that `fits`: in the geocoder's order, but
+    /// stops with trains first, then stations by name.
+    async fn first_fitting(
+        &self,
+        queries: &[String],
+        fits: impl Fn(&GeocodeMatch) -> bool,
+    ) -> Result<Option<GeocodeMatch>> {
+        for query in queries {
             let matches: Vec<GeocodeMatch> =
                 self.get("/api/v1/geocode", &[("text", query.clone()), ("type", "STOP".to_owned())]).await?;
-            let mut fitting: Vec<GeocodeMatch> = matches
-                .into_iter()
-                .filter(|m| m.kind == "STOP")
-                .filter(|m| {
-                    let (name, plain_name) = (fold(&m.name), unaccented(&m.name));
-                    place
-                        .iter()
-                        .all(|(w, p)| name.split(' ').any(|n| n == *w) || plain_name.split(' ').any(|n| n == *p))
-                })
-                .collect();
-            // Keep the geocoder's order, but stops with trains first, then stations by name.
-            fitting.sort_by_key(|m| {
-                (!m.has_trains(), !fold(&m.name).split(' ').any(|n| STATION_WORDS.contains(&n) || n == "c"))
-            });
+            let mut fitting: Vec<GeocodeMatch> = matches.into_iter().filter(|m| m.kind == "STOP" && fits(m)).collect();
+            fitting.sort_by_key(|m| (!m.has_trains(), !m.named_station()));
             if let Some(m) = fitting.into_iter().next() {
-                return Ok((Some(Stop { position: m.lat.zip(m.lon), id: m.id, name: m.name }), queries));
+                return Ok(Some(m));
             }
         }
-        Ok((None, queries))
+        Ok(None)
     }
 
     /// Stops matching `text` for the form to pick from: stops with trains
@@ -445,6 +488,15 @@ impl Motis {
         let itinerary: Itinerary = serde_json::from_str(&text).context("decoding trip")?;
         itinerary.legs.into_iter().find(Leg::is_transit).with_context(|| format!("trip {trip_id} has no ride"))
     }
+}
+
+/// The geocoder queries for a stop named `text`: as typed, with the station word
+/// as "Bahnhof", as "Hauptbahnhof", and without. Queries keep the original
+/// spelling: the geocoder doesn't know "duerkheim".
+fn stop_queries(text: &str) -> [String; 4] {
+    let bare = text.split_whitespace().filter(|w| !STATION_WORDS.contains(&fold(w).as_str())).collect::<Vec<_>>();
+    let bare = bare.join(" ");
+    [text.to_owned(), format!("{bare} Bahnhof"), format!("{bare} Hauptbahnhof"), bare]
 }
 
 /// [`fold`] with accents dropped instead of spelled out: "Köln", "Koln" and
