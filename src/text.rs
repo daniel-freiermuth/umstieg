@@ -75,6 +75,19 @@ pub fn route(
     rejoin: &HashSet<usize>,
     zone: Tz,
 ) -> Result<String> {
+    route_from(tt, chain, None, min_transfer, rejoin, zone)
+}
+
+/// [`route`] for a traveller at `start` before the chain: a first train
+/// leaving elsewhere, not walked to, is named with its station, as after a change.
+pub fn route_from(
+    tt: &Timetable,
+    chain: &Chain,
+    start: Option<usize>,
+    min_transfer: TimeDelta,
+    rejoin: &HashSet<usize>,
+    zone: Tz,
+) -> Result<String> {
     let transfers = chain.transfers(tt)?;
     let mut parts = Vec::new();
     let walk = |parts: &mut Vec<String>, footpath: usize| -> Result<()> {
@@ -104,6 +117,10 @@ pub fn route(
             if bs.name != tt.station(tr.station)?.name {
                 from = format!(" {}", bs.name);
             }
+        } else if let Some(s) = start.filter(|_| matches!(chain.steps.first(), Some(Step::Ride { .. })))
+            && bs.name != tt.station(s)?.name
+        {
+            from = format!(" {}", bs.name);
         }
         if rejoin.contains(&trip) {
             parts.push(format!("{}{from} {} (back on plan)", timed(b.departure, zone), t.label));
