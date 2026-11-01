@@ -13,7 +13,7 @@ pub const PROGRESS: Page =
 const DATA: &str = "/*__DATA__*/";
 const SCRIPT: &str = "/*__SCRIPT__*/";
 /// Where the shared look goes: the icon and stylesheet in the head, the logo
-/// with the name (a link to a new search) in the page.
+/// with the name (a link to a new search, unless the page is a file) in the page.
 const HEAD: &str = "<!--__HEAD__-->";
 const BRAND: &str = "<!--__BRAND__-->";
 const THEME: &str = include_str!("../web/theme.css");
@@ -26,12 +26,16 @@ fn head() -> String {
     format!("<link rel=\"icon\" href=\"data:image/svg+xml,{icon}\" />\n<style>\n{THEME}</style>")
 }
 
-/// The logo and name, linking to a new search.
-fn brand() -> String {
+/// The logo and name, linking to a new search if `linked`; a page opened as
+/// a file has no server at `/` to search with.
+fn brand(linked: bool) -> String {
     let logo = LOGO.trim().replacen("<svg ", "<svg aria-hidden=\"true\" ", 1);
-    format!(
-        "<a class=\"brand\" href=\"/\" title=\"New search\">{logo}<span class=\"word\">um<span>stieg</span></span></a>"
-    )
+    let word = "<span class=\"word\">um<span>stieg</span></span>";
+    if linked {
+        format!("<a class=\"brand\" href=\"/\" title=\"New search\">{logo}{word}</a>")
+    } else {
+        format!("<span class=\"brand\">{logo}{word}</span>")
+    }
 }
 
 pub struct Page {
@@ -44,10 +48,19 @@ impl Page {
     /// `data` as JSON at `/*__DATA__*/` and its script at `/*__SCRIPT__*/`,
     /// which comes after the rest in every template.
     pub fn render(&self, data: Option<&impl Serialize>) -> Result<String> {
+        self.render_brand(data, true)
+    }
+
+    /// [`Page::render`] for a page written to a file: its logo links nowhere.
+    pub fn render_file(&self, data: Option<&impl Serialize>) -> Result<String> {
+        self.render_brand(data, false)
+    }
+
+    fn render_brand(&self, data: Option<&impl Serialize>, linked: bool) -> Result<String> {
         // Placeholders are only looked for in the template: data or script
         // text that looks like one stays as it is.
         let (top, bottom) = self.html.split_once(SCRIPT).context("page template without script placeholder")?;
-        let top = top.replacen(HEAD, &head(), 1).replacen(BRAND, &brand(), 1);
+        let top = top.replacen(HEAD, &head(), 1).replacen(BRAND, &brand(linked), 1);
         let top = match data {
             // `<` only occurs in JSON strings, where `\u003c` means the same;
             // escaped, the data can't close or confuse the surrounding <script>.
