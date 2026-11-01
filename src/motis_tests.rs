@@ -310,6 +310,194 @@ async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() 
 }
 
 #[tokio::test]
+async fn stop_ignores_connecting_words_missing_from_stop_names() {
+    // Transitous' answers of 2026-10-30, abridged: the geocoder ranks queries with "am", "an der" badly.
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    let main_hbf = |name: &str| with_modes(name, "main-hbf", &["LONG_DISTANCE", "SUBURBAN"]);
+    let main_sued = || with_modes("Frankfurt (Main) Süd", "main-sued", &["LONG_DISTANCE", "SUBURBAN"]);
+    for text in ["Frankfurt am Main Hbf", "Frankfurt am Main Hauptbahnhof"] {
+        fake.geocode(text, json!([main_hbf("Frankfurt Hauptbahnhof"), main_sued()]));
+    }
+    fake.geocode(
+        "Frankfurt am Main Bahnhof",
+        json!([with_modes("Frankfurt (Main) Höchst Bahnhof", "hoechst", &["REGIONAL_RAIL"])]),
+    )
+    .geocode(
+        "Frankfurt am Main",
+        json!([
+            with_modes("Frankfurt am Main, P+R", "p+r", &["RIDE_SHARING"]),
+            main_hbf("Frankfurt (M) Hbf"),
+            with_modes("Frankfurt (Main) Am Riedsteg", "riedsteg", &["BUS"]),
+        ]),
+    )
+    .geocode("Frankfurt Main Hbf", json!([main_hbf("Frankfurt(Main) Hbf"), main_sued()]))
+    .geocode(
+        "Frankfurt an der Oder",
+        json!([
+            with_modes("Frankfurt (Oder), An den Seefichten", "seefichten", &["BUS"]),
+            with_modes("Frankfurt (Main) An der Bornhohl", "bornhohl", &["BUS"]),
+        ]),
+    )
+    .geocode(
+        "Frankfurt Oder Hbf",
+        json!([
+            main_hbf("Frankfurt (M) Hbf"),
+            with_modes("Frankfurt (Oder), Bahnhof", "oder", &["LONG_DISTANCE", "REGIONAL_RAIL"]),
+        ]),
+    );
+    let motis = client(&fake).await;
+    assert_eq!(motis.stop("Frankfurt am Main Hbf").await.unwrap().id, "main-hbf");
+    assert_eq!(motis.stop("Frankfurt an der Oder Hbf").await.unwrap().id, "oder");
+}
+
+#[tokio::test]
+async fn only_a_station_may_leave_out_the_connecting_words() {
+    // Transitous' answers of 2026-10-31, abridged: without "an der", "am", "im" the
+    // qualifier fits bus, U-Bahn and ride-sharing stops that name it by chance.
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    let rrz = || with_modes("Mülheim Rhein-Ruhr-Zentrum", "rrz", &["SUBWAY", "BUS"]);
+    let immenstadt = || with_modes("Immenstadt i. Allgäu,", "amarillo", &[]);
+    fake.geocode("Mülheim Ruhr Hbf", json!([with_modes("Mülheim Hauptbahnhof", "hbf", &["REGIONAL_RAIL"])]))
+        .geocode("Mülheim Ruhr Bahnhof", json!([rrz()]))
+        .geocode("Mülheim Ruhr", json!([rrz(), with_modes("Mülheim Hochschule Ruhr West", "hrw", &["TRAM"])]))
+        .geocode("Frankfurt Main West", json!([with_modes("Frankfurt (Main) Atzelberg West", "bus", &["BUS"])]))
+        .geocode("Immenstadt Allgäu", json!([immenstadt()]))
+        .geocode(
+            "Immenstadt Allgäu Bahnhof",
+            json!([with_modes("Immenstadt, Bahnhof", "bf", &["REGIONAL_RAIL"]), immenstadt()]),
+        )
+        .geocode("Freiburg im Breisgau Faigle", json!([with_modes("Freiburg im Breisgau, Faigle", "faigle", &[])]));
+    let motis = client(&fake).await;
+    for text in ["Mülheim an der Ruhr Hbf", "Frankfurt am Main West", "Immenstadt im Allgäu"] {
+        let found = motis.stop(text).await.map(|s| s.id);
+        assert!(found.is_err(), "{text}: found {found:?}");
+    }
+    assert_eq!(motis.stop("Freiburg im Breisgau Faigle").await.unwrap().id, "faigle", "named with \"im\"");
+}
+
+#[tokio::test]
+async fn a_station_without_the_connecting_words_names_only_the_place() {
+    // Transitous' answers of 2026-10-31, abridged: other stations name the qualifier too.
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    let steinheim = || with_modes("Hanau-Steinheim (Main) Bahnhof", "steinheim", &["SUBURBAN"]);
+    let hanau = || json!([with_modes("Hanau Hauptbahnhof", "hanau", &["LONG_DISTANCE"]), steinheim()]);
+    fake.geocode(
+        "Prien Chiemsee",
+        json!([
+            with_modes("Prien am Chiemsee", "prien", &["HIGHSPEED_RAIL", "REGIONAL_RAIL"]),
+            with_modes("Stock Hafen Bahnhof, Prien a. Chiemsee", "stock", &["REGIONAL_RAIL"]),
+        ]),
+    )
+    .geocode("Hanau Main Hbf", hanau())
+    .geocode("Hanau Main Bahnhof", json!([steinheim()]))
+    .geocode("Hanau Main Hauptbahnhof", hanau())
+    .geocode("Hanau Main", json!([with_modes("Hanau Mainstraße", "bus", &["BUS"])]));
+    let motis = client(&fake).await;
+    let prien = motis.stop("Prien am Chiemsee").await.ok().map(|s| s.id);
+    let hanau = motis.stop("Hanau am Main Hbf").await.ok().map(|s| s.id);
+    assert_eq!((prien, hanau), (Some("prien".to_owned()), None), "Hanau's own station doesn't name \"Main\"");
+}
+
+#[tokio::test]
+async fn a_stop_the_typed_name_finds_is_kept() {
+    // Transitous' answers of 2026-10-31, abridged: without the connecting words the
+    // geocoder names the same stops differently ("Rottenburg (Neckar)").
+    let fake = Arc::new(Fake::default());
+    let with_modes = |name: &str, id: &str, modes: &[&str]| {
+        let mut s = stop("STOP", name, id);
+        s["modes"] = json!(modes);
+        s
+    };
+    let biberach = &["HIGHSPEED_RAIL", "REGIONAL_RAIL"];
+    fake.geocode(
+        "Rottenburg am Neckar",
+        json!([
+            with_modes("Rottenburg am Neckar, P+R", "p+r", &[]),
+            with_modes("Rottenburg am Neckar, Bahnhof", "rottenburg", &["RIDE_SHARING"]),
+        ]),
+    )
+    .geocode(
+        "Rottenburg Neckar",
+        json!([
+            with_modes("Rottenburg (Neckar)", "rottenburg", &["RIDE_SHARING"]),
+            with_modes("Rottenburg am Neckar, P+R", "p+r", &[]),
+        ]),
+    )
+    .geocode(
+        "Biberach an der Riß",
+        json!([
+            with_modes("Biberach an der Riß, Süd", "sued", &[]),
+            with_modes("Biberach an der Riß, ZOB/Bahnhof", "biberach", biberach),
+        ]),
+    )
+    .geocode(
+        "Biberach Riß",
+        json!([
+            with_modes("Biberach (Riss), Bahnhof/ZOB", "biberach", biberach),
+            with_modes("Biberach an der Riß, Süd", "sued", &[]),
+        ]),
+    )
+    .geocode(
+        "Lauffen am Neckar",
+        json!([with_modes("Lauffen am Neckar,", "lauffen", &[]), with_modes("Lauffen am Neckar, P+R", "p+r", &[])]),
+    )
+    .geocode(
+        "Lauffen Neckar",
+        json!([with_modes("Lauffen (Neckar)", "lauffen", &[]), with_modes("Lauffen am Neckar, P+R", "p+r", &[])]),
+    )
+    .geocode("Esslingen am Neckar", json!([with_modes("Esslingen am Neckar,", "esslingen", &[])]))
+    .geocode("Esslingen Neckar", json!([with_modes("Esslingen (Neckar)", "esslingen", &[])]))
+    .geocode(
+        "Esslingen Neckar Bahnhof",
+        json!([
+            with_modes("Esslingen am Neckar, Oberessl. Bahnhof (Süd)", "oberesslingen", &[]),
+            with_modes("Esslingen (N)", "n", &["REGIONAL_RAIL"]),
+        ]),
+    );
+    let motis = client(&fake).await;
+    let mut found = Vec::new();
+    for text in ["Rottenburg am Neckar", "Biberach an der Riß", "Lauffen am Neckar", "Esslingen am Neckar"] {
+        found.push(motis.stop(text).await.ok().map(|s| s.id));
+    }
+    let expected = ["rottenburg", "biberach", "lauffen", "esslingen"].map(|id| Some(id.to_owned()));
+    assert_eq!(found, expected);
+}
+
+#[tokio::test]
+async fn a_station_found_on_asking_again_may_be_typed_without_accents() {
+    // Transitous' answer of 2026-10-31, abridged: "Konigstein im Taunus" finds no stop naming "im".
+    let fake = Arc::new(Fake::default());
+    let mut station = stop("STOP", "Königstein (Taunus) Bahnhof", "koenigstein");
+    station["modes"] = json!(["REGIONAL_RAIL", "BUS"]);
+    fake.geocode("Konigstein Taunus", json!([station]));
+    let motis = client(&fake).await;
+    assert_eq!(motis.stop("Konigstein im Taunus").await.unwrap().id, "koenigstein");
+}
+
+#[tokio::test]
+async fn text_without_connecting_words_is_asked_once() {
+    let fake = Arc::new(Fake::default());
+    let motis = client(&fake).await;
+    let error = motis.stop("Atlantis Hbf").await.unwrap_err().to_string();
+    assert_eq!(fake.texts().len(), 4, "{error}");
+}
+
+#[tokio::test]
 async fn stop_tries_bare_place_last_and_reports_all_queries() {
     let fake = Arc::new(Fake::default());
     fake.geocode("Altona", json!([stop("STOP", "Hamburg-Altona", "altona")]));
