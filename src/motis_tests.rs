@@ -63,6 +63,9 @@ fn train_numbers_are_the_trailing_digits() {
     let cases = [
         (Some("ICE 378"), Some(378)),
         (Some("011174"), Some(11174)),
+        // Polish trains go by a pair of numbers, one per direction: the first is the train's.
+        (Some("RL 97114/5"), Some(97114)),
+        (Some("SKA1 33314/5"), Some(33314)),
         (Some("RJ"), None),
         (Some(""), None),
         (Some("0"), None),

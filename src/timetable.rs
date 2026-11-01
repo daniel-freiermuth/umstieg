@@ -466,11 +466,11 @@ pub async fn build(
     };
     stations.name_by_db((origin_idx, destination_idx));
     let from_trafikverket = !swedish.is_empty() && !sweden_from_transitous;
-    let trips = if db.is_none() && tv.is_none() {
-        rough.trips.into_values().collect()
-    } else {
-        merge(&stations.list, &boards, rough.trips, swedish)
-    };
+    // Without DB or Trafikverket every train comes from the planners, and two
+    // of them sharing times at stations are as often different runs (a split
+    // train's halves, a trunk's lines, a line's runs passing) as copies: they
+    // are matched by train number only, and merged only where nothing is lost.
+    let trips = merge(&stations.list, &boards, rough.trips, swedish, db.is_none() && tv.is_none());
 
     Build {
         timetable: Timetable {
@@ -1323,14 +1323,25 @@ pub const fn whole_seconds(s: f64) -> i64 {
 type Signature = Vec<(usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
 /// A train seen at a station: (trip, planned arrival, planned departure).
 type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+/// Two times: (one copy's, the other's) planned time at a station, or (earliest, latest).
+type Span = (DateTime<Utc>, DateTime<Utc>);
 
 /// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
 /// merged into them by number. The boards win where they have data: a MOTIS
 /// stop is dropped if the board train's route omits the station, or the
 /// station's board lists other trains of that class for the hour. Without
-/// boards, copies of one train from several feeds become one, EFA's times winning.
+/// boards, copies of one train from several feeds become one, EFA's times
+/// winning: by number, and unless `planners_only` also by the same times at
+/// two stations. With `planners_only` (no DB or Trafikverket asked) a copy is
+/// merged only if none of its stops, nor either half of one, is lost.
 #[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
-fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed: Vec<Fed>) -> Vec<Trip> {
+fn merge(
+    stations: &[Station],
+    boards: &Boards,
+    raw: HashMap<String, Trip>,
+    fed: Vec<Fed>,
+    planners_only: bool,
+) -> Vec<Trip> {
     let mut runs: HashMap<&str, Vec<(usize, &Visit)>> = HashMap::new();
     for (&idx, (visits, _)) in boards {
         for v in visits {
@@ -1452,7 +1463,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
     // Trains from those feeds by number: the same number at the same time at
     // one station is one train, whatever class the feeds gave it.
     let mut feed_by_number: HashMap<u32, Vec<usize>> = HashMap::new();
-    for (_, motis) in raw {
+    for (id, motis) in raw {
         let by_number = motis.numbers.iter().find_map(|n| {
             by_number.get(n)?.iter().copied().find(|&i| {
                 motis.calls.iter().any(|c| {
@@ -1463,19 +1474,33 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
                 })
             })
         });
+        // Without DB or Trafikverket, a planner's train without a number of
+        // its own can still name it (`planner_number`). With them, `merge`
+        // matches as it always did: such copies join by shared times.
+        let named = planners_only.then(|| planner_number(&id, &motis)).flatten();
+        // Without DB or Trafikverket nothing says which copy is right, and
+        // EFA's rides end or start at hubs the other copy passes through:
+        // the copy goes into the first train of its number that takes it
+        // whole (`absorbs`). There are no board or fed trains then, so
+        // `by_number` finds nothing and the shared-times rule is off.
         let same_run = || {
-            motis.numbers.iter().find_map(|n| {
+            motis.numbers.iter().chain(&named).find_map(|n| {
                 feed_by_number.get(n)?.iter().copied().find(|&i| {
-                    motis.calls.iter().any(|c| {
-                        trips.get(i).and_then(|t| t.call_at(c.station)).is_some_and(|d| {
+                    let Some(base) = trips.get(i) else { return false };
+                    let met = motis.calls.iter().any(|c| {
+                        base.call_at(c.station).is_some_and(|d| {
                             close(c.arrival.map(|t| t.planned), d.arrival.map(|t| t.planned))
                                 || close(c.departure.map(|t| t.planned), d.departure.map(|t| t.planned))
                         })
-                    })
+                    });
+                    met && (!planners_only || absorbs(base, &motis))
                 })
             })
         };
         let twin = by_number.or_else(same_run).or_else(|| {
+            if planners_only {
+                return None;
+            }
             let mut shared: HashMap<usize, usize> = HashMap::new();
             for c in &motis.calls {
                 let (arr, dep) = (c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned));
@@ -1511,23 +1536,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
             // agree on the stops around it: Transitous' ICE 273 is 10 minutes
             // off at Karlsruhe, so its Mannheim time would be too.
             let from_feed = !trip.calls.iter().any(|c| c.from_board);
-            let anchors: Vec<(DateTime<Utc>, bool)> = motis
-                .calls
-                .iter()
-                .filter_map(|c| {
-                    let base = trip.call_at(c.station)?;
-                    let agree = close(c.arrival.map(|t| t.planned), base.arrival.map(|t| t.planned))
-                        || close(c.departure.map(|t| t.planned), base.departure.map(|t| t.planned));
-                    Some((c.planned()?, agree))
-                })
-                .collect();
-            let anchored = |t: Option<DateTime<Utc>>| {
-                t.is_some_and(|t| {
-                    let before = anchors.iter().filter(|a| a.0 < t).max_by_key(|a| a.0);
-                    let after = anchors.iter().filter(|a| a.0 > t).min_by_key(|a| a.0);
-                    (before.is_some() || after.is_some()) && before.is_none_or(|a| a.1) && after.is_none_or(|a| a.1)
-                })
-            };
+            let anchors = anchors_of(trip, &motis.calls);
             let mut added = Vec::new();
             for call in motis.calls {
                 let name = stations.get(call.station).and_then(|s| s.board_name.as_ref());
@@ -1535,7 +1544,13 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
                 let unknown_inside = name.is_none()
                     && !route.is_empty()
                     && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
-                let unanchored = from_feed && !anchored(call.planned());
+                let unanchored = from_feed && !anchored(&anchors, call.planned());
+                // Where the base's ride ends or starts, the copy passing
+                // through gives the half it lacks (`absorbs` checked they agree).
+                if planners_only && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station) {
+                    base.arrival = base.arrival.or(call.arrival);
+                    base.departure = base.departure.or(call.departure);
+                }
                 if trip.call_at(call.station).is_none()
                     && !off_route
                     && !unknown_inside
@@ -1552,7 +1567,7 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
             let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();
             // Only trains: buses and trams carry line numbers, shared by many runs.
             if class.is_some() {
-                for &n in &motis.numbers {
+                for &n in motis.numbers.iter().chain(&named) {
                     feed_by_number.entry(n).or_default().push(trips.len());
                 }
             }
@@ -1562,6 +1577,98 @@ fn merge(stations: &[Station], boards: &Boards, raw: HashMap<String, Trip>, fed:
         }
     }
     trips
+}
+
+/// Whether two copies' calls at a station agree: the same planned arrival or
+/// departure within `SAME_TIME`.
+fn agree(a: &Call, b: &Call) -> bool {
+    let close = |x: Option<Time>, y: Option<Time>| matches!((x, y), (Some(x), Some(y)) if x.planned.signed_duration_since(y.planned).abs() <= SAME_TIME);
+    close(a.arrival, b.arrival) || close(a.departure, b.departure)
+}
+
+/// `calls` of another copy at stations `base` calls at too: (planned time,
+/// whether the copies agree there).
+fn anchors_of(base: &Trip, calls: &[Call]) -> Vec<(DateTime<Utc>, bool)> {
+    calls.iter().filter_map(|c| Some((c.planned()?, agree(c, base.call_at(c.station)?)))).collect()
+}
+
+/// Whether a stop at `t` lies only next to `anchors` where the copies agree.
+fn anchored(anchors: &[(DateTime<Utc>, bool)], t: Option<DateTime<Utc>>) -> bool {
+    t.is_some_and(|t| {
+        let before = anchors.iter().filter(|a| a.0 < t).max_by_key(|a| a.0);
+        let after = anchors.iter().filter(|a| a.0 > t).min_by_key(|a| a.0);
+        (before.is_some() || after.is_some()) && before.is_none_or(|a| a.1) && after.is_none_or(|a| a.1)
+    })
+}
+
+/// Whether `other`, a copy of the planners' train `base`, merges into it
+/// losing nothing: they are of `one_run`, a stop `base` lacks is anchored,
+/// and where `base` lacks a half of a call `other` has (its ride ends or
+/// starts there), they agree.
+fn absorbs(base: &Trip, other: &Trip) -> bool {
+    if !one_run(base, other) {
+        return false;
+    }
+    let anchors = anchors_of(base, &other.calls);
+    other.calls.iter().all(|c| {
+        base.call_at(c.station).map_or_else(
+            || anchored(&anchors, c.planned()),
+            |b| {
+                let lacks =
+                    (c.arrival.is_some() && b.arrival.is_none()) || (c.departure.is_some() && b.departure.is_none());
+                !lacks || agree(c, b)
+            },
+        )
+    })
+}
+
+/// Whether `other` and `base`, sharing a number, are copies of one run. A
+/// number doesn't always name one: SL's pendeltåg carry their line as it, GB's
+/// split portions share theirs. Copies of one run share at least two stations,
+/// pass them in one order (shown by at least one pair, never contradicted),
+/// and don't both go on to, or come from, stations the other doesn't list. A
+/// line's runs leaving a station in opposite directions share only it; split
+/// portions both go on to their own stations.
+fn one_run(base: &Trip, other: &Trip) -> bool {
+    // (other's planned time, base's) at each station both list.
+    let shared: Vec<Span> =
+        other.calls.iter().filter_map(|c| Some((c.planned()?, base.call_at(c.station)?.planned()?))).collect();
+    let pairs = || shared.iter().flat_map(|a| shared.iter().map(move |b| (a, b)));
+    let same_way = pairs().any(|(a, b)| a.0 < b.0 && a.1 < b.1) && !pairs().any(|(a, b)| a.0 < b.0 && a.1 > b.1);
+    let ends = |side: fn(&Span) -> DateTime<Utc>| shared.iter().map(side).min().zip(shared.iter().map(side).max());
+    let (Some(theirs), Some(ours)) = (ends(|s| s.0), ends(|s| s.1)) else { return false };
+    // Whether `calls` has stops `of` doesn't list before and after `(lo, hi)`.
+    let own = |calls: &[Call], of: &Trip, (lo, hi): Span| {
+        let times = || calls.iter().filter(|c| of.call_at(c.station).is_none()).filter_map(Call::planned);
+        (times().any(|t| t < lo), times().any(|t| t > hi))
+    };
+    let (a, b) = (own(&other.calls, base, theirs), own(&base.calls, other, ours));
+    same_way && !((a.0 && b.0) || (a.1 && b.1))
+}
+
+/// The number a planner's rail train without one of its own still names:
+/// EFA's "ICE 273" or "Zug 4711" (its category, then the train's number, as
+/// `efa::itinerary` labels it when EFA gives no `trainNumber`), or the number
+/// in the trip id of the `eu-flixbus` feed's trains (`flixtrain_number`).
+fn planner_number(trip_id: &str, trip: &Trip) -> Option<u32> {
+    if !trip.numbers.is_empty() || trip.class.is_none() {
+        return None;
+    }
+    if !trip_id.starts_with(crate::efa::TRIP_PREFIX) {
+        return flixtrain_number(trip_id);
+    }
+    let (category, number) = trip.label.split_once(' ')?;
+    let digits = !category.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
+    digits.then(|| number.parse().ok()).flatten().filter(|&n| n > 0)
+}
+
+/// The train number in a Transitous id of the `eu-flixbus` feed's trains:
+/// 1240 in "20261102_07:44_eu-flixbus_FLX10-1240-0744112026-RB#HH-00".
+fn flixtrain_number(trip_id: &str) -> Option<u32> {
+    let mut parts = trip_id.splitn(4, '_');
+    let (_date, _time, feed, trip) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let number = (feed == "eu-flixbus").then(|| trip.split('-').nth(1)).flatten()?;
+    number.parse().ok().filter(|&n| n > 0)
 }
 
 #[cfg(test)]

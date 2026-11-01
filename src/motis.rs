@@ -114,6 +114,9 @@ impl Leg {
             self.class().and(route)
         };
         let name = self.trip_short_name.as_deref().filter(|n| !n.is_empty()).or_else(bare)?;
+        // Polish trains go by a pair of numbers, one per direction ("RL 97114/5"):
+        // the train's is the first, not the other's last digit.
+        let name = name.split('/').next().unwrap_or(name);
         let digits = name.rsplit(|c: char| !c.is_ascii_digit()).next()?;
         digits.parse().ok().filter(|&n| n > 0)
     }

@@ -973,7 +973,7 @@ fn db_run_joins_visits_across_boards_in_sequence_order() {
         last.arrival.as_mut().expect("arrives").cancelled = true;
         last.arrival.as_mut().expect("arrives").planned_platform = Some("12".to_owned());
     }
-    let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new());
+    let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new(), false);
     assert_eq!(labels(&trips), ["ICE 378", "RE 7"]);
     let ice = &trips[0];
     assert_eq!(calls_of(ice), [(4, true), (0, true), (3, true), (2, true)]);
@@ -1006,7 +1006,7 @@ fn db_run_label_is_the_majority_label() {
             let t = format!("{:02}:00", 8 + i);
             (i as usize, visit("r", i + 1, label, Some('F'), &t, &t))
         });
-        let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new());
+        let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new(), false);
         assert_eq!(trips.len(), 1);
         assert_eq!((trips[0].label.as_str(), trips[0].numbers.as_slice()), (expected, numbers), "{labels_in_order:?}");
     }
@@ -1025,7 +1025,7 @@ fn coupled_db_runs_with_identical_calls_become_one_train() {
     ];
     for (second, expected) in cases {
         let visits = ice_774().into_iter().chain(run("2-2808", "ICE 2808", Some('F'), second));
-        let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new());
+        let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new(), false);
         assert_eq!(labels(&trips), expected, "{second:?}");
         if let [one] = trips.as_slice() {
             assert_eq!(one.numbers, [774, 2808]);
@@ -1043,7 +1043,7 @@ fn coupled_runs_share_their_routes_and_numbers() {
         .into_iter()
         .chain(path_after(run("2-2808", "ICE 2808", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:02")]), 1, &["D"]));
     let motis = motis_trip("ICE 2808", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
-    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
+    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["ICE 774 + ICE 2808"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, false)]);
 }
@@ -1057,7 +1057,7 @@ fn merge_by_number(label: &str, offset: i64) -> Vec<Trip> {
     let visits = run("r", "ICE 616", Some('F'), &[(0, "", "08:00"), (1, "09:00", "")]);
     let [start, end] = [at("08:00"), at("11:00")].map(|t| (t + minutes(offset)).format("%H:%M").to_string());
     let motis = motis_trip(label, Some('F'), &[(0, "", start.as_str()), (2, end.as_str(), "")]);
-    merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new())
+    merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false)
 }
 
 #[test]
@@ -1103,7 +1103,7 @@ fn motis_merges_by_identical_times_at_two_stations_of_the_same_class() {
         let mut calls = stops.to_vec();
         calls.push((3, "11:00", ""));
         let motis = motis_trip("ICE 2558", class, &calls);
-        let trips = merge(&stations, &boards(visits()), raw(vec![("m", motis)]), Vec::new());
+        let trips = merge(&stations, &boards(visits()), raw(vec![("m", motis)]), Vec::new(), false);
         if merged {
             assert_eq!(labels(&trips), ["ICE 76"], "{name}");
             assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (3, false)], "{name}");
@@ -1126,7 +1126,7 @@ fn motis_merges_into_the_train_sharing_most_stations() {
         Some('F'),
         &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "10:01"), (4, "12:00", "")],
     );
-    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
+    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["IC 1", "IC 2"]);
     assert_eq!(trips[0].calls.len(), 3);
     assert_eq!(calls_of(&trips[1]), [(0, true), (1, true), (2, true), (4, false)]);
@@ -1143,7 +1143,7 @@ fn motis_merges_into_the_first_of_equally_matching_trains() {
             .into_iter()
             .chain(run("2", "IC 2", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (3, "11:00", "")]));
         let motis = motis_trip("Train", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (4, "12:00", "")]);
-        let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
+        let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
         assert_eq!(labels(&trips), ["IC 1", "IC 2"]);
         assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
         assert_eq!(calls_of(&trips[1]), [(0, true), (1, true), (3, true)]);
@@ -1218,7 +1218,7 @@ fn motis_stops_merged_into_a_db_train_only_where_db_lacks_them() {
         }
         // MOTIS has Frankfurt Süd 5 minutes early; DB's time wins.
         let motis = motis_trip("ICE 378", class, &[(MANNHEIM, "", "06:39"), (SUED, "07:10", "07:12"), (extra, t, "")]);
-        let trips = merge(&stations, &b, raw(vec![("m", motis)]), Vec::new());
+        let trips = merge(&stations, &b, raw(vec![("m", motis)]), Vec::new(), false);
         assert_eq!(labels(&trips), ["ICE 378"], "{name}");
         let mut expected = vec![(MANNHEIM, true), (SUED, true), (FULDA, true)];
         if kept {
@@ -1235,7 +1235,7 @@ fn without_route_knowledge_motis_stops_are_kept() {
     let stations = vec![station("X", None), station("Y", None), station("Z", None)];
     let visits = run("r", "EC 8", Some('F'), &[(0, "", "08:00"), (2, "10:00", "")]);
     let motis = motis_trip("EC 8", Some('F'), &[(0, "", "08:00"), (1, "09:00", "09:01"), (2, "10:00", "")]);
-    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new());
+    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["EC 8"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (2, true), (1, false)]);
 }
@@ -1248,7 +1248,7 @@ fn unmerged_motis_trains_lose_calls_their_board_rules_out() {
     cover(&mut b, 1, &[(at("08:00"), 'F')]);
     let re = motis_trip("RE 4711", Some('N'), &[(0, "", "08:00"), (1, "08:30", "08:31"), (2, "09:00", "")]);
     let bus = motis_trip("Bus 12", None, &[(0, "", "08:10"), (2, "08:50", "")]);
-    let trips = merge(&stations, &b, raw(vec![("bus", bus), ("re", re)]), Vec::new());
+    let trips = merge(&stations, &b, raw(vec![("bus", bus), ("re", re)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["Bus 12", "RE 4711"]);
     assert_eq!(calls_of(&trips[0]), [(0, false), (2, false)]);
     assert_eq!(calls_of(&trips[1]), [(1, false), (2, false)]);
@@ -1260,7 +1260,8 @@ fn motis_trains_with_the_same_times_from_two_feeds_become_one() {
     let stations = vec![station("Bad Dürkheim", None), station("Mannheim", None)];
     let efa = motis_trip("RNV 4", None, &[(0, "", "05:13"), (1, "06:10", "")]);
     let transitous = motis_trip("4", None, &[(0, "", "05:14"), (1, "06:10", "")]);
-    let trips = merge(&stations, &Boards::new(), raw(vec![("a-efa", efa), ("b-transitous", transitous)]), Vec::new());
+    let trips =
+        merge(&stations, &Boards::new(), raw(vec![("a-efa", efa), ("b-transitous", transitous)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["RNV 4"]);
     assert_eq!(trips[0].calls.len(), 2);
 }
@@ -1308,6 +1309,7 @@ fn copies_of_a_train_from_two_feeds_become_one_with_efa_times() {
                 &Boards::new(),
                 raw(vec![(transitous_id, transitous.clone()), (efa_id, efa.clone())]),
                 Vec::new(),
+                false,
             );
             assert_eq!(trips.len(), 1, "{what}, {efa_id}");
             let mut times: Vec<_> = trips[0].calls.iter().map(|c| (c.station, c.planned())).collect();
@@ -1324,18 +1326,61 @@ fn feed_trains_sharing_a_number_but_no_time_stay_apart() {
     let stations: Vec<Station> = ["A", "B"].iter().map(|&n| station(n, Some(n))).collect();
     let early = motis_trip("RE7", Some('N'), &[(0, "", "08:00"), (1, "08:30", "")]);
     let late = motis_trip("RE7", Some('N'), &[(0, "", "09:00"), (1, "09:30", "")]);
-    let trips = merge(&stations, &Boards::new(), raw(vec![("a", early), ("b", late)]), Vec::new());
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", early), ("b", late)]), Vec::new(), false);
     assert_eq!(trips.len(), 2);
     // Two minutes apart at one station is the same train, whatever the class.
     let a = motis_trip("ICE 5", Some('F'), &[(0, "", "08:00"), (1, "08:30", "")]);
     let b = motis_trip("5", Some('N'), &[(0, "", "08:02"), (1, "08:45", "")]);
-    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]), Vec::new());
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]), Vec::new(), false);
     assert_eq!(labels(&trips), ["ICE 5"]);
     // Trams and buses: line numbers, so no merging by number.
     let a = motis_trip("4", None, &[(0, "", "08:00"), (1, "08:30", "")]);
     let b = motis_trip("4", None, &[(0, "", "08:01"), (1, "08:45", "")]);
-    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]), Vec::new());
+    let trips = merge(&stations, &Boards::new(), raw(vec![("a", a), ("b", b)]), Vec::new(), false);
     assert_eq!(trips.len(), 2);
+}
+
+#[test]
+fn feed_copies_without_a_shared_number_merge_by_the_same_times_at_two_stations() {
+    // Where DB has no data (past days, abroad), its board-less trains still
+    // come together by times: copies whose numbers differ or are missing.
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, None)).collect();
+    let trip = |label: &str, class, numbers: &[u32], stops: &[(usize, &str, &str)]| Trip {
+        numbers: numbers.to_vec(),
+        ..motis_trip(label, class, stops)
+    };
+    let three = [(0, "", "08:00"), (1, "08:30", "08:31"), (2, "09:00", "")];
+    let ice_76 = [(0, "", "08:00"), (1, "09:00", "09:05"), (2, "10:00", "")];
+    let ice_2558 = [(1, "", "09:05"), (2, "10:00", "")];
+    let bus = |o| [(0, "", o), (1, "10:01", "10:01"), (2, "10:05", "10:05"), (3, "10:09", "")];
+    let cases = [
+        // EFA names the number "Zug 4711" but gives no train number; Transitous names the line.
+        (
+            "EFA without a train number",
+            trip("Zug 4711", Some('N'), &[], &three),
+            trip("RB44 (4711)", Some('N'), &[4711], &three),
+        ),
+        // Coupled, the second boarded where the first stops.
+        ("coupled ICEs", trip("ICE 76", Some('F'), &[76], &ice_76), trip("ICE 2558", Some('F'), &[2558], &ice_2558)),
+        (
+            "copies disagreeing at a stop both list",
+            trip("Bus 12", None, &[], &bus("09:57")),
+            trip("Bus 12", None, &[], &bus("10:00")),
+        ),
+    ];
+    let ids =
+        [("efa:x:1:20261024", "20261024_08:00_de-DELFI_1"), ("20261024_08:00_de-DELFI_1", "20261024_08:00_de-DELFI_2")];
+    let mut apart = Vec::new();
+    for (what, a, b) in cases {
+        for (id_a, id_b) in ids {
+            let trips =
+                merge(&stations, &Boards::new(), raw(vec![(id_a, a.clone()), (id_b, b.clone())]), Vec::new(), false);
+            if trips.len() != 1 {
+                apart.push(format!("{what} ({id_a}): {:?}", labels(&trips)));
+            }
+        }
+    }
+    assert!(apart.is_empty(), "{apart:#?}");
 }
 
 // ---------------------------------------------------------------- DB boards
@@ -1585,7 +1630,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
         Some('F'),
         &[(origin, "", "06:04"), (emmaboda, "09:27", "09:30"), (karlskrona, "10:30", "10:31"), (kalmar, "10:20", "")],
     );
-    let trips = merge(&stations.list, &Boards::new(), raw(vec![("m", motis)]), found.trips);
+    let trips = merge(&stations.list, &Boards::new(), raw(vec![("m", motis)]), found.trips, false);
     let sj = trips.iter().find(|t| t.label == "SJ Regional 319").unwrap();
     let names: Vec<&str> = sj.calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
     assert_eq!(names, ["Göteborg Centralstation", "Lessebo", "Emmaboda", "Nybro", "Kalmar C"]);
@@ -1876,7 +1921,7 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
         Some('F'),
         &[(0, "", "09:41"), (3, "10:14", "10:16"), (2, "11:21", "11:22"), (4, "11:48", "")],
     );
-    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route)]);
+    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route)], false);
     assert_eq!(labels(&trips), ["Öresundståg 1036"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
     assert!(trips[0].transitous);
@@ -2069,4 +2114,462 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
     assert_eq!(goteborg["fetchStops"], "true");
     let nybro = asked.iter().find(|q| q.get("center").is_some_and(|c| c == "56.744,15.906")).unwrap();
     assert_eq!((nybro.get("stopId"), nybro["radius"].as_str()), (None, "200"));
+}
+
+#[tokio::test]
+async fn without_db_or_trafikverket_copies_of_a_train_from_two_feeds_become_one() {
+    // Without boards, copies are matched by train number: the same number at
+    // about the same time at a station both list.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let re = |name, weinheim| -> Service {
+        let stops = vec![("Mannheim Hbf", "", "08:00"), ("Weinheim", weinheim, weinheim), ("Frankfurt", "09:00", "")];
+        ("REGIONAL_RAIL", name, Some("4711"), stops)
+    };
+    let delfi = "20261024_08:00_de-DELFI_3448990207";
+    let flx = |name, number| -> Service {
+        ("LONG_DISTANCE", name, number, vec![("Darmstadt Hbf", "", "11:40"), ("Frankfurt (Main) Süd", "11:55", "")])
+    };
+    // (what, one copy's trip id and service, the other's)
+    let cases: [(&str, Ridden, Ridden); 5] = [
+        ("EFA and Transitous", ("efa:ddb:RE60:20261024", re("RE 60", "08:15")), (delfi, re("RE60", "08:15"))),
+        (
+            "two of Transitous's feeds",
+            ("20261024_08:00_de-VRN_60-1", re("RE 60", "08:15")),
+            (delfi, re("RE60", "08:15")),
+        ),
+        // EFA dates its ids by the day boarded: one run ridden on either side
+        // of midnight has two.
+        (
+            "one EFA run boarded on either side of midnight",
+            ("efa:vrn:08004:s:H:j26:515:20261024", re("RE 60", "08:15")),
+            ("efa:vrn:08004:s:H:j26:515:20261025", re("RE 60", "08:15")),
+        ),
+        (
+            "copies disagreeing at a stop both list",
+            ("efa:ddb:RE60:20261024", re("RE 60", "08:15")),
+            (delfi, re("RE60", "08:25")),
+        ),
+        // Transitous gives FlixTrain's number only in its trip id.
+        (
+            "FlixTrain",
+            ("efa:ddb:FLX10:H:j26:1240:20261102", flx("FLX 1240", Some("1240"))),
+            ("20261102_07:44_eu-flixbus_FLX10-1240-0744112026-RB#HH-00", flx("FlixTrain FLX10", None)),
+        ),
+    ];
+    let mut apart = Vec::new();
+    for (what, (id_a, a), (id_b, b)) in cases {
+        let itineraries = [
+            Itinerary { legs: vec![service(id_a, a.0, a.1, a.2, &a.3)] },
+            Itinerary { legs: vec![service(id_b, b.0, b.1, b.2, &b.3)] },
+        ];
+        let (from, to) = (end(a.3[0].0), end(a.3[a.3.len() - 1].0));
+        let built = super::build(&motis, None, None, &itineraries, &from, &to, false).await;
+        if built.timetable.trips.len() != 1 {
+            apart.push(format!("{what}: {:?}", labels(&built.timetable.trips)));
+        }
+    }
+    assert!(apart.is_empty(), "{apart:#?}");
+}
+
+#[tokio::test]
+async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_of_one() {
+    // EFA is asked from the origin to a hub and on from there, so its rides
+    // end or start at H where Transitous' copy of the train passes through.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let re = |stops: &[(&'static str, &'static str, &'static str)]| -> Service {
+        ("REGIONAL_RAIL", "RE 60", Some("4711"), stops.to_vec())
+    };
+    let through = [("O", "", "08:00"), ("H", "08:30", "08:32"), ("D", "09:00", "")];
+    // (what, EFA's ride, Transitous' ride, one trip expected)
+    let cases = [
+        ("EFA's ride ends at the hub", re(&[("O", "", "08:00"), ("H", "08:30", "")]), re(&through), true),
+        ("EFA's ride starts at the hub", re(&[("H", "", "08:32"), ("D", "09:00", "")]), re(&through), true),
+        // 10 minutes off at the hub (ICE 273's Transitous copy was).
+        (
+            "the copies disagree where EFA's ride ends",
+            re(&[("O", "", "08:00"), ("H", "08:30", "")]),
+            re(&[("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")]),
+            false,
+        ),
+    ];
+    let mut lost = Vec::new();
+    for (what, efa, transitous, one) in cases {
+        let rides = [("efa:vrn:08004:s:H:j26:515:20261024", &efa), ("20261024_08:00_de-DELFI_1", &transitous)];
+        let itineraries = rides.map(|(id, s)| Itinerary { legs: vec![service(id, s.0, s.1, s.2, &s.3)] });
+        let built = super::build(&motis, None, None, &itineraries, &end("O"), &end("D"), false).await;
+        let tt = &built.timetable;
+        if one && tt.trips.len() != 1 {
+            lost.push(format!("{what}: not merged, {:?}", labels(&tt.trips)));
+        }
+        // Every stop of each copy, with the halves it has, is still in some trip.
+        for (_, (.., stops)) in rides {
+            let final_stop = stops.len() - 1;
+            for (n, &(name, _, _)) in stops.iter().enumerate() {
+                let (arrives, departs) = (n > 0, n < final_stop);
+                let kept = tt.trips.iter().flat_map(|t| &t.calls).any(|c| {
+                    tt.stations[c.station].name == name
+                        && (!arrives || c.arrival.is_some())
+                        && (!departs || c.departure.is_some())
+                });
+                if !kept {
+                    lost.push(format!("{what}: {name} (arrives {arrives}, departs {departs})"));
+                }
+            }
+        }
+    }
+    assert!(lost.is_empty(), "{lost:#?}");
+}
+
+#[tokio::test]
+async fn a_trip_id_names_a_train_number_only_in_the_feeds_part_of_a_trains_id() {
+    // Ids are full of digits that are no train numbers: EFA's line id, year
+    // and tripCode, Transitous' date and time. Only a numberless train's own
+    // trip in Transitous' id ("…_FLX10-1240-0744…") can name its number.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let ice_515 = (
+        "efa:ddb:98X42:W:H:j26:26:20261024",
+        (
+            "LONG_DISTANCE",
+            "ICE 515",
+            Some("515"),
+            vec![("Frankfurt (Main) Hbf", "", "10:00"), ("Mannheim Hbf", "10:38", "")],
+        ),
+    );
+    let re_10 = (
+        "efa:ddb:R10:H:j26:4:20261024",
+        (
+            "REGIONAL_RAIL",
+            "RE 10",
+            Some("10"),
+            vec![("Mainz Hbf", "", "09:30"), ("Mannheim Hbf", "10:00", "10:02"), ("Karlsruhe Hbf", "10:40", "")],
+        ),
+    );
+    // (what, a numbered train, a numberless trip sharing a time with it at Mannheim Hbf)
+    let cases: [(&str, Ridden, Ridden); 3] = [
+        (
+            "a tram whose EFA tripCode is the train's number",
+            ice_515.clone(),
+            (
+                "efa:vrn:08004:s:H:j26:515:20261024",
+                (
+                    "TRAM",
+                    "RNV 4",
+                    None,
+                    vec![
+                        ("Mannheim, Kunsthalle", "", "10:33"),
+                        ("Mannheim Hbf", "10:37", "10:38"),
+                        ("Bad Dürkheim", "11:20", ""),
+                    ],
+                ),
+            ),
+        ),
+        (
+            "a coach whose trip id has the train's number",
+            ice_515,
+            (
+                "20261024_10:00_eu-flixbus_515-12-1000102026-F#ZH-00",
+                (
+                    "BUS",
+                    "FlixBus 515",
+                    None,
+                    vec![
+                        ("Ludwigshafen", "", "10:20"),
+                        ("Mannheim Hbf", "10:38", "10:40"),
+                        ("Heidelberg Hbf", "11:00", ""),
+                    ],
+                ),
+            ),
+        ),
+        (
+            "a train whose trip id's departure time has the other's number",
+            re_10,
+            (
+                "20261024_10:00_de-DELFI_3448990207",
+                ("REGIONAL_RAIL", "RB 44", None, vec![("Mannheim Hbf", "", "10:02"), ("Weinheim", "10:20", "")]),
+            ),
+        ),
+    ];
+    let mut merged = Vec::new();
+    for (what, (id_a, a), (id_b, b)) in cases {
+        let itineraries = [
+            Itinerary { legs: vec![service(id_a, a.0, a.1, a.2, &a.3)] },
+            Itinerary { legs: vec![service(id_b, b.0, b.1, b.2, &b.3)] },
+        ];
+        let built = super::build(&motis, None, None, &itineraries, &end(a.3[0].0), &end("Mannheim Hbf"), false).await;
+        if built.timetable.trips.len() != 2 {
+            merged.push(format!("{what}: {:?}", labels(&built.timetable.trips)));
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+#[tokio::test]
+async fn polish_trains_sharing_a_digit_of_their_numbers_stay_apart() {
+    // pl-Polish-Trains numbers its trains in pairs ("RL 97114/5"), and
+    // PKP Intercity's ids carry a date and a suffix
+    // ("…_pl-PKP-Intercity_2026-11-02_17004-5"): neither names another train.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let train = |mode, number, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
+        (mode, number, Some(number), stops.to_vec())
+    };
+    let (zach, cent, wsch) = ("Warszawa Zachodnia", "Warszawa Centralna", "Warszawa Wschodnia");
+    let rl = [(zach, "", "07:00"), (cent, "07:04", "07:05"), (wsch, "07:12", "07:13"), ("Tłuszcz", "07:50", "")];
+    let r2_early = [(zach, "", "07:01"), (cent, "07:05", "07:06"), (wsch, "07:13", "07:14"), ("Otwock", "07:45", "")];
+    let s2 = [(cent, "", "08:00"), (zach, "08:02", "")];
+    let r3 = [("Pruszków", "", "07:50"), (zach, "08:00", "08:00"), (cent, "08:02", "08:02"), (wsch, "08:08", "")];
+    let eic = [("Poznań Główny", "", "06:00"), (zach, "08:40", "08:42"), (cent, "08:49", "")];
+    let r2 = [(zach, "", "08:41"), (cent, "08:45", "08:46"), ("Otwock", "09:20", "")];
+    // (what, one train, another, also through `merge` as with credentials but no DB data)
+    let cases: [(&str, Ridden, Ridden, bool); 3] = [
+        (
+            "two lines on a trunk",
+            ("20261102_07:00_pl-Polish-Trains_1", train("REGIONAL_RAIL", "RL 97114/5", &rl)),
+            ("20261102_07:01_pl-Polish-Trains_2", train("REGIONAL_RAIL", "R2 93804/5", &r2_early)),
+            false,
+        ),
+        (
+            "two lines passing",
+            ("20261102_08:00_pl-Polish-Trains_3", train("SUBURBAN", "S2 97212/3", &s2)),
+            ("20261102_07:50_pl-Polish-Trains_4", train("SUBURBAN", "R3 21702/3", &r3)),
+            false,
+        ),
+        (
+            "an Intercity train and a regional one",
+            (
+                "20261102_08:49_pl-PKP-Intercity_2026-11-02_17004-5",
+                ("LONG_DISTANCE", "EIC 48", Some("48 Berlin-Warszawa-Express"), eic.to_vec()),
+            ),
+            ("20261102_08:41_pl-Polish-Trains_5", train("REGIONAL_RAIL", "R2 93804/5", &r2)),
+            true,
+        ),
+    ];
+    let mut merged = Vec::new();
+    for (what, (id_a, a), (id_b, b), with_credentials) in cases {
+        let itineraries = [
+            Itinerary { legs: vec![service(id_a, a.0, a.1, a.2, &a.3)] },
+            Itinerary { legs: vec![service(id_b, b.0, b.1, b.2, &b.3)] },
+        ];
+        let built =
+            super::build(&motis, None, None, &itineraries, &end(a.3[0].0), &end(b.3[b.3.len() - 1].0), false).await;
+        if built.timetable.trips.len() != 2 {
+            merged.push(format!("{what}, without credentials: {:?}", labels(&built.timetable.trips)));
+        }
+        if with_credentials {
+            let (stations, rough) = rough(&itineraries, false);
+            let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+            if trips.len() != 2 {
+                merged.push(format!("{what}, with credentials: {:?}", labels(&trips)));
+            }
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+#[tokio::test]
+async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
+    // A number doesn't always name one run: SL's pendeltåg carry their line
+    // as route name ("40", no trip name), and GB's split portions share one.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let line_40 = |id, stops: &[(&str, &str, &str)]| {
+        let mut leg = service(id, "REGIONAL_RAIL", "40", None, stops);
+        (leg.route_short_name, leg.trip_short_name) = (Some("40".to_owned()), Some(String::new()));
+        leg
+    };
+    let sn_2301 = |id, stops: &[(&str, &str, &str)]| service(id, "REGIONAL_RAIL", "SN", Some("SN2301"), stops);
+    let north = [("Solna", "", "06:15"), ("Ulriksdal", "06:18", "06:18"), ("Uppsala C", "07:00", "")];
+    let south = [("Solna", "", "06:15"), ("Karlberg", "06:17", "06:17"), ("Stockholm City", "06:21", "")];
+    let up = [("X", "", "09:58"), ("A", "10:00", "10:00"), ("B", "10:02", "10:02"), ("Y", "10:04", "")];
+    let down = [("Y", "", "09:58"), ("B", "10:00", "10:00"), ("A", "10:02", "10:02"), ("X", "10:04", "")];
+    let (victoria, clapham) = (("London Victoria", "", "08:05"), ("Clapham Junction", "08:11", "08:12"));
+    let bognor = [victoria, clapham, ("Horsham", "08:50", "08:52"), ("Bognor Regis", "09:40", "")];
+    let portsmouth = [victoria, clapham, ("Horsham", "08:50", "08:53"), ("Portsmouth Harbour", "10:05", "")];
+    // (what, one run, another)
+    let cases = [
+        (
+            "a line's runs leaving a station in opposite directions",
+            line_40("20261102_06:15_se-Trafiklab_1", &north),
+            line_40("20261102_06:15_se-Trafiklab_2", &south),
+        ),
+        (
+            "a line's runs passing",
+            line_40("20261102_09:58_se-Trafiklab_3", &up),
+            line_40("20261102_09:58_se-Trafiklab_4", &down),
+        ),
+        (
+            "a train's split portions",
+            sn_2301("20261102_08:05_gb-rail_1", &bognor),
+            sn_2301("20261102_08:05_gb-rail_2", &portsmouth),
+        ),
+    ];
+    let mut merged = Vec::new();
+    for (what, a, b) in cases {
+        let (from, to) = (end(&a.from.name), end(&b.to.name));
+        let itineraries = [Itinerary { legs: vec![a] }, Itinerary { legs: vec![b] }];
+        let built = super::build(&motis, None, None, &itineraries, &from, &to, false).await;
+        if built.timetable.trips.len() != 2 {
+            merged.push(format!("{what}: {:?}", labels(&built.timetable.trips)));
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+/// EFA's answer for one ICE 273 ride from O to H, named by category with no
+/// trainNumber property, as VRN files ICEs.
+async fn efa_ice_273() -> Vec<Itinerary> {
+    let leg = serde_json::json!({
+        "duration": 1800,
+        "origin": { "name": "O", "departureTimePlanned": "2026-10-24T08:00:00Z" },
+        "destination": { "name": "H", "arrivalTimePlanned": "2026-10-24T08:30:00Z" },
+        "transportation": {
+            "id": "ddb:98X82:A:R:j26", "name": "ICE 273 InterCityExpress", "number": "273",
+            "product": { "class": 0 }, "properties": { "tripCode": 110 },
+        },
+    });
+    let body = serde_json::json!({ "journeys": [{ "legs": [leg] }] }).to_string();
+    let router = axum::Router::new().route("/XML_TRIP_REQUEST2", axum::routing::get(move || async move { body }));
+    let efa = crate::efa::Efa::new(&crate::testkit::serve(router).await, "umstieg-test").unwrap();
+    efa.trips("O", "H", at("08:00")).await.unwrap()
+}
+
+#[tokio::test]
+async fn efa_trains_named_by_category_match_by_that_number_only_without_db_or_trafikverket() {
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let transitous = |h: (&'static str, &'static str), d| {
+        let stops = [("O", "", "08:00"), ("H", h.0, h.1), ("D", d, "")];
+        Itinerary { legs: vec![service("20261024_08:00_de-DELFI_1", "LONG_DISTANCE", "ICE 273", Some("273"), &stops)] }
+    };
+    let mut wrong = Vec::new();
+    // Without credentials the category's number is the train's: copies agreeing at the hub merge.
+    let agreeing = [efa_ice_273().await, vec![transitous(("08:30", "08:32"), "09:00")]].concat();
+    let built = super::build(&motis, None, None, &agreeing, &end("O"), &end("D"), false).await;
+    if built.timetable.trips.len() != 1 {
+        wrong.push(format!("without credentials, agreeing: {:?}", labels(&built.timetable.trips)));
+    }
+    // With credentials but no board data, `merge` matches as it always did:
+    // by the same times at two stations, not by EFA's category number. The
+    // copies disagree 10 minutes at the hub, so they stay two whole trips.
+    let disagreeing = [efa_ice_273().await, vec![transitous(("08:40", "08:42"), "09:10")]].concat();
+    let (stations, rough) = rough(&disagreeing, false);
+    let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+    let kept = |name: &str, arrives: bool, departs: bool| {
+        let at = stations.list.iter().position(|s| s.name == name).unwrap();
+        trips
+            .iter()
+            .flat_map(|t| &t.calls)
+            .any(|c| c.station == at && (!arrives || c.arrival.is_some()) && (!departs || c.departure.is_some()))
+    };
+    if !(kept("H", true, true) && kept("D", true, false)) {
+        let calls: Vec<Vec<(usize, bool, bool)>> = trips
+            .iter()
+            .map(|t| t.calls.iter().map(|c| (c.station, c.arrival.is_some(), c.departure.is_some())).collect())
+            .collect();
+        wrong.push(format!("with credentials, disagreeing at the hub: {calls:?}"));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[tokio::test]
+async fn without_db_or_trafikverket_a_copy_merges_into_the_first_train_of_its_number_that_takes_it() {
+    // EFA's ride ends at H, 10 minutes off Transitous' copies there, so it
+    // can't take them; the copies from two of Transitous' feeds are one train.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let through = [("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")];
+    let itineraries = [
+        ("efa:vrn:x:H:j26:515:20261024", "RE 60", &[("O", "", "08:00"), ("H", "08:30", "")][..]),
+        ("20261024_08:00_de-DELFI_1", "RE60", &through[..]),
+        ("20261024_08:00_de-VRN_60-1", "RE60", &through[..]),
+    ]
+    .map(|(id, name, stops)| Itinerary { legs: vec![service(id, "REGIONAL_RAIL", name, Some("4711"), stops)] });
+    let built = super::build(&motis, None, None, &itineraries, &end("O"), &end("D"), false).await;
+    assert_eq!(labels(&built.timetable.trips).len(), 2, "{:?}", labels(&built.timetable.trips));
+}
+
+/// A service under `id`: `mode`, named `name`, with train number `number`,
+/// calling at (station, arrival, departure).
+fn service(id: &str, mode: &str, name: &str, number: Option<&str>, stops: &[(&str, &str, &str)]) -> Leg {
+    let mut leg = ride(id, stops.iter().map(|&(s, a, d)| stop(s, a, d)).collect());
+    leg.mode = mode.to_owned();
+    leg.display_name = Some(name.to_owned());
+    leg.trip_short_name = number.map(str::to_owned);
+    leg
+}
+
+/// A service's mode, name, train number and (station, arrival, departure) calls.
+type Service = (&'static str, &'static str, Option<&'static str>, Vec<(&'static str, &'static str, &'static str)>);
+/// A service under its trip id.
+type Ridden = (&'static str, Service);
+
+#[tokio::test]
+async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let line = |mode, name, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
+        (mode, name, None, stops.to_vec())
+    };
+    let ice = |name, number, last: [(&'static str, &'static str, &'static str); 3]| -> Service {
+        let first = [("Berlin Hbf", "", "08:00"), ("Hannover Hbf", "09:30", "09:32")];
+        ("HIGHSPEED_RAIL", name, Some(number), first.into_iter().chain(last).collect())
+    };
+    let essen = [("Hamm", "11:00", "11:05"), ("Dortmund", "11:20", "11:22"), ("Essen", "11:45", "")];
+    let wuppertal = [("Hamm", "11:00", "11:08"), ("Hagen", "11:30", "11:32"), ("Wuppertal", "11:50", "")];
+    // The trunk O–P–Q: two lines out to R and S, and back in from them.
+    let to_r = [("O", "", "10:00"), ("P", "10:01", "10:01"), ("Q", "10:02", "10:02"), ("R", "10:04", "")];
+    let to_s = [("O", "", "10:02"), ("P", "10:03", "10:03"), ("Q", "10:04", "10:04"), ("S", "10:06", "")];
+    let from_r = [("R", "", "09:58"), ("O", "10:00", "10:00"), ("P", "10:01", "10:01"), ("Q", "10:02", "")];
+    let from_s = [("S", "", "10:00"), ("O", "10:02", "10:02"), ("P", "10:03", "10:03"), ("Q", "10:04", "")];
+    let short = [("O", "", "10:00"), ("P", "10:01", "10:01"), ("Q", "10:02", "")];
+    // Rough trips are rides, not whole runs: only from boarding to alighting.
+    let tram_4_ride = [("O", "", "10:02"), ("P", "10:03", "")];
+    let north_ride = [("A", "", "10:00"), ("B", "10:02", "")];
+    // A line's runs both ways between X and Y, passing each other.
+    let north = [("X", "", "09:58"), ("A", "10:00", "10:00"), ("B", "10:02", "10:02"), ("Y", "10:04", "")];
+    let south = [("Y", "", "09:58"), ("B", "10:00", "10:00"), ("A", "10:02", "10:02"), ("X", "10:04", "")];
+    // Minute-resolution times can put both passing stops in the same minute.
+    let north_tie = [("X", "", "09:58"), ("A", "10:01", "10:01"), ("B", "10:01", "10:01"), ("Y", "10:04", "")];
+    let south_tie = [("Y", "", "09:58"), ("B", "10:01", "10:01"), ("A", "10:01", "10:01"), ("X", "10:04", "")];
+    let tie_ride = [("A", "", "10:01"), ("B", "10:01", "")];
+    // (what, one service, another)
+    let cases: [(&str, Service, Service); 13] = [
+        ("a split ICE's halves", ice("ICE 548", "548", essen), ice("ICE 558", "558", wuppertal)),
+        ("tram lines on a common trunk", line("TRAM", "Tram 1", &to_r), line("TRAM", "Tram 4", &to_s)),
+        ("tram lines joining a common trunk", line("TRAM", "Tram 1", &from_r), line("TRAM", "Tram 4", &from_s)),
+        ("an S-Bahn's runs in opposite directions", line("SUBURBAN", "S1", &north), line("SUBURBAN", "S1", &south)),
+        ("a bus's runs in opposite directions", line("BUS", "Bus 12", &north), line("BUS", "Bus 12", &south)),
+        ("a ride where a line's runs pass", line("BUS", "Bus 12", &south), line("BUS", "Bus 12", &north_ride)),
+        ("a ride where a line's runs pass, first", line("BUS", "Bus 12", &north_ride), line("BUS", "Bus 12", &south)),
+        ("a ride on another line's trunk", line("TRAM", "Tram 1", &to_r), line("TRAM", "Tram 4", &tram_4_ride)),
+        ("runs passing in one minute", line("BUS", "Bus 12", &north_tie), line("BUS", "Bus 12", &south)),
+        ("S-Bahn runs passing in one minute", line("SUBURBAN", "S1", &south), line("SUBURBAN", "S1", &north_tie)),
+        ("runs both passing in one minute", line("BUS", "Bus 12", &north_tie), line("BUS", "Bus 12", &south_tie)),
+        ("a ride passing in one minute", line("BUS", "Bus 12", &tie_ride), line("BUS", "Bus 12", &south)),
+        ("a short-turning tram ahead of another", line("TRAM", "Tram 4", &short), line("TRAM", "Tram 4", &to_s)),
+    ];
+    // One feed, EFA and Transitous, two of Transitous's feeds.
+    let ids = [
+        ("20261024_10:00_de-DELFI_1", "20261024_10:02_de-DELFI_2"),
+        ("efa:x:1:20261024", "20261024_10:02_de-DELFI_2"),
+        ("20261024_10:00_de-VRN_1", "20261024_10:02_de-DELFI_2"),
+    ];
+    let mut merged = Vec::new();
+    for (what, a, b) in cases {
+        for (id_a, id_b) in ids {
+            let itineraries = [
+                Itinerary { legs: vec![service(id_a, a.0, a.1, a.2, &a.3)] },
+                Itinerary { legs: vec![service(id_b, b.0, b.1, b.2, &b.3)] },
+            ];
+            let (from, to) = (end(a.3[0].0), end(a.3[a.3.len() - 1].0));
+            let built = super::build(&motis, None, None, &itineraries, &from, &to, false).await;
+            if built.timetable.trips.len() != 2 {
+                merged.push(format!("{what} ({id_a}): {:?}", labels(&built.timetable.trips)));
+            }
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
 }
