@@ -573,7 +573,10 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             keep_detours: plot.bounds.keep_detours,
         },
     };
-    Ok(Rendered { html: page::PLOT.render(Some(&data))?, details })
+    // Without a link back the page is a file (`umstieg --html`), like plot.ts's #new-search.
+    let html =
+        if plot.back.is_some() { page::PLOT.render(Some(&data))? } else { page::PLOT.render_file(Some(&data))? };
+    Ok(Rendered { html, details })
 }
 
 #[cfg(test)]
