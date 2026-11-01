@@ -1566,6 +1566,57 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
 }
 
 #[tokio::test]
+async fn junction_boards_cover_nothing_when_their_runs_fail() {
+    // Trafikverket refuses only the junction boards' runs (Krösatågen 7200).
+    let upstream = crate::testkit::serve_trafikverket(&tv_world()).await;
+    let forward = move |body: String| {
+        let upstream = upstream.clone();
+        async move {
+            if body.contains("name=\"AdvertisedTrainIdent\" value=\"7200\"") {
+                return (axum::http::StatusCode::BAD_REQUEST, "runs failed".to_owned());
+            }
+            let answer = reqwest::Client::new().post(&upstream).body(body).send().await.unwrap();
+            (axum::http::StatusCode::OK, answer.text().await.unwrap())
+        }
+    };
+    let url = crate::testkit::serve(axum::Router::new().fallback(forward)).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let mut stations = Stations::default();
+    let origin = stations.intern(Sighting {
+        name: "Göteborg Centralstation",
+        position: Some(north(GOTEBORG, 50.0)),
+        ..Sighting::default()
+    });
+    let destination = stations.intern(Sighting {
+        name: "Karlshamns resecentrum",
+        position: Some(north(KARLSHAMN, 450.0)),
+        ..Sighting::default()
+    });
+    let corridor = HashMap::from([(origin, (at("06:00"), at("07:00"))), (destination, (at("06:30"), at("11:00")))]);
+    let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
+    let found =
+        swedish(&tv, &unused_motis(), &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings)
+            .await;
+
+    assert!(warnings.iter().any(|w| w.starts_with("Trafikverket runs:")), "{warnings:?}");
+    // The first boards' runs and coverage stay; the junction boards cover nothing.
+    let mut labels: Vec<&str> = found.trips.iter().map(|(t, _)| t.label.as_str()).collect();
+    labels.sort_unstable();
+    assert_eq!(labels, ["Krösatågen 7100", "SJ Regional 319", "Öresundståg 1060"]);
+    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
+    covered.sort_unstable();
+    assert_eq!(covered, ["Göteborg Centralstation", "Karlshamns resecentrum"]);
+
+    // So Transitous's Krösatågen 7200 keeps its stops at the junction boards.
+    let (emmaboda, karlskrona) = (index_of(&stations, "Emmaboda"), index_of(&stations, "Karlskrona C"));
+    let motis = motis_trip("Krösatågen 7200", Some('N'), &[(emmaboda, "", "09:40"), (karlskrona, "10:15", "")]);
+    let boards: Boards = found.coverage.into_iter().map(|(idx, coverage)| (idx, (Vec::new(), coverage))).collect();
+    let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips);
+    let kt = trips.iter().find(|t| t.label == "Krösatågen 7200").expect("the Transitous train");
+    assert_eq!(calls_of(kt).len(), 2);
+}
+
+#[tokio::test]
 async fn trafikverket_is_not_asked_without_swedish_stations() {
     let world = tv_world();
     let url = crate::testkit::serve_trafikverket(&world).await;
@@ -2043,4 +2094,44 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
     assert_eq!(goteborg["fetchStops"], "true");
     let nybro = asked.iter().find(|q| q.get("center").is_some_and(|c| c == "56.744,15.906")).unwrap();
     assert_eq!((nybro.get("stopId"), nybro["radius"].as_str()), (None, "200"));
+}
+
+#[tokio::test]
+async fn when_trafikverket_runs_fail_the_transitous_trains_in_sweden_stay() {
+    // Trafikverket answers the boards but refuses every query for runs.
+    let upstream = crate::testkit::serve_trafikverket(&tv_world()).await;
+    let forward = move |body: String| {
+        let upstream = upstream.clone();
+        async move {
+            if body.contains("name=\"AdvertisedTrainIdent\" value=") {
+                return (axum::http::StatusCode::BAD_REQUEST, "runs failed".to_owned());
+            }
+            let answer = reqwest::Client::new().post(&upstream).body(body).send().await.unwrap();
+            (axum::http::StatusCode::OK, answer.text().await.unwrap())
+        }
+    };
+    let url = crate::testkit::serve(axum::Router::new().fallback(forward)).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let located = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(position.0), Some(position.1));
+        p
+    };
+    let end = |name: &str, position: (f64, f64)| Stop {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        position: Some(position),
+    };
+    let (g, kh) = (north(GOTEBORG, 50.0), north(KARLSHAMN, 50.0));
+    let swedish = Itinerary {
+        legs: vec![ride(
+            "t",
+            vec![located("Göteborg Centralstation", g, "", "06:55"), located("Karlshamn Resecentrum", kh, "11:21", "")],
+        )],
+    };
+    let (from, to) = (end("Göteborg Centralstation", g), end("Karlshamn Resecentrum", kh));
+    let built = super::build(&motis, None, Some(&tv), &[swedish], &from, &to, false).await;
+    assert!(built.warnings.iter().any(|w| w.starts_with("Trafikverket runs:")), "{:?}", built.warnings);
+    assert_eq!(built.timetable.trips.len(), 1, "the Transitous train, Karlshamn and all");
 }
