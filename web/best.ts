@@ -14,11 +14,13 @@ export interface Call {
   dep: number | null;
 }
 
-/** What the search needs of a piece: its kind, train and (ms, station) points. */
+/** What the search needs of a piece: its kind, train, (ms, station) points and stops passed only. */
 export interface Stretch {
   kind: "ride" | "wait" | "walk";
   trip: number | null;
   raw: readonly (readonly [number, number])[];
+  /** First points of stops a ride passes without stopping (cancelled): never boarded or left there. */
+  skips: readonly number[];
 }
 
 /** The search's limits, times in ms. */
@@ -89,6 +91,18 @@ export function callsOf(raw: readonly (readonly [number, number])[]): Call[] {
   if (first) first.arr = null;
   if (end) end.dep = null;
   return calls;
+}
+
+/** Positions in `callsOf(raw)` of the calls whose first point is in `skips`. */
+function skippedCalls(raw: readonly (readonly [number, number])[], skips: readonly number[]): Set<number> {
+  const out = new Set<number>();
+  let call = -1;
+  raw.forEach(([, s], i) => {
+    // As callsOf: points at the station of the one before belong to its call.
+    if (raw[i - 1]?.[1] !== s) call++;
+    if (skips.includes(i)) out.add(call);
+  });
+  return out;
 }
 
 /** Departure, arrival, changes and buffer (capped) of a connection: what "best" compares. */
@@ -166,6 +180,8 @@ function presence(steps: readonly Step[]): [station: number, from: number, to: n
 interface Run {
   trip: number;
   calls: Call[];
+  /** Positions in `calls` of the stops passed without stopping. */
+  skips: ReadonlySet<number>;
 }
 
 /** A station the connection stopped at, for the detour rule (as the server's search keeps it). */
@@ -249,7 +265,7 @@ function search(
   for (const p of network.map((pi) => item(pieces, pi))) {
     // Rides carry their train; waits are where connections stood.
     if (p.trip !== null) {
-      runs.push({ trip: p.trip, calls: callsOf(p.raw) });
+      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips) });
       continue;
     }
     // Stryker disable next-line ConditionalExpression: a wait taken for a walk leads from a station to itself, never walked (visited).
@@ -267,7 +283,7 @@ function search(
   const departures = new Map<number, [Run, number, number][]>();
   for (const run of runs)
     run.calls.forEach((c, k) => {
-      if (c.dep === null) return;
+      if (c.dep === null || run.skips.has(k)) return;
       const list = departures.get(c.station) ?? [];
       departures.set(c.station, list);
       list.push([run, k, c.dep]);
@@ -386,6 +402,8 @@ function search(
         if (visited[c.station] || c.arr === null || c.arr > limit || c.arr < dep) break;
         visited[c.station] = 1;
         passed.push(c.station);
+        // Passed without stopping: ridden through, not left.
+        if (run.skips.has(j)) continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1) });
         presence.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);

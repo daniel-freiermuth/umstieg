@@ -27,7 +27,7 @@ class World {
       if (a) raw.push([ms(a), s]);
       if (d) raw.push([ms(d), s]);
     }
-    this.pieces.push({ kind: "ride", trip, raw });
+    this.pieces.push({ kind: "ride", trip, raw, skips: [] });
   }
   walk(from: string, to: string, minutes: number): void {
     this.pieces.push({
@@ -37,6 +37,7 @@ class World {
         [0, this.station(from)],
         [minutes * 60e3, this.station(to)],
       ],
+      skips: [],
     });
   }
   /** A plan riding (train, from, to) in turn, walking between where asked ("walk"). */

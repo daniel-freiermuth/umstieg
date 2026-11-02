@@ -56,6 +56,7 @@ interface PieceData {
   warn: boolean;
   trip: number | null;
   pts: [number, number][];
+  skips: number[];
 }
 const kinds = ["ride", "wait", "walk"] as const;
 export type Kind = (typeof kinds)[number];
@@ -77,6 +78,7 @@ const decodePiece: Decoder<PieceData> = (v, path) => {
     warn: field(o, "warn", boolean, path),
     trip: field(o, "trip", nullable(number), path),
     pts: field(o, "pts", array(pair(number, number)), path),
+    skips: field(o, "skips", array(number), path),
   };
 };
 const decodeDetail: Decoder<DetailData> = (v, path) => {
@@ -169,6 +171,8 @@ export interface Piece {
   warn: boolean;
   trip: number | null;
   raw: [ms: number, s: number][];
+  /** Stations the ride passes without stopping (cancelled stops). */
+  skips: number[];
   pts: Pt[]; // per the chosen metric
 }
 export interface Fallback {
@@ -214,12 +218,13 @@ export function load(data: Data): Plot {
     minTransfer: l.min_transfer * 60e3,
     keepDetours: l.keep_detours,
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts }): Piece => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips }): Piece => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60e3, s]),
+    skips,
     pts: [],
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
