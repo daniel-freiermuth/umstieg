@@ -991,6 +991,220 @@ fn db_run_joins_visits_across_boards_in_sequence_order() {
 }
 
 #[test]
+fn a_db_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start() {
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = run(
+        "r1",
+        "RE 70",
+        Some('N'),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
+    );
+    // IRIS's short turn: cs="c" on B's <dp> alone, then on C's <ar> alone.
+    visits[1].1.departure.as_mut().expect("departs").cancelled = true;
+    visits[2].1.arrival.as_mut().expect("arrives").cancelled = true;
+    let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new(), false);
+    let calls: Vec<Vec<_>> = trips
+        .iter()
+        .map(|t| t.calls.iter().map(|c| (c.station, c.cancelled, c.arrival, c.departure)).collect())
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            vec![(0, false, None, time("08:00")), (1, false, time("08:10"), None)],
+            vec![(2, false, None, time("08:21")), (3, false, time("08:30"), None)],
+        ],
+        "B: arrives, doesn't leave; C: leaves, isn't arrived at, and starts another train"
+    );
+    assert_eq!(labels(&trips), ["RE 70", "RE 70"]);
+
+    let mut both = run("r2", "RE 70", Some('N'), &[(0, "", "09:00"), (1, "09:10", "09:11"), (2, "09:20", "")]);
+    let b = &mut both[1].1;
+    for e in [&mut b.arrival, &mut b.departure] {
+        e.as_mut().expect("runs").cancelled = true;
+    }
+    let trips = merge(&stations, &boards(both), HashMap::new(), Vec::new(), false);
+    assert!(
+        trips[0].calls[1].cancelled && trips[0].calls[1].departure.is_some(),
+        "a stop cancelled both ways is ridden through"
+    );
+}
+
+#[test]
+fn a_db_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
+    use crate::enumerate::{Limits, Network, enumerate};
+    let mut b = Builder::new();
+    for name in ["A", "B", "X", "C", "D"] {
+        b.station(name);
+    }
+    let mut visits = run(
+        "r1",
+        "RE 70",
+        Some('N'),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:40", "08:41"), (4, "08:50", "")],
+    );
+    // Turned at B, X not served, started again at C.
+    let cancel = |e: &mut Option<Event>| e.as_mut().expect("runs").cancelled = true;
+    cancel(&mut visits[1].1.departure);
+    cancel(&mut visits[2].1.arrival);
+    cancel(&mut visits[2].1.departure);
+    cancel(&mut visits[3].1.arrival);
+    b.trips = merge(&b.stations, &boards(visits), HashMap::new(), Vec::new(), false);
+    b.trip("Bus 1", &[("B", "", "08:16"), ("C", "08:30", "")]);
+    let mut tt = b.build("A", "D");
+    let limits = Limits {
+        origin: tt.origin,
+        depart_from: at("08:00"),
+        depart_until: at("08:00"),
+        max_changes: 5,
+        extra_time: TimeDelta::hours(12),
+        min_transfer: TimeDelta::minutes(5),
+        missed_by: TimeDelta::zero(),
+        keep_detours: false,
+        forward_only: false,
+        max_nodes: 1_000_000,
+    };
+    let mut listed = |destination: usize| {
+        tt.destination = destination;
+        let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let mut shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
+        shown.sort();
+        shown
+    };
+    assert_eq!(listed(3), ["RE 70 A-B / Bus 1 B-C"], "C, where the RE starts again, isn't reached on it");
+    assert_eq!(listed(4), ["RE 70 A-B / Bus 1 B-C / RE 70 C-D"], "nor D, past the stretch it doesn't run");
+}
+
+#[test]
+fn motis_stops_of_a_db_train_turned_short_go_where_it_runs() {
+    let mut stations: Vec<Station> = ["A", "B", "C", "D", "E", "G"].iter().map(|&n| station(n, Some(n))).collect();
+    // U: unknown to DB, between C and D; G: on DB's route, no board, between B and C.
+    stations.push(station("U", None));
+    let visits = run(
+        "r1",
+        "RE 70",
+        Some('N'),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "08:31")],
+    );
+    let mut visits = path_after(path_after(visits, 0, &["B", "G", "C", "D", "E"]), 3, &["E"]);
+    visits[1].1.departure.as_mut().expect("departs").cancelled = true;
+    visits[2].1.arrival.as_mut().expect("arrives").cancelled = true;
+    let mut b = boards(visits);
+    for s in 0..4 {
+        cover(&mut b, s, &[(at("08:00"), 'N')]);
+    }
+    let motis = motis_trip(
+        "RE 70",
+        Some('N'),
+        &[
+            (0, "", "08:00"),
+            (1, "08:10", "08:11"),
+            (5, "08:15", "08:16"),
+            (2, "08:20", "08:21"),
+            (6, "08:25", "08:26"),
+            (3, "08:30", "08:31"),
+            (4, "08:40", ""),
+        ],
+    );
+    let trips = finish(merge(&stations, &b, raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [
+            vec![(0, None, time("08:00")), (1, time("08:10"), None)],
+            vec![(2, None, time("08:21")), (3, time("08:30"), time("08:31")), (4, time("08:40"), None)],
+        ],
+        "nothing from the stretch between B and C (G); U as on base, E after D"
+    );
+}
+
+#[test]
+fn a_db_train_turned_short_where_no_board_says_so_runs_up_to_its_new_start() {
+    // Boards only at A, C and D (leg ends): no DB call says where the train ends.
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("r1", "RE 70", Some('N'), &[(0, "", "08:00"), (2, "08:20", "08:21"), (3, "08:30", "")]),
+        0,
+        &["B", "C", "D"],
+    );
+    visits[1].1.arrival.as_mut().expect("arrives").cancelled = true;
+    let motis = motis_trip(
+        "RE 70",
+        Some('N'),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [
+            vec![(0, None, time("08:00")), (1, time("08:10"), time("08:11"))],
+            vec![(2, None, time("08:21")), (3, time("08:30"), None)],
+        ],
+        "A to B still runs; from C it's another train"
+    );
+}
+
+#[test]
+fn a_db_train_starting_late_doesnt_run_before_its_new_start() {
+    // The train doesn't leave A; it starts at C. B: no board, from MOTIS.
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("r1", "RE 70", Some('N'), &[(0, "", "08:00"), (2, "08:20", "08:21"), (3, "08:30", "")]),
+        0,
+        &["B", "C", "D"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").cancelled = true;
+    visits[1].1.arrival.as_mut().expect("arrives").cancelled = true;
+    let motis = motis_trip(
+        "RE 70",
+        Some('N'),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [vec![(2, None, time("08:21")), (3, time("08:30"), None)]],
+        "nothing before C, so C isn't reached on it"
+    );
+}
+
+#[test]
+fn a_db_train_whose_origin_has_no_board_may_run_before_its_new_start() {
+    // A and B: no board, from MOTIS; the train may run A to B, turned short at B.
+    let stations: Vec<Station> = ["A", "B", "C", "D", "X"].iter().map(|&n| station(n, Some(n))).collect();
+    let motis = || {
+        motis_trip(
+            "RE 70",
+            Some('N'),
+            &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
+        )
+    };
+    let stations_of = |visits: Vec<(usize, Visit)>| {
+        let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis())]), Vec::new(), false));
+        trips.iter().map(|t| t.calls.iter().map(|c| c.station).collect()).collect::<Vec<Vec<_>>>()
+    };
+    let cancel = |e: &mut Option<Event>| e.as_mut().expect("event").cancelled = true;
+
+    // C, the new start, is the first board.
+    let mut visits = run("r1", "RE 70", Some('N'), &[(2, "08:20", "08:21"), (3, "08:30", "")]);
+    visits[0].1.arrival.as_mut().expect("arrives").planned_path = vec!["A".to_owned(), "B".to_owned()];
+    cancel(&mut visits[0].1.arrival);
+    assert_eq!(stations_of(visits), [vec![0, 1], vec![2, 3]], "A to B still runs");
+
+    // Before C only X, cancelled both ways, has a board: still not the origin.
+    let mut visits = run("r2", "RE 70", Some('N'), &[(4, "08:14", "08:15"), (2, "08:20", "08:21"), (3, "08:30", "")]);
+    visits[0].1.arrival.as_mut().expect("arrives").planned_path = vec!["A".to_owned(), "B".to_owned()];
+    cancel(&mut visits[0].1.arrival);
+    cancel(&mut visits[0].1.departure);
+    cancel(&mut visits[1].1.arrival);
+    assert_eq!(stations_of(visits), [vec![0, 1, 4], vec![2, 3]], "nor does a cancelled X before C say it ran nowhere");
+}
+
+#[test]
 fn db_run_label_is_the_majority_label() {
     // (labels in sequence, expected label, expected numbers)
     let cases: [(&[&str], &str, &[u32]); 4] = [
