@@ -239,6 +239,11 @@ struct Piece {
     /// stretch, so overlapping rides of the same train count as one line.
     trip: Option<usize>,
     pts: Vec<(i64, usize)>,
+    /// Stops a ride passes without stopping (cancelled calls), as the index of
+    /// their first point: drawn, but the page's search neither boards nor
+    /// leaves the train there, as the server's. Per call, not per station: a
+    /// train may stop at a station it passes at another time.
+    skips: Vec<usize>,
 }
 
 struct Builder<'a> {
@@ -290,7 +295,14 @@ impl Builder<'_> {
                     let to_time = checked::later(t, fp.duration, "walk")?;
                     let pts = vec![point(from, t), point(fp.to, to_time)];
                     let info = format!("walk {} to {}", text::duration(fp.duration), tt.station(fp.to)?.name);
-                    out.push(self.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
+                    out.push(self.intern(Piece {
+                        kind: "walk",
+                        info,
+                        warn: false,
+                        trip: None,
+                        pts,
+                        skips: Vec::new(),
+                    }));
                     self.used.insert(fp.to);
                     here = Some((fp.to, to_time));
                 }
@@ -315,19 +327,23 @@ impl Builder<'_> {
                                 wait < self.min_transfer,
                             )
                         };
-                        out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts }));
+                        out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts, skips: Vec::new() }));
                     }
                     self.used.insert(b.station);
                     if until == Some(ride) {
                         break;
                     }
-                    let mut pts = Vec::new();
+                    let (mut pts, mut skips) = (Vec::new(), Vec::new());
                     for (k, call) in t.calls.iter().enumerate().take(alight.saturating_add(1)).skip(board) {
+                        let first = pts.len();
                         if k > board {
                             pts.extend(call.arrival_time().map(|at| point(call.station, at)));
                         }
                         if k < alight {
                             pts.extend(call.departure_time().map(|at| point(call.station, at)));
+                        }
+                        if call.cancelled && pts.len() > first {
+                            skips.push(first);
                         }
                     }
                     let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
@@ -340,7 +356,7 @@ impl Builder<'_> {
                         text::timed(a.arrival.or(a.departure), self.zone),
                         as_.name,
                     );
-                    out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts }));
+                    out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts, skips }));
                     self.used.insert(a.station);
                     let arrival =
                         a.arrival_time().with_context(|| format!("{} alighted where it doesn't arrive", t.label))?;
@@ -410,14 +426,18 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
     let mut out = Vec::new();
     for run in &usable.rides {
         let t = tt.trip(run.trip)?;
-        let mut pts = Vec::new();
+        let (mut pts, mut skips) = (Vec::new(), Vec::new());
         for k in run.from..=run.to {
             let call = tt.call(run.trip, k)?;
+            let first = pts.len();
             if k > run.from {
                 pts.extend(call.arrival_time().map(|at| point(call.station, at)));
             }
             if k < run.to {
                 pts.extend(call.departure_time().or_else(|| call.arrival_time()).map(|at| point(call.station, at)));
+            }
+            if call.cancelled && pts.len() > first {
+                skips.push(first);
             }
         }
         // Rows for where trains are boarded or left, as for connections.
@@ -432,13 +452,13 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             text::timed(a.arrival.or(a.departure), builder.zone),
             tt.station(a.station)?.name,
         );
-        out.push(builder.intern(Piece { kind: "ride", info, warn: false, trip: Some(run.trip), pts }));
+        out.push(builder.intern(Piece { kind: "ride", info, warn: false, trip: Some(run.trip), pts, skips }));
     }
     for w in &usable.waits {
         let pts = vec![point(w.station, w.from), point(w.station, w.to)];
         let info = format!("at {}", tt.station(w.station)?.name);
         builder.used.insert(w.station);
-        out.push(builder.intern(Piece { kind: "wait", info, warn: false, trip: None, pts }));
+        out.push(builder.intern(Piece { kind: "wait", info, warn: false, trip: None, pts, skips: Vec::new() }));
     }
     for w in &usable.walks {
         let fp = tt.footpath(w.footpath)?;
@@ -446,7 +466,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
         let pts = vec![point(fp.from, w.start), point(fp.to, end)];
         let info = format!("walk {} to {}", text::duration(fp.duration), tt.station(fp.to)?.name);
         builder.used.extend([fp.from, fp.to]);
-        out.push(builder.intern(Piece { kind: "walk", info, warn: false, trip: None, pts }));
+        out.push(builder.intern(Piece { kind: "walk", info, warn: false, trip: None, pts, skips: Vec::new() }));
     }
     out.sort_unstable();
     out.dedup();

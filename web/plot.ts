@@ -718,7 +718,8 @@ function chainOf(c: Connection): number {
   const listed = listedBySignature.get(signature(c.steps));
   if (listed !== undefined) return listed;
   const add = (p: Drawn): Piece => {
-    const piece = { ...p, pts: [] };
+    // Drawn only: the search runs over `D.network`, which these never join.
+    const piece = { ...p, skips: [], pts: [] };
     D.pieces.push(piece);
     return piece;
   };

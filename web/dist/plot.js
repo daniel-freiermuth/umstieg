@@ -79,7 +79,8 @@ var decodePiece = (v, path) => {
     info: field(o, "info", string, path),
     warn: field(o, "warn", boolean, path),
     trip: field(o, "trip", nullable(number), path),
-    pts: field(o, "pts", array(pair(number, number)), path)
+    pts: field(o, "pts", array(pair(number, number)), path),
+    skips: field(o, "skips", array(number), path)
   };
 };
 var decodeDetail = (v, path) => {
@@ -156,12 +157,13 @@ function load(data) {
     minTransfer: l.min_transfer * 60000,
     keepDetours: l.keep_detours
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts }) => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips }) => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60000, s]),
+    skips,
     pts: []
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
@@ -358,6 +360,17 @@ function callsOf(raw) {
     end.dep = null;
   return calls;
 }
+function skippedCalls(raw, skips) {
+  const out = new Set;
+  let call = -1;
+  raw.forEach(([, s], i) => {
+    if (raw[i - 1]?.[1] !== s)
+      call++;
+    if (skips.includes(i))
+      out.add(call);
+  });
+  return out;
+}
 var keyOf = (c) => ({
   dep: c.departure,
   arr: c.arrival,
@@ -433,7 +446,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const walks = new Map;
   for (const p of network.map((pi) => item(pieces, pi))) {
     if (p.trip !== null) {
-      runs.push({ trip: p.trip, calls: callsOf(p.raw) });
+      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips) });
       continue;
     }
     if (p.kind !== "walk")
@@ -451,7 +464,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const departures = new Map;
   for (const run of runs)
     run.calls.forEach((c, k) => {
-      if (c.dep === null)
+      if (c.dep === null || run.skips.has(k))
         return;
       const list = departures.get(c.station) ?? [];
       departures.set(c.station, list);
@@ -573,6 +586,8 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
           break;
         visited[c.station] = 1;
         passed.push(c.station);
+        if (run.skips.has(j))
+          continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1) });
         presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);
@@ -1617,7 +1632,7 @@ function chainOf(c) {
   if (listed !== undefined)
     return listed;
   const add = (p) => {
-    const piece = { ...p, pts: [] };
+    const piece = { ...p, skips: [], pts: [] };
     D.pieces.push(piece);
     return piece;
   };
