@@ -14,9 +14,15 @@ import {
 
 // Times are minutes, in the data ms.
 const M = 60e3;
-/** A train: [station, minute] boards or alights, [station, arrival, departure] stops between. */
-function ride(trip: number, calls: ([number, number] | [number, number, number])[]): Stretch {
-  return { kind: "ride", trip, raw: calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t * M, s])) };
+/**
+ * A train: [station, minute] boards or alights, [station, arrival, departure] stops between;
+ * `cancelled`: positions in `calls` of stops it passes without stopping.
+ */
+function ride(trip: number, calls: ([number, number] | [number, number, number])[], cancelled: number[] = []): Stretch {
+  const raw = calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t * M, s]));
+  // As the data names them: by the index of their first point.
+  const first = (k: number): number => calls.slice(0, k).reduce((n, c) => n + c.length - 1, 0);
+  return { kind: "ride", trip, raw, skips: cancelled.map(first) };
 }
 /** A walk as the network has it: walked at some time (`at`), `minutes` long. */
 const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
@@ -26,6 +32,7 @@ const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
     [at * M, a],
     [(at + minutes) * M, b],
   ],
+  skips: [],
 });
 const limits = (over: Partial<Limits> = {}): Limits => ({
   origin: 0,
@@ -167,6 +174,110 @@ describe("the best connections", () => {
       ]),
     ];
     expect(search(squeezed)).toEqual(["26:0>9@30"]);
+  });
+
+  test("trains are neither left nor boarded where they only pass (a cancelled stop)", () => {
+    // ICE 1 passes 5 without stopping; S 2 reaches 5 a minute before RE 3 leaves.
+    const alight = [
+      ride(
+        1,
+        [
+          [0, 0],
+          [5, 30, 32],
+          [9, 80],
+        ],
+        [1],
+      ),
+      ride(2, [
+        [0, 0],
+        [5, 39],
+      ]),
+      ride(3, [
+        [5, 40],
+        [9, 80],
+      ]),
+    ];
+    expect(search(alight, [{ kind: "ride", trip: 3, from: 5, at: 40 * M, to: 9, until: 80 * M }])).toEqual([
+      "2:0>5@0 3:5>9@40",
+    ]);
+    // From 1, ICE 1 isn't caught at 5 either.
+    const board = [
+      ride(
+        1,
+        [
+          [1, 0],
+          [5, 30, 32],
+          [9, 80],
+        ],
+        [1],
+      ),
+      ride(2, [
+        [0, 0],
+        [5, 20],
+      ]),
+      ride(3, [
+        [5, 40],
+        [9, 90],
+      ]),
+    ];
+    expect(search(board, [{ kind: "ride", trip: 2, from: 0, at: 0, to: 5, until: 20 * M }])).toEqual([
+      "2:0>5@0 3:5>9@40",
+    ]);
+  });
+
+  test("only the cancelled one of two stops at a station is passed", () => {
+    // Loop train 1 calls at 2 twice, stopping only the first time.
+    const loop = (first: number[]): Stretch =>
+      ride(
+        1,
+        [
+          [2, 10],
+          [3, 20, 21],
+          [4, 30, 31],
+          [2, 40, 41],
+          [9, 50],
+        ],
+        first,
+      );
+    const boarded = [
+      loop([3]),
+      ride(2, [
+        [0, 0],
+        [2, 5],
+      ]),
+      ride(3, [
+        [4, 35],
+        [9, 60],
+      ]),
+    ];
+    expect(search(boarded, [{ kind: "ride", trip: 1, from: 2, at: 10 * M, to: 3, until: 20 * M }])).toEqual([
+      "2:0>2@0 1:2>4@10 3:4>9@35",
+    ]);
+    // Cancelled the first time: left at 2 the second time.
+    const left = [
+      ride(
+        1,
+        [
+          [3, 10],
+          [2, 15, 16],
+          [4, 20, 21],
+          [2, 30, 31],
+          [9, 50],
+        ],
+        [1],
+      ),
+      ride(5, [
+        [0, 0],
+        [4, 18],
+      ]),
+      ride(6, [
+        [2, 35],
+        [9, 45],
+      ]),
+    ];
+    expect(search(left, [{ kind: "ride", trip: 6, from: 2, at: 35 * M, to: 9, until: 45 * M }])).toEqual([
+      "5:0>4@0 1:4>2@21 6:2>9@35",
+    ]);
   });
 
   test("a change missed by a little counts, with its buffer negative", () => {

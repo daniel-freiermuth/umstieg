@@ -139,6 +139,27 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
 }
 
 #[test]
+fn a_network_ride_names_the_cancelled_stops_it_only_passes() {
+    let mut b = testkit::Builder::new();
+    let ice =
+        b.trip("ICE 1", &[("X", "", "08:00"), ("A", "08:10", "08:11"), ("X", "08:30", "08:32"), ("C", "09:20", "")]);
+    let mut tt = b.build("X", "C");
+    // Only its second stop at X is cancelled: the train is boarded at the first.
+    tt.trips[ice].calls[2].cancelled = true;
+    let mut plot = builder(&tt);
+    let usable = crate::usable::Usable {
+        rides: vec![crate::usable::RideRun { trip: ice, from: 0, to: 3 }],
+        ..Default::default()
+    };
+    let pieces = super::network_pieces(&mut plot, &usable).unwrap();
+    let piece = &plot.pieces[pieces[0]];
+    // Drawn through X, but the page's search must neither board nor alight
+    // there the second time: named by its first point, not by its station.
+    assert_eq!(piece.pts[3], pt(&tt, "08:30", "X"));
+    assert_eq!(piece.skips, [3]);
+}
+
+#[test]
 fn waits_carry_the_buffer_and_warn_below_the_minimum_transfer() {
     // (departure at B after arriving 09:00, info, warn, drawn from, drawn to)
     let cases = [
