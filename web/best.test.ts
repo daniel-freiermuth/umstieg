@@ -177,16 +177,18 @@ describe("the best connections", () => {
   });
 
   test("trains are neither left nor boarded where they only pass (a cancelled stop)", () => {
-    // ICE 1 passes 5 without stopping; S 2 reaches 5 a minute before RE 3 leaves.
+    // ICE 1 stops at 3, then passes 5 without stopping (call 2, but point 3
+    // of its run); S 2 reaches 5 a minute before RE 3 leaves.
     const alight = [
       ride(
         1,
         [
           [0, 0],
+          [3, 10, 11],
           [5, 30, 32],
           [9, 80],
         ],
-        [1],
+        [2],
       ),
       ride(2, [
         [0, 0],
