@@ -1646,13 +1646,14 @@ fn one_run(base: &Trip, other: &Trip) -> bool {
     let same_way = pairs().any(|(a, b)| a.0 < b.0 && a.1 < b.1) && !pairs().any(|(a, b)| a.0 < b.0 && a.1 > b.1);
     let ends = |side: fn(&Span) -> DateTime<Utc>| shared.iter().map(side).min().zip(shared.iter().map(side).max());
     let (Some(theirs), Some(ours)) = (ends(|s| s.0), ends(|s| s.1)) else { return false };
-    // Whether `calls` has stops `of` doesn't list before and after `(lo, hi)`.
-    let own = |calls: &[Call], of: &Trip, (lo, hi): Span| {
-        let times = || calls.iter().filter(|c| of.call_at(c.station).is_none()).filter_map(Call::planned);
-        (times().any(|t| t < lo), times().any(|t| t > hi))
-    };
-    let (a, b) = (own(&other.calls, base, theirs), own(&base.calls, other, ours));
+    let (a, b) = (own_stops(&other.calls, base, theirs), own_stops(&base.calls, other, ours));
     same_way && !((a.0 && b.0) || (a.1 && b.1))
+}
+
+/// Whether `calls` has stops `of` doesn't list before and after `(lo, hi)`.
+fn own_stops(calls: &[Call], of: &Trip, (lo, hi): Span) -> (bool, bool) {
+    let times = || calls.iter().filter(|c| of.call_at(c.station).is_none()).filter_map(Call::planned);
+    (times().any(|t| t < lo), times().any(|t| t > hi))
 }
 
 /// The number a planner's rail train without one of its own still names:
@@ -1666,9 +1667,7 @@ fn planner_number(trip_id: &str, trip: &Trip) -> Option<u32> {
     if !trip_id.starts_with(crate::efa::TRIP_PREFIX) {
         return flixtrain_number(trip_id);
     }
-    let (category, number) = trip.label.split_once(' ')?;
-    let digits = !category.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
-    digits.then(|| number.parse().ok()).flatten().filter(|&n| n > 0)
+    trip.label.split_once(' ')?.1.parse().ok().filter(|&n| n > 0)
 }
 
 /// The train number in a Transitous id of the `eu-flixbus` feed's trains:
