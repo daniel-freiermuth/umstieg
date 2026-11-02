@@ -2273,44 +2273,143 @@ async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_o
         ("REGIONAL_RAIL", "RE 60", Some("4711"), stops.to_vec())
     };
     let through = [("O", "", "08:00"), ("H", "08:30", "08:32"), ("D", "09:00", "")];
-    // (what, EFA's ride, Transitous' ride, one trip expected)
+    // (what, EFA's rides, Transitous' ride, one trip expected)
     let cases = [
-        ("EFA's ride ends at the hub", re(&[("O", "", "08:00"), ("H", "08:30", "")]), re(&through), true),
-        ("EFA's ride starts at the hub", re(&[("H", "", "08:32"), ("D", "09:00", "")]), re(&through), true),
+        ("EFA's ride ends at the hub", vec![re(&[("O", "", "08:00"), ("H", "08:30", "")])], re(&through), true),
+        ("EFA's ride starts at the hub", vec![re(&[("H", "", "08:32"), ("D", "09:00", "")])], re(&through), true),
         // 10 minutes off at the hub (ICE 273's Transitous copy was).
         (
             "the copies disagree where EFA's ride ends",
-            re(&[("O", "", "08:00"), ("H", "08:30", "")]),
+            vec![re(&[("O", "", "08:00"), ("H", "08:30", "")])],
             re(&[("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")]),
+            false,
+        ),
+        // EFA's run ridden to one hub and on from another, with no stop
+        // between them the copy could leave unanchored.
+        (
+            "the copies disagree where EFA's first ride ends, not where its second starts",
+            vec![re(&[("O", "", "08:00"), ("H", "08:30", "")]), re(&[("K", "", "08:50"), ("D", "09:10", "")])],
+            re(&[("O", "", "08:00"), ("H", "08:40", "08:42"), ("K", "08:48", "08:50"), ("D", "09:10", "")]),
             false,
         ),
     ];
     let mut lost = Vec::new();
     for (what, efa, transitous, one) in cases {
-        let rides = [("efa:vrn:08004:s:H:j26:515:20261024", &efa), ("20261024_08:00_de-DELFI_1", &transitous)];
-        let itineraries = rides.map(|(id, s)| Itinerary { legs: vec![service(id, s.0, s.1, s.2, &s.3)] });
+        let rides: Vec<(&str, &Service)> = efa
+            .iter()
+            .map(|s| ("efa:vrn:08004:s:H:j26:515:20261024", s))
+            .chain([("20261024_08:00_de-DELFI_1", &transitous)])
+            .collect();
+        let itineraries: Vec<Itinerary> =
+            rides.iter().map(|&(id, s)| Itinerary { legs: vec![service(id, s.0, s.1, s.2, &s.3)] }).collect();
         let built = super::build(&motis, None, None, &itineraries, &end("O"), &end("D"), false).await;
         let tt = &built.timetable;
         if one && tt.trips.len() != 1 {
             lost.push(format!("{what}: not merged, {:?}", labels(&tt.trips)));
         }
-        // Every stop of each copy, with the halves it has, is still in some trip.
+        // Every stop of each copy, with the halves it has at its times, is still in some trip.
         for (_, (.., stops)) in rides {
-            let final_stop = stops.len() - 1;
-            for (n, &(name, _, _)) in stops.iter().enumerate() {
-                let (arrives, departs) = (n > 0, n < final_stop);
+            for &(name, arrival, departure) in stops {
+                let (arrival, departure) = (time(arrival).map(|t| t.planned), time(departure).map(|t| t.planned));
                 let kept = tt.trips.iter().flat_map(|t| &t.calls).any(|c| {
                     tt.stations[c.station].name == name
-                        && (!arrives || c.arrival.is_some())
-                        && (!departs || c.departure.is_some())
+                        && (arrival.is_none() || c.arrival.map(|t| t.planned) == arrival)
+                        && (departure.is_none() || c.departure.map(|t| t.planned) == departure)
                 });
                 if !kept {
-                    lost.push(format!("{what}: {name} (arrives {arrives}, departs {departs})"));
+                    lost.push(format!("{what}: {name} (arrives {arrival:?}, departs {departure:?})"));
                 }
             }
         }
     }
     assert!(lost.is_empty(), "{lost:#?}");
+}
+
+#[test]
+fn copies_are_of_one_run_where_they_pass_two_stations_in_one_order_and_part_on_one_side_at_most() {
+    type Stops = &'static [(usize, &'static str, &'static str)];
+    // (what, one copy's calls, the other's, one run); stations 0..3.
+    let cases: [(&str, Stops, Stops, bool); 8] = [
+        (
+            "in one order",
+            &[(0, "", "10:00"), (1, "10:05", "10:06"), (2, "10:10", "")],
+            &[(0, "", "10:00"), (1, "10:05", "10:06"), (2, "10:10", "")],
+            true,
+        ),
+        // A feed giving two stops one minute: the third shows the order.
+        (
+            "the other passes two stations in one minute",
+            &[(0, "", "10:00"), (1, "10:01", "10:01"), (2, "10:05", "")],
+            &[(0, "", "10:00"), (1, "10:00", "10:00"), (2, "10:05", "")],
+            true,
+        ),
+        (
+            "the base passes two stations in one minute",
+            &[(0, "", "10:00"), (1, "10:00", "10:00"), (2, "10:05", "")],
+            &[(0, "", "10:00"), (1, "10:01", "10:01"), (2, "10:05", "")],
+            true,
+        ),
+        // Nothing shows the order: runs passing in one minute look like this.
+        (
+            "only the base shows an order",
+            &[(0, "", "10:00"), (1, "10:01", "")],
+            &[(0, "", "10:00"), (1, "10:00", "")],
+            false,
+        ),
+        (
+            "only the other shows an order",
+            &[(0, "", "10:00"), (1, "10:00", "")],
+            &[(0, "", "10:00"), (1, "10:01", "")],
+            false,
+        ),
+        (
+            "one pair in order, another reversed",
+            &[(0, "", "10:00"), (1, "10:05", "10:05"), (2, "10:10", "")],
+            &[(0, "", "10:00"), (2, "10:05", "10:05"), (1, "10:10", "")],
+            false,
+        ),
+        (
+            "one ride ends where the other starts",
+            &[(0, "", "10:00"), (1, "10:30", "")],
+            &[(1, "", "10:32"), (2, "11:00", "")],
+            false,
+        ),
+        // Portions joining: each comes from a station the other doesn't list.
+        (
+            "both come from their own stations",
+            &[(0, "", "09:00"), (2, "10:00", "10:01"), (3, "10:30", "")],
+            &[(1, "", "09:10"), (2, "10:00", "10:01"), (3, "10:30", "")],
+            false,
+        ),
+    ];
+    for (what, base, other, expected) in cases {
+        let (base, other) = (motis_trip("RE 1", Some('N'), base), motis_trip("RE 1", Some('N'), other));
+        assert_eq!(super::one_run(&base, &other), expected, "{what}");
+    }
+}
+
+#[test]
+fn a_planners_numberless_rail_train_is_numbered_by_its_name_or_flixtrain_id_but_never_0() {
+    let efa = "efa:ddb:98X82:A:R:j26:110:20261024";
+    let flixtrain = |number| format!("20261102_07:44_eu-flixbus_FLX10-{number}-0744112026-RB#HH-00");
+    let numberless = |label, class| Trip { numbers: Vec::new(), ..motis_trip(label, class, &[]) };
+    // (what, trip id, trip, number)
+    let cases = [
+        ("a train named by its category", efa.to_owned(), numberless("ICE 273", Some('F')), Some(273)),
+        ("a train named by its category and 0", efa.to_owned(), numberless("Zug 0", Some('N')), None),
+        (
+            "a train with a number of its own",
+            efa.to_owned(),
+            Trip { numbers: vec![4711], ..motis_trip("RE 60", Some('N'), &[]) },
+            None,
+        ),
+        ("a bus: its number is a line", efa.to_owned(), numberless("Bus 712", None), None),
+        ("a FlixTrain numbered in its id", flixtrain(1240), numberless("FlixTrain FLX10", Some('F')), Some(1240)),
+        ("a FlixTrain numbered 0 in its id", flixtrain(0), numberless("FlixTrain FLX10", Some('F')), None),
+    ];
+    for (what, id, trip, expected) in cases {
+        assert_eq!(super::planner_number(&id, &trip), expected, "{what}");
+    }
 }
 
 #[tokio::test]
