@@ -325,6 +325,18 @@ describe("the best connections", () => {
     expect(search(pieces, [], { from: 27 * M })).toEqual([]);
   });
 
+  test("a picked walk from the origin, leaving soon after the window opens", () => {
+    // The walk leaves at 2, less than its length less the missed change after 0.
+    const pieces = [
+      walk(0, 5, 10, 2),
+      ride(7, [
+        [5, 12],
+        [9, 30],
+      ]),
+    ];
+    expect(search(pieces, [{ kind: "walk", from: 0, to: 5, at: 2 * M }])).toEqual(["walk 0>5@2 7:5>9@12"]);
+  });
+
   test("no station twice", () => {
     // Train 8 to 2, train 9 on to 3, train 10 back via 2 to 9: passing train 9
     // means being at 2 twice. Train 8 then 10 from 2 is fine.
