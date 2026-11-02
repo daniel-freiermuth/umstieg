@@ -139,24 +139,33 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
 }
 
 #[test]
-fn a_network_ride_names_the_cancelled_stops_it_only_passes() {
+fn rides_name_the_cancelled_calls_they_only_pass() {
     let mut b = testkit::Builder::new();
-    let ice =
-        b.trip("ICE 1", &[("X", "", "08:00"), ("A", "08:10", "08:11"), ("X", "08:30", "08:32"), ("C", "09:20", "")]);
+    let ice = b.trip(
+        "ICE 1",
+        &[("X", "", "08:00"), ("A", "08:10", "08:11"), ("X", "08:30", "08:32"), ("B", "", ""), ("C", "09:20", "")],
+    );
     let mut tt = b.build("X", "C");
     // Only its second stop at X is cancelled: the train is boarded at the first.
     tt.trips[ice].calls[2].cancelled = true;
-    let mut plot = builder(&tt);
+    // Passed without a time, so without a point to name.
+    tt.trips[ice].calls[3].cancelled = true;
+    let mut network = builder(&tt);
     let usable = crate::usable::Usable {
-        rides: vec![crate::usable::RideRun { trip: ice, from: 0, to: 3 }],
+        rides: vec![crate::usable::RideRun { trip: ice, from: 0, to: 4 }],
         ..Default::default()
     };
-    let pieces = super::network_pieces(&mut plot, &usable).unwrap();
-    let piece = &plot.pieces[pieces[0]];
-    // Drawn through X, but the page's search must neither board nor alight
-    // there the second time: named by its first point, not by its station.
-    assert_eq!(piece.pts[3], pt(&tt, "08:30", "X"));
-    assert_eq!(piece.skips, [3]);
+    let pieces = super::network_pieces(&mut network, &usable).unwrap();
+    let mut chain = builder(&tt);
+    let ridden = chain.pieces(&Chain { steps: vec![ride(ice, 0, 4)] }, None, None).unwrap();
+    for piece in [&network.pieces[pieces[0]], &chain.pieces[ridden[0]]] {
+        // Drawn through X, but the page's search must neither board nor alight
+        // there the second time: named by its first point, not by its station.
+        // B has no point; the next one is C's, which is not passed.
+        assert_eq!(piece.pts[3], pt(&tt, "08:30", "X"));
+        assert_eq!(piece.pts[5], pt(&tt, "09:20", "C"));
+        assert_eq!(piece.skips, [3]);
+    }
 }
 
 #[test]
