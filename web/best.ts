@@ -320,6 +320,8 @@ function search(
       slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER),
     };
     if (!every && found.some((f) => beats(keyOf(f), bound))) return true;
+    // Before the first train the times are not fixed yet: a walk from the origin starts when it leaves.
+    if (rides === 0) return false;
     return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
   };
   // Stryker restore all
