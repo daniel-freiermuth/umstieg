@@ -501,6 +501,8 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
     };
     if (!every && found.some((f) => beats(keyOf(f), bound)))
       return true;
+    if (rides === 0)
+      return false;
     return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
   };
   const explore = (station, ready, deadline, walked, lead) => {
