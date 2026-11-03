@@ -59,7 +59,7 @@ class World {
       const calls = callsOf(this.pieces.find((p) => p.trip === trip)?.raw ?? []);
       const a = calls.findIndex((c) => c.station === this.station(from)),
         b = calls.findIndex((c) => c.station === this.station(to));
-      steps.push({ kind: "ride", trip, calls: calls.slice(a, b + 1) });
+      steps.push({ kind: "ride", trip, calls: calls.slice(a, b + 1), passes: [] });
     }
     const rides = steps.flatMap((s) => (s.kind === "ride" ? [s] : []));
     const first = rides[0]?.calls[0]?.dep ?? 0;

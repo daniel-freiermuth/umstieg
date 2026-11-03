@@ -16,6 +16,7 @@ const trip: Connection = {
     {
       kind: "ride",
       trip: 0,
+      passes: [],
       calls: [
         { station: 1, arr: null, dep: 540 * M },
         { station: 4, arr: 600 * M, dep: 602 * M },
@@ -26,6 +27,7 @@ const trip: Connection = {
     {
       kind: "ride",
       trip: 1,
+      passes: [],
       calls: [
         { station: 3, arr: null, dep: 670 * M },
         { station: 4, arr: 840 * M, dep: null },
@@ -76,6 +78,7 @@ describe("words", () => {
         {
           kind: "ride",
           trip: 1,
+          passes: [],
           calls: [
             { station: 2, arr: null, dep: 663 * M },
             { station: 4, arr: 840 * M, dep: null },
@@ -167,6 +170,7 @@ describe("pieces", () => {
         {
           kind: "ride",
           trip: 0,
+          passes: [],
           calls: [
             { station: 4, arr: 600 * M, dep: 602 * M },
             { station: 2, arr: 660 * M, dep: 665 * M },
@@ -175,6 +179,7 @@ describe("pieces", () => {
         {
           kind: "ride",
           trip: 1,
+          passes: [],
           calls: [
             { station: 2, arr: null, dep: 665 * M },
             { station: 5, arr: 700 * M, dep: null },
@@ -198,6 +203,7 @@ describe("pieces", () => {
         {
           kind: "ride",
           trip: 1,
+          passes: [],
           calls: [
             { station: 2, arr: null, dep: 657 * M },
             { station: 4, arr: 840 * M, dep: null },

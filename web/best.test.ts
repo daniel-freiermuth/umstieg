@@ -289,6 +289,25 @@ describe("the best connections", () => {
     ]);
   });
 
+  test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
+    const ice = (cancelled: number[]): Stretch[] => [
+      ride(
+        1,
+        [
+          [0, 0],
+          [5, 30, 32],
+          [9, 80],
+        ],
+        cancelled,
+      ),
+    ];
+    const needs: Need[][] = [[], [{ kind: "station", station: 5 }], [{ kind: "stay", station: 5, at: 31 * M }]];
+    expect([needs.map((n) => search(ice([1]), n)), needs.map((n) => search(ice([]), n))]).toEqual([
+      [["1:0>9@0"], [], []],
+      [["1:0>9@0"], ["1:0>9@0"], ["1:0>9@0"]],
+    ]);
+  });
+
   test("a change missed by a little counts, with its buffer negative", () => {
     // Train 2 leaves 1 at 40; train 4 arrives there at 43.
     const late = [
@@ -590,6 +609,7 @@ describe("meets", () => {
     {
       kind: "ride",
       trip: 7,
+      passes: [],
       calls: [
         { station: 5, arr: null, dep: 10 },
         { station: 6, arr: 20, dep: 22 },
@@ -647,6 +667,7 @@ describe("meets", () => {
       {
         kind: "ride",
         trip: 7,
+        passes: [],
         calls: [
           { station: 5, arr: null, dep: 10 },
           { station: 6, arr: 20, dep: 22 },
@@ -739,7 +760,11 @@ function everyConnection(pieces: Stretch[], l: Limits): Step[][] {
         for (let j = i + 1; j < run.calls.length; j++) {
           const a = run.calls[j];
           if (a === undefined || a.arr === null) break;
-          grow([...path, { kind: "ride", trip: run.trip, calls: run.calls.slice(i, j + 1) }], a.station, a.arr);
+          grow(
+            [...path, { kind: "ride", trip: run.trip, calls: run.calls.slice(i, j + 1), passes: [] }],
+            a.station,
+            a.arr,
+          );
         }
       });
   };

@@ -17,21 +17,44 @@ import {
 
 // Times are plain minutes; heights follow the station.
 const pt = (s: number, t: number): Pt => [t, 100 - 10 * s, s];
-/** A ride: [station, time] boards or alights, [station, arrival, departure] is a stop in between. */
-function ride(trip: number, calls: ([number, number] | [number, number, number])[]): Line {
-  return { kind: "ride", warn: false, trip, pts: calls.flatMap(([s, ...ts]) => ts.map((t) => pt(s, t))) };
+/**
+ * A ride: [station, time] boards or alights, [station, arrival, departure] is
+ * a stop in between; `cancelled` are positions in `calls` it only passes.
+ */
+function ride(trip: number, calls: ([number, number] | [number, number, number])[], cancelled: number[] = []): Line {
+  const raw = calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t, s]));
+  // As the data names them: by the index of their first point.
+  const first = (k: number): number => calls.slice(0, k).reduce((n, c) => n + c.length - 1, 0);
+  return {
+    kind: "ride",
+    warn: false,
+    trip,
+    pts: raw.map(([t, s]) => pt(s, t)),
+    raw,
+    skips: cancelled.map(first),
+  };
 }
 const wait = (s: number, from: number, to: number, warn = false): Line => ({
   kind: "wait",
   warn,
   trip: null,
   pts: [pt(s, from), pt(s, to)],
+  raw: [
+    [from, s],
+    [to, s],
+  ],
+  skips: [],
 });
 const walk = (a: number, t: number, b: number, t2: number): Line => ({
   kind: "walk",
   warn: false,
   trip: null,
   pts: [pt(a, t), pt(b, t2)],
+  raw: [
+    [t, a],
+    [t2, b],
+  ],
+  skips: [],
 });
 
 /**
@@ -449,6 +472,56 @@ describe("reach is transitive over everything plotted", () => {
       ["back", "waitB", "T2"],
     );
     expect(plot.reach({ at: [[B, 10]] })).toEqual(["T1 0-10", "T2 20-30", "back 10-10", "there 10-10", "waitB 10-20"]);
+  });
+
+  test("a call a train only passes (cancelled) is no change: neither boarded nor left there", () => {
+    // ICE 1 passes B (cancelled) at 30–32; RE 3 leaves B at 40; T2 stops at B at 35.
+    const plot = new Plot(
+      {
+        ICE: ride(
+          1,
+          [
+            [A, 0],
+            [B, 30, 32],
+            [C, 80],
+          ],
+          [1],
+        ),
+        RE: ride(3, [
+          [B, 40],
+          [C, 80],
+        ]),
+        T2: ride(2, [
+          [D, 5],
+          [B, 35],
+        ]),
+        T4: ride(4, [
+          [D, 10],
+          [B, 20],
+        ]),
+      },
+      ["ICE"],
+    );
+    const net = plot.net();
+    const hover = (from: number): string[] => {
+      const r = net.rides.find((x) => x.trip === 1 && x.pts[0][0] === from);
+      return r ? plot.show(net.reach(onStretch(r))) : [];
+    };
+    // On the ICE, hovered from A or leaving B: on to C, but neither off at B
+    // onto the RE nor on at B from T4.
+    expect([hover(0), hover(32)]).toEqual([["ICE 0-80"], ["ICE 0-80"]]);
+    // On the RE: not back onto the ICE at B, but T2 and T4 stop there.
+    expect(plot.reach({ at: [], back: [[B, 40]], ride: { trip: 3, from: 40, until: 40 } })).toEqual([
+      "RE 40-80",
+      "T2 5-35",
+      "T4 10-20",
+    ]);
+    // Through B by T4: the RE, but not on the ICE there.
+    expect(plot.reach({ at: [], fwd: [[B, 20]] })).toEqual(["RE 40-80"]);
+    // At B by 40: T2 and T4, but not off the ICE there.
+    expect(plot.reach({ at: [], back: [[B, 40]] })).toEqual(["T2 5-35", "T4 10-20"]);
+    // Passing B is no standing there, nor being there at all.
+    expect([net.stays.get(B), net.touching.get(B), net.chainsAt(B, 31)]).toEqual([undefined, undefined, []]);
   });
 });
 
@@ -1019,5 +1092,17 @@ describe("covers", () => {
       covers([[1, 15, 35]], lines, { station: 1, t: 20 }),
       covers([[1, 15, 35]], lines, { station: 1, t: 30 }),
     ]).toEqual([true, false, true, false, false, false, false, true, false, true, true, true]);
+  });
+  test("a train only passing a station (cancelled) is not there", () => {
+    const calls: ([number, number] | [number, number, number])[] = [
+      [0, 10],
+      [1, 20, 25],
+      [2, 40],
+    ];
+    const on: Segment[] = [[0, 10, 40]];
+    expect([
+      covers(on, [ride(1, calls, [1])], { station: 1, t: 23 }),
+      covers(on, [ride(1, calls)], { station: 1, t: 23 }),
+    ]).toEqual([false, true]);
   });
 });
