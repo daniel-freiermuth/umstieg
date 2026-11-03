@@ -1140,6 +1140,8 @@ function want(chains) {
     (async () => {
       try {
         const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
+        if (response && !response.ok && response.status !== 400 && response.status !== 404)
+          throw new Error(`status ${String(response.status)}`);
         if (response?.ok) {
           const got = decodeDetails(parseJson(await response.text()), "details");
           addDetails(D, got.map((d, k) => [item(ids, k), d]));
