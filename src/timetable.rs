@@ -17,6 +17,9 @@ use crate::trafikverket::{self, Trafikverket};
 const MERGE_TOLERANCE: TimeDelta = TimeDelta::minutes(60);
 /// Without a matching number, two shared stations within this difference = same train.
 const SAME_TIME: TimeDelta = TimeDelta::minutes(2);
+/// A U-Bahn's, tram's or bus's number is its line's, and its runs can follow
+/// each other within `SAME_TIME`: copies of one run keep the same minute.
+const SAME_MINUTE: TimeDelta = TimeDelta::seconds(59);
 /// A train makes up at most 1/`MAX_CATCH_UP` of a stretch's planned time.
 const MAX_CATCH_UP: i64 = 4;
 /// Boards are fetched this far around the times MOTIS has for a station.
@@ -1566,7 +1569,8 @@ fn merge(
                                 || close(c.departure.map(|t| t.planned), d.departure.map(|t| t.planned))
                         })
                     });
-                    met && (!planners_only || absorbs(base, &motis))
+                    let rail = base.class.is_some() && motis.class.is_some();
+                    met && (!planners_only || absorbs(base, &motis) && (rail || in_step(base, &motis)))
                 })
             })
         };
@@ -1638,8 +1642,10 @@ fn merge(
         } else {
             let class = motis.class;
             let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();
-            // Only trains: buses and trams carry line numbers, shared by many runs.
-            if class.is_some() {
+            // Only trains: buses and trams carry line numbers, shared by many
+            // runs. Without DB or Trafikverket, `same_run` takes a copy of one
+            // only where it `absorbs` it and runs `in_step` with it.
+            if class.is_some() || planners_only {
                 for &n in motis.numbers.iter().chain(&named) {
                     feed_by_number.entry(n).or_default().push(trips.len());
                 }
@@ -1722,6 +1728,20 @@ fn absorbs(base: &Trip, other: &Trip) -> bool {
             },
         )
     })
+}
+
+/// Whether `other` keeps `base`'s minute at every station both list, in each
+/// half both have: a line's next run or a short-turning extra may follow
+/// within `SAME_TIME`, a copy of the run keeps its times.
+fn in_step(base: &Trip, other: &Trip) -> bool {
+    let same = |x: Option<Time>, y: Option<Time>| match (x, y) {
+        (Some(x), Some(y)) => x.planned.signed_duration_since(y.planned).abs() <= SAME_MINUTE,
+        _ => true,
+    };
+    other
+        .calls
+        .iter()
+        .all(|c| base.call_at(c.station).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure)))
 }
 
 /// Whether `other` and `base`, sharing a number, are copies of one run. A
