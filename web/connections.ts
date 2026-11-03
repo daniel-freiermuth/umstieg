@@ -66,7 +66,9 @@ export function header(c: Connection, minTransfer: number, clock: Clock): string
 /**
  * Trains, change stations and buffers on one line, from a walk to the first
  * train to a walk to the destination: "09:21 CET ICE 1067 → 11:03 CET
- * Stuttgart Hbf ‖14m‖ 11:17 CET ICE 593 → 12:41 CET Augsburg Hbf".
+ * Stuttgart Hbf ‖14m‖ 11:17 CET ICE 593 → 12:41 CET Augsburg Hbf". For a
+ * traveller at `start`, a first train leaving elsewhere, not walked to, is
+ * named with its station, as after a change.
  */
 export function route(
   c: Connection,
@@ -75,6 +77,7 @@ export function route(
   minTransfer: number,
   clock: Clock,
   rejoin: number | null = null,
+  start: number | null = null,
 ): string {
   const name = (s: number): string => item(names, s);
   const rides = c.steps.flatMap((s, i) => (s.kind === "ride" ? [i] : []));
@@ -101,6 +104,8 @@ export function route(
       const walk = walked > 0 ? ` walk ${duration(walked)}` : "";
       parts.push(`‖${buffer(a.dep - last[1] - walked, minTransfer)}${walk}‖`);
       if (name(a.station) !== name(last[0])) from = ` ${name(a.station)}`;
+    } else if (start !== null && c.steps[0]?.kind === "ride" && name(a.station) !== name(start)) {
+      from = ` ${name(a.station)}`;
     }
     // A fallback ends where it catches a train of the plan again (ride `rejoin`).
     if (ride === rejoin) {
