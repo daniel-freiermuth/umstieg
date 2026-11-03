@@ -276,7 +276,7 @@ applyMetric(D.metric);
 // the heights and which groups are hidden, not on zoom.
 function buildModel(): void {
   const net = network(D.pieces, D.network, D.chains.slice(0, LISTED), (i) => !hidden.has(item(D.chains, i).group));
-  const { stays, walks, touching, chainsAt, reach: closure } = net;
+  const { stays, walks, touching, chainsAt, reach: closure, moment } = net;
   const edges = net.rides.map((r): Edge => {
     const [a, b] = r.pts;
     const info = `${item(D.trips, r.trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
@@ -327,9 +327,9 @@ function buildModel(): void {
           const parts = [waiting ? "waiting" : null, ...trains.map((tr) => `standing: ${item(D.trips, tr)}`)].filter(
             (x): x is string => x !== null,
           );
-          // What is reachable only changes when t passes a span end here, so the
-          // two counts identify the highlight; it is rebuilt only when they change.
-          const key = `${String(s)}:${String(spans.filter((w) => w.from <= t).length)}:${String(spans.filter((w) => w.to >= t).length)}`;
+          // The moment names what is reachable, so the highlight is rebuilt
+          // only when it changes.
+          const key = moment(s, t);
           const r: Reach = reach?.key === key ? reach : { key, segments: closure({ at: [[s, t]] }) };
           reach = r;
           const trip = trains.length === 1 && !waiting ? trains[0] : undefined;

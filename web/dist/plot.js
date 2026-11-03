@@ -912,6 +912,20 @@ function intersectReach(segmentLists) {
 }
 var atMost = (v, t) => v !== undefined && v <= t;
 var atLeast = (v, t) => v !== undefined && v >= t;
+function early(ea, foot, x, t) {
+  if (atMost(ea.get(x), t))
+    return;
+  ea.set(x, t);
+  for (const [y, d] of foot.get(x) ?? [])
+    early(ea, foot, y, t + d);
+}
+function late(ld, footBack, x, t) {
+  if (atLeast(ld.get(x), t))
+    return;
+  ld.set(x, t);
+  for (const [y, d] of footBack.get(x) ?? [])
+    late(ld, footBack, y, t - d);
+}
 var stretchKey = (trip, a, b) => `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
 function network(pieces, base, chains, visible) {
   const rides = new Map, waits = [], walks = new Map, stays = new Map;
@@ -981,28 +995,14 @@ function network(pieces, base, chains, visible) {
   }
   const reach = (src) => {
     const ea = new Map, ld = new Map;
-    const early = (x, t) => {
-      if (atMost(ea.get(x), t))
-        return;
-      ea.set(x, t);
-      for (const [y, d] of foot.get(x) ?? [])
-        early(y, t + d);
-    };
-    const late = (x, t) => {
-      if (atLeast(ld.get(x), t))
-        return;
-      ld.set(x, t);
-      for (const [y, d] of footBack.get(x) ?? [])
-        late(y, t - d);
-    };
     for (const [s, t] of src.at) {
-      early(s, t);
-      late(s, t);
+      early(ea, foot, s, t);
+      late(ld, footBack, s, t);
     }
     for (const [s, t] of src.back ?? [])
-      late(s, t);
+      late(ld, footBack, s, t);
     for (const [s, t] of src.fwd ?? [])
-      early(s, t);
+      early(ea, foot, s, t);
     const raw = new Map;
     const add = (pi, a, b) => {
       entry(raw, pi, () => []).push([a, b]);
@@ -1020,7 +1020,7 @@ function network(pieces, base, chains, visible) {
           boarded.set(r.trip, a[0]);
           const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
           if (!boarding)
-            early(b[2], b[0]);
+            early(ea, foot, b[2], b[0]);
           ahead.add(r);
           again ||= b[0] === a[0];
         }
@@ -1036,7 +1036,7 @@ function network(pieces, base, chains, visible) {
           if (behind.has(r) || !(until !== undefined && b[0] <= until || atLeast(ld.get(b[2]), b[0])))
             continue;
           alighted.set(r.trip, b[0]);
-          late(a[2], a[0]);
+          late(ld, footBack, a[2], a[0]);
           behind.add(r);
           again ||= b[0] === a[0];
         }
@@ -1070,7 +1070,37 @@ function network(pieces, base, chains, visible) {
         out.push([pi, a, b]);
     return out;
   };
-  return { rides: all, stays, waits, walks, chainsAt, touching, reach };
+  const leaving = new Map, arriving = new Map;
+  const mark = (m, s, t) => {
+    entry(m, s, () => []).push(t);
+  };
+  for (const {
+    pts: [a, b]
+  } of all) {
+    mark(leaving, a[2], a[0]);
+    mark(arriving, b[2], b[0]);
+  }
+  for (const pi of [...waits, ...walks.keys()]) {
+    const p = item(pieces, pi);
+    const a = p.pts[0], b = p.pts[p.pts.length - 1];
+    if (!a || !b)
+      continue;
+    const wait = p.kind === "wait";
+    mark(leaving, a[2], wait ? b[0] : a[0]);
+    mark(arriving, b[2], wait ? a[0] : b[0]);
+  }
+  const moment = (station, t) => {
+    const ea = new Map, ld = new Map;
+    early(ea, foot, station, t);
+    late(ld, footBack, station, t);
+    let ahead = 0, behind = 0;
+    for (const [x, there] of ea)
+      ahead += (leaving.get(x) ?? []).filter((v) => v >= there).length;
+    for (const [x, by] of ld)
+      behind += (arriving.get(x) ?? []).filter((v) => v <= by).length;
+    return `${String(station)}:${String(ahead)}:${String(behind)}`;
+  };
+  return { rides: all, stays, waits, walks, chainsAt, touching, reach, moment };
 }
 
 // picks.ts
@@ -1254,7 +1284,7 @@ metricSelect.addEventListener("change", () => {
 applyMetric(D.metric);
 function buildModel() {
   const net = network(D.pieces, D.network, D.chains.slice(0, LISTED), (i) => !hidden.has(item(D.chains, i).group));
-  const { stays, walks, touching, chainsAt, reach: closure } = net;
+  const { stays, walks, touching, chainsAt, reach: closure, moment } = net;
   const edges = net.rides.map((r) => {
     const [a, b] = r.pts;
     const info = `${item(D.trips, r.trip)} · ${timeFmt.format(a[0])} ${item(D.names, a[2])} → ${timeFmt.format(b[0])} ${item(D.names, b[2])}`;
@@ -1301,7 +1331,7 @@ function buildModel() {
           const trains = [...new Set(here.flatMap((w) => w.trip === undefined ? [] : [w.trip]))];
           const waiting = here.some((w) => w.trip === undefined);
           const parts = [waiting ? "waiting" : null, ...trains.map((tr) => `standing: ${item(D.trips, tr)}`)].filter((x) => x !== null);
-          const key = `${String(s)}:${String(spans.filter((w) => w.from <= t).length)}:${String(spans.filter((w) => w.to >= t).length)}`;
+          const key = moment(s, t);
           const r = reach?.key === key ? reach : { key, segments: closure({ at: [[s, t]] }) };
           reach = r;
           const trip = trains.length === 1 && !waiting ? trains[0] : undefined;

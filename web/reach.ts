@@ -181,11 +181,29 @@ export interface Network {
   touching: Map<number, Set<number>>;
   /** Everything reachable from a source, transitively over all rides and walks. */
   reach: (src: Source) => Segment[];
+  /**
+   * Names what `reach({ at: [[station, t]] })` reaches: two moments at a
+   * station alike reach the same, up to where reached waits start and end.
+   */
+  moment: (station: number, t: number) => string;
 }
 
 // Whether a known time v is at most (at least) t; unknown is neither.
 const atMost = (v: number | undefined, t: number): boolean => v !== undefined && v <= t;
 const atLeast = (v: number | undefined, t: number): boolean => v !== undefined && v >= t;
+
+type Foot = Map<number, [number, number][]>;
+// Earliest arrival (latest departure) per station walking on from (to) x at t.
+function early(ea: Map<number, number>, foot: Foot, x: number, t: number): void {
+  if (atMost(ea.get(x), t)) return;
+  ea.set(x, t);
+  for (const [y, d] of foot.get(x) ?? []) early(ea, foot, y, t + d);
+}
+function late(ld: Map<number, number>, footBack: Foot, x: number, t: number): void {
+  if (atLeast(ld.get(x), t)) return;
+  ld.set(x, t);
+  for (const [y, d] of footBack.get(x) ?? []) late(ld, footBack, y, t - d);
+}
 
 const stretchKey = (trip: number, a: Pt, b: Pt): string =>
   `${String(trip)}:${String(a[0])}:${String(a[2])}:${String(b[0])}:${String(b[2])}`;
@@ -270,8 +288,8 @@ export function network(
   const byDep = groups((r) => r.pts[0][0], false),
     byArr = groups((r) => r.pts[1][0], true);
   // Walks from (to) a station: where to (from), how long.
-  const foot = new Map<number, [number, number][]>(),
-    footBack = new Map<number, [number, number][]>();
+  const foot: Foot = new Map(),
+    footBack: Foot = new Map();
   for (const pi of walks.keys()) {
     const p = item(pieces, pi);
     const a = p.pts[0],
@@ -285,22 +303,12 @@ export function network(
   const reach = (src: Source): Segment[] => {
     const ea = new Map<number, number>(),
       ld = new Map<number, number>();
-    const early = (x: number, t: number): void => {
-      if (atMost(ea.get(x), t)) return;
-      ea.set(x, t);
-      for (const [y, d] of foot.get(x) ?? []) early(y, t + d);
-    };
-    const late = (x: number, t: number): void => {
-      if (atLeast(ld.get(x), t)) return;
-      ld.set(x, t);
-      for (const [y, d] of footBack.get(x) ?? []) late(y, t - d);
-    };
     for (const [s, t] of src.at) {
-      early(s, t);
-      late(s, t);
+      early(ea, foot, s, t);
+      late(ld, footBack, s, t);
     }
-    for (const [s, t] of src.back ?? []) late(s, t);
-    for (const [s, t] of src.fwd ?? []) early(s, t);
+    for (const [s, t] of src.back ?? []) late(ld, footBack, s, t);
+    for (const [s, t] of src.fwd ?? []) early(ea, foot, s, t);
     const raw = new Map<number, Interval[]>();
     const add = (pi: number, a: number, b: number): void => {
       entry(raw, pi, () => []).push([a, b]);
@@ -327,7 +335,7 @@ export function network(
           // The picked train standing where it is boarded: being on it there
           // is no getting off to wait for a later one.
           const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
-          if (!boarding) early(b[2], b[0]);
+          if (!boarding) early(ea, foot, b[2], b[0]);
           ahead.add(r);
           // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
           again ||= b[0] === a[0];
@@ -343,7 +351,7 @@ export function network(
           const until = alighted.get(r.trip);
           if (behind.has(r) || !((until !== undefined && b[0] <= until) || atLeast(ld.get(b[2]), b[0]))) continue;
           alighted.set(r.trip, b[0]);
-          late(a[2], a[0]);
+          late(ld, footBack, a[2], a[0]);
           behind.add(r);
           // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
           again ||= b[0] === a[0];
@@ -375,5 +383,41 @@ export function network(
     for (const [pi, list] of raw) for (const [a, b] of mergeIntervals(list)) out.push([pi, a, b]);
     return out;
   };
-  return { rides: all, stays, waits, walks, chainsAt, touching, reach };
+  // From a moment at a station, reach depends on the moment only through
+  // which of these are from (by) when one can be at their station on foot
+  // from (to) there: what leaves (rides, walks, ends of waits) and what
+  // arrives (rides, walks, starts of waits). Each count changes exactly when
+  // one of them does.
+  const leaving = new Map<number, number[]>(),
+    arriving = new Map<number, number[]>();
+  const mark = (m: Map<number, number[]>, s: number, t: number): void => {
+    entry(m, s, () => []).push(t);
+  };
+  for (const {
+    pts: [a, b],
+  } of all) {
+    mark(leaving, a[2], a[0]);
+    mark(arriving, b[2], b[0]);
+  }
+  for (const pi of [...waits, ...walks.keys()]) {
+    const p = item(pieces, pi);
+    const a = p.pts[0],
+      b = p.pts[p.pts.length - 1];
+    if (!a || !b) continue;
+    const wait = p.kind === "wait";
+    mark(leaving, a[2], wait ? b[0] : a[0]);
+    mark(arriving, b[2], wait ? a[0] : b[0]);
+  }
+  const moment = (station: number, t: number): string => {
+    const ea = new Map<number, number>(),
+      ld = new Map<number, number>();
+    early(ea, foot, station, t);
+    late(ld, footBack, station, t);
+    let ahead = 0,
+      behind = 0;
+    for (const [x, there] of ea) ahead += (leaving.get(x) ?? []).filter((v) => v >= there).length;
+    for (const [x, by] of ld) behind += (arriving.get(x) ?? []).filter((v) => v <= by).length;
+    return `${String(station)}:${String(ahead)}:${String(behind)}`;
+  };
+  return { rides: all, stays, waits, walks, chainsAt, touching, reach, moment };
 }
