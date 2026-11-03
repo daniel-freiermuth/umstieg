@@ -16,6 +16,7 @@ import {
   stationSearch,
   decodeSuggestions,
   unpicked,
+  sentTime,
   zoneOf,
 } from "./fields";
 
@@ -95,6 +96,25 @@ describe("initial", () => {
     ["a time not given is now in the user's zone", f("at", "time", "2026-10-25T08:00"), {}, "2026-01-02T04:04"],
     ["or in the given zone", f("at", "time"), { time_zone: "America/New_York" }, "2026-01-01T22:04"],
     ["a given time", f("at", "time"), { at: "2026-10-25T08:00", time_zone: "Asia/Kolkata" }, "2026-10-25T08:00"],
+    // A link dated in the second of a repeated hour carries the offset, which datetime-local would drop.
+    [
+      "a given time with an offset, as its wall time in the zone",
+      f("at", "time"),
+      { at: "2026-10-25T02:30+01:00", time_zone: "Europe/Berlin" },
+      "2026-10-25T02:30",
+    ],
+    [
+      "a given time with an offset that is no date, as given",
+      f("at", "time"),
+      { at: "2026-13-45T02:30+01:00" },
+      "2026-13-45T02:30+01:00",
+    ],
+    [
+      "a given time with an offset not at its end, as given",
+      f("at", "time"),
+      { at: "Sun Oct 25 2026 02:30:00 GMT+01:00 (CET)" },
+      "Sun Oct 25 2026 02:30:00 GMT+01:00 (CET)",
+    ],
     ["the default", f("max_changes", "number", "3"), {}, "3"],
     ["a given value over the default", f("max_changes", "number", "3"), { max_changes: "5" }, "5"],
     ["an empty given value over the default", f("via", "stations", "Fulda"), { via: "" }, ""],
@@ -102,6 +122,87 @@ describe("initial", () => {
   for (const [name, field, values, expected] of cases)
     test(name, () => {
       expect(initial(field, values, now, "Europe/Berlin")).toBe(expected);
+    });
+});
+
+describe("sentTime", () => {
+  // A link dated in the second 02:30 in Berlin on 2026-10-25; the field shows its wall time.
+  const dated = "2026-10-25T02:30+01:00";
+  const loaded = new Date(Date.UTC(2026, 0, 2, 3, 4));
+  const cases: [string, string, string | undefined, string, string][] = [
+    ["the given moment while the field shows it", "2026-10-25T02:30", dated, "Europe/Berlin", dated],
+    ["a changed time as shown", "2026-10-25T03:30", dated, "Europe/Berlin", "2026-10-25T03:30"],
+    ["a zone where the moment shows otherwise: as shown", "2026-10-25T02:30", dated, "UTC", "2026-10-25T02:30"],
+    ["a zone that is none: as shown", "2026-10-25T02:30", dated, "Nowhere/Else", "2026-10-25T02:30"],
+    ["no zone: as shown", "2026-10-25T02:30", dated, "", "2026-10-25T02:30"],
+    ["a time given without an offset as shown", "2026-10-25T02:30", "2026-10-25T02:30", "UTC", "2026-10-25T02:30"],
+    [
+      "nothing given, a time other than now: as shown",
+      "2026-10-25T02:30",
+      undefined,
+      "Europe/Berlin",
+      "2026-10-25T02:30",
+    ],
+  ];
+  for (const [name, shown, value, zone, expected] of cases)
+    test(name, () => {
+      expect(sentTime(shown, value, loaded, zone)).toBe(expected);
+    });
+
+  // Nothing given: the field starts as `now`, the moment the form was loaded.
+  const utc = (iso: string): Date => new Date(`${iso}Z`);
+  const nows: [string, string, Date, string, string][] = [
+    ["now in the second 02:30, with its offset", "2026-10-25T02:30", utc("2026-10-25T01:30"), "Europe/Berlin", dated],
+    ["seconds don't count", "2026-10-25T02:30", utc("2026-10-25T01:30:45"), "Europe/Berlin", dated],
+    [
+      "now in the first 02:30, as shown",
+      "2026-10-25T02:30",
+      utc("2026-10-25T00:30"),
+      "Europe/Berlin",
+      "2026-10-25T02:30",
+    ],
+    [
+      "now in London's second 01:30",
+      "2026-10-25T01:30",
+      utc("2026-10-25T01:30"),
+      "Europe/London",
+      "2026-10-25T01:30+00:00",
+    ],
+    [
+      "now in New York's second 01:30, behind UTC",
+      "2026-11-01T01:30",
+      utc("2026-11-01T06:30"),
+      "America/New_York",
+      "2026-11-01T01:30-05:00",
+    ],
+    [
+      "now in Lord Howe's second 01:45, put back half an hour",
+      "2026-04-05T01:45",
+      utc("2026-04-04T15:15"),
+      "Australia/Lord_Howe",
+      "2026-04-05T01:45+10:30",
+    ],
+    [
+      "now after the repeated hour, as shown",
+      "2026-10-25T03:30",
+      utc("2026-10-25T02:30"),
+      "Europe/Berlin",
+      "2026-10-25T03:30",
+    ],
+    [
+      "now after the hour skipped in spring",
+      "2026-03-29T03:30",
+      utc("2026-03-29T01:30"),
+      "Europe/Berlin",
+      "2026-03-29T03:30",
+    ],
+    ["now in a zone without a change", "2026-10-25T01:30", utc("2026-10-25T01:30"), "UTC", "2026-10-25T01:30"],
+    ["now changed in the field", "2026-10-25T03:30", utc("2026-10-25T01:30"), "Europe/Berlin", "2026-10-25T03:30"],
+    ["now, in a zone that is none", "2026-10-25T02:30", utc("2026-10-25T01:30"), "Nowhere/Else", "2026-10-25T02:30"],
+  ];
+  for (const [name, shown, now, zone, expected] of nows)
+    test(name, () => {
+      expect(sentTime(shown, undefined, now, zone)).toBe(expected);
     });
 });
 
