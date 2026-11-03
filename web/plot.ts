@@ -31,7 +31,7 @@ import { type Connection, type Need, bestThrough } from "./best";
 import { type Drawn, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
 import { Fallbacks, arrive } from "./fallback";
 import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
-import { type Reach, type Ride, type Spot, covers, network, runsOf, stayAt } from "./reach";
+import { type Reach, type Ride, type Spot, covers, network, onStretch, runsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
 
 // What the mouse is over: a line, a station, a fallback.
@@ -305,7 +305,7 @@ function buildModel(): void {
           reach: {
             key: id,
             with: e.chains,
-            segments: closure({ at: [], back: [[a[2], a[0]]], ride: { trip: e.trip, from: a[0], until: a[0] } }),
+            segments: closure(onStretch(e)),
           },
         };
         return t;

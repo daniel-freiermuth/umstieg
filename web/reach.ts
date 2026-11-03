@@ -165,6 +165,15 @@ export interface Ride {
   piece: number;
   chains: Set<number>;
 }
+
+/**
+ * Where hovering a stretch of a train starts: on the train from the
+ * stretch's start on (and up to it), and at that station by then.
+ */
+export function onStretch(r: Pick<Ride, "trip" | "pts">): Source {
+  const [[t, , s]] = r.pts;
+  return { at: [], back: [[s, t]], ride: { trip: r.trip, from: t, until: t } };
+}
 /** The plot's network: everything on some connection, and the listed connections in it. */
 export interface Network {
   /** Per train and stop-to-stop stretch. */

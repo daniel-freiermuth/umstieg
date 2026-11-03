@@ -10,6 +10,7 @@ import {
   intersectReach,
   mergeIntervals,
   network,
+  onStretch,
   runsOf,
   stayAt,
 } from "./reach";
@@ -893,10 +894,7 @@ describe("reach on random timetables", () => {
       // On a random stretch, as hovering it asks.
       const r = net.rides[rnd(net.rides.length)];
       const sources: Source[] = [{ at: [[s, t]] }, { at: [], back: [[s, t]] }, { at: [], fwd: [[s, t]] }];
-      if (r) {
-        const [[t0, , s0]] = r.pts;
-        sources.push({ at: [], back: [[s0, t0]], ride: { trip: r.trip, from: t0, until: t0 } });
-      }
+      if (r) sources.push(onStretch(r));
       for (const src of sources) {
         const fast = net.reach(src);
         if (fast.length) reaching++;
