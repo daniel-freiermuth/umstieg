@@ -174,6 +174,31 @@ function missedAtB(...trains: [string, [string, string, string][]][]): { w: Worl
   return { w, plan };
 }
 
+/** Dorf → Zentrum by STR 4 (08:30), the walk to Hbf, missing ICE 1 from there at 09:00; walks and trains as given. */
+function walkedChange(
+  walks: [string, string, number][],
+  ...trains: [string, [string, string, string][]][]
+): { w: World; plan: Connection } {
+  const w = new World("Ziel");
+  w.trip("STR 4", [
+    ["Dorf", "", "08:00"],
+    ["Zentrum", "08:30", ""],
+  ]);
+  w.walk("Zentrum", "Hbf", 8);
+  for (const [from, to, minutes] of walks) w.walk(from, to, minutes);
+  w.trip("ICE 1", [
+    ["Hbf", "", "09:00"],
+    ["Ziel", "10:00", ""],
+  ]);
+  for (const [label, stops] of trains) w.trip(label, stops);
+  const plan = w.plan([
+    ["STR 4", "Dorf", "Zentrum"],
+    ["walk", "Zentrum", "Hbf"],
+    ["ICE 1", "Hbf", "Ziel"],
+  ]);
+  return { w, plan };
+}
+
 const lines = (w: World, plan: Connection, change = 0): [string, string][] =>
   w
     .fallbacks()
@@ -267,7 +292,7 @@ describe("fallbacks, as the server finds them", () => {
     expect(() => w.fallbacks().forChange(plan, 1)).toThrow();
   });
 
-  test("after a change with a walk, fallbacks leave from where the train arrived, walking too", () => {
+  test("after a change with a walk, fallbacks also leave from where the walk led", () => {
     const w = new World("Ziel");
     w.trip("STR 4", [
       ["Dorf", "", "08:00"],
@@ -277,6 +302,10 @@ describe("fallbacks, as the server finds them", () => {
     w.trip("ICE 1", [
       ["Hbf", "", "09:00"],
       ["Ziel", "10:00", ""],
+    ]);
+    w.trip("ICE 2", [
+      ["Hbf", "", "09:05"],
+      ["Ziel", "10:05", ""],
     ]);
     w.trip("ICE 3", [
       ["Hbf", "", "09:30"],
@@ -288,14 +317,316 @@ describe("fallbacks, as the server finds them", () => {
       ["ICE 1", "Hbf", "Ziel"],
     ]);
     expect(transfers(plan)).toEqual([{ station: w.station("Zentrum"), departure: ms("09:00"), ready: ms("08:38") }]);
-    const [only, ...rest] = w.fallbacks().forChange(plan, 0);
-    expect(rest).toEqual([]);
-    expect([only?.line, only && clock(only.lands)]).toEqual(["walk 8m to Hbf 09:30 ICE 3 → 10:30 Ziel", "10:30"]);
-    // Drawn from the missed departure: the walk then, a wait after the missed train, the ride.
-    expect(only?.pieces.map((p) => [p.kind, p.info, p.warn, p.raw.map(([t]) => clock(t))])).toEqual([
-      ["walk", "walk 8m to Hbf", false, ["09:00", "09:08"]],
-      ["wait", "22m at Hbf after the missed train", false, ["09:08", "09:30"]],
-      ["ride", "ICE 3 · 09:30 Hbf → 10:30 Ziel", false, ["09:30", "10:30"]],
+    // ICE 2 leaves within the walk's length after ICE 1, yet the traveller is at Hbf.
+    const found = w.fallbacks().forChange(plan, 0);
+    expect(found.map((a) => [a.line, clock(a.lands)])).toEqual([
+      ["09:05 Hbf ICE 2 → 10:05 Ziel", "10:05"],
+      ["09:30 Hbf ICE 3 → 10:30 Ziel", "10:30"],
+    ]);
+    // Drawn from the missed departure: a wait at Hbf after the missed train, the ride.
+    expect(found[0]?.pieces.map((p) => [p.kind, p.info, p.warn, p.raw.map(([t]) => clock(t))])).toEqual([
+      ["wait", "5m at Hbf after the missed train", false, ["09:00", "09:05"]],
+      ["ride", "ICE 2 · 09:05 Hbf → 10:05 Ziel", false, ["09:05", "10:05"]],
+    ]);
+  });
+
+  test("after a change with a walk, a fallback walked to at the window's end stays", () => {
+    // The window from Hbf ends at 11:01, but walking from Zentrum at 10:57 still catches ICE 5.
+    const { w, plan } = walkedChange(
+      [],
+      [
+        "ICE 5",
+        [
+          ["Hbf", "", "11:05"],
+          ["Ziel", "12:05", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([["walk 8m to Hbf 11:05 ICE 5 → 12:05 Ziel", "12:05"]]);
+  });
+
+  test("after a change with a walk, fallbacks walk only from where the train arrived", () => {
+    // Shown from Zentrum: one walking from Hbf to ZOB or back to Zentrum would be shown as a walk from Zentrum.
+    const { w, plan } = walkedChange(
+      [
+        ["Hbf", "Zentrum", 8],
+        ["Hbf", "ZOB", 3],
+      ],
+      [
+        "ICE 2",
+        [
+          ["Hbf", "", "09:05"],
+          ["Ziel", "10:05", ""],
+        ],
+      ],
+      [
+        "BUS 7",
+        [
+          ["ZOB", "", "09:06"],
+          ["Ziel", "10:10", ""],
+        ],
+      ],
+      [
+        "STR 9",
+        [
+          ["Zentrum", "", "11:05"],
+          ["Ziel", "11:40", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([["09:05 Hbf ICE 2 → 10:05 Ziel", "10:05"]]);
+  });
+
+  test("after a change with a walk, a train calling at both stations is boarded where it calls first", () => {
+    const { w, plan } = walkedChange(
+      [],
+      [
+        "RE 6",
+        [
+          ["Zentrum", "", "09:20"],
+          ["Hbf", "09:24", "09:25"],
+          ["Ziel", "10:30", ""],
+        ],
+      ],
+      [
+        "ICE 3",
+        [
+          ["Hbf", "", "09:40"],
+          ["Ziel", "10:40", ""],
+        ],
+      ],
+      [
+        "ICE 7",
+        [
+          ["Hbf", "", "09:50"],
+          ["Ziel", "10:50", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([
+      ["09:20 RE 6 → 10:30 Ziel", "10:30"],
+      ["09:40 Hbf ICE 3 → 10:40 Ziel", "10:40"],
+      ["09:20 RE 6 → 09:24 Hbf ‖16m‖ 09:40 ICE 3 → 10:40 Ziel", "10:40"],
+    ]);
+    // RE 6 leaving Hbf right after ICE 1: at Zentrum it is out of reach from Hbf.
+    const early = walkedChange(
+      [],
+      [
+        "RE 6",
+        [
+          ["Hbf", "", "09:02"],
+          ["Zentrum", "09:06", "09:06"],
+          ["Ziel", "10:30", ""],
+        ],
+      ],
+    );
+    expect(lines(early.w, early.plan)).toEqual([["09:02 Hbf RE 6 → 10:30 Ziel", "10:30"]]);
+  });
+
+  test("after a change with a walk, a train walked to elsewhere is also boarded at Hbf", () => {
+    const bus = (atW: string, atHbf: string, atZiel: string): [string, string][] => {
+      const { w, plan } = walkedChange(
+        [["Zentrum", "W", 3]],
+        [
+          "BUS 5",
+          [
+            ["W", "", atW],
+            ["Hbf", atHbf, atHbf],
+            ["Ziel", atZiel, ""],
+          ],
+        ],
+      );
+      return lines(w, plan);
+    };
+    expect(bus("09:20", "09:22", "10:30")).toEqual([
+      ["09:22 Hbf BUS 5 → 10:30 Ziel", "10:30"],
+      ["walk 3m to W 09:20 BUS 5 → 10:30 Ziel", "10:30"],
+    ]);
+    // At Hbf in the walk's length after ICE 1: who missed it there can't make the walk to W.
+    expect(bus("09:04", "09:06", "10:10")).toEqual([
+      ["09:06 Hbf BUS 5 → 10:10 Ziel", "10:10"],
+      ["walk 3m to W 09:04 BUS 5 → 10:10 Ziel", "10:10"],
+    ]);
+  });
+
+  test("after a change with a walk, riding or walking back for a fallback from Zentrum is no second one", () => {
+    const zentrum: [string, [string, string, string][]][] = [
+      [
+        "STR 9",
+        [
+          ["S", "", "09:14"],
+          ["Mitte", "09:17", "09:17"],
+          ["Zentrum", "09:20", "09:20"],
+          ["Ziel", "10:40", ""],
+        ],
+      ],
+      [
+        "BUS 1",
+        [
+          ["Zentrum", "", "09:30"],
+          ["Ziel", "10:50", ""],
+        ],
+      ],
+      [
+        "BUS 2",
+        [
+          ["Zentrum", "", "09:40"],
+          ["Ziel", "11:00", ""],
+        ],
+      ],
+    ];
+    const expected: [string, string][] = [
+      ["09:20 STR 9 → 10:40 Ziel", "10:40"],
+      ["09:30 BUS 1 → 10:50 Ziel", "10:50"],
+      ["09:40 BUS 2 → 11:00 Ziel", "11:00"],
+    ];
+    // RB 8 to S, then STR 9 through Zentrum.
+    const through = walkedChange(
+      [],
+      [
+        "RB 8",
+        [
+          ["Hbf", "", "09:03"],
+          ["S", "09:08", ""],
+        ],
+      ],
+    );
+    for (const [label, stops] of zentrum) through.w.trip(label, stops);
+    expect(lines(through.w, through.plan)).toEqual(expected);
+    // RB 8 back to Zentrum, then STR 9 from there.
+    const back = walkedChange(
+      [],
+      [
+        "RB 8",
+        [
+          ["Hbf", "", "09:03"],
+          ["Zentrum", "09:07", ""],
+        ],
+      ],
+    );
+    for (const [label, stops] of zentrum) back.w.trip(label, stops);
+    expect(lines(back.w, back.plan)).toEqual(expected);
+    // The walk back to Zentrum for STR 9.
+    const walked = walkedChange([["Hbf", "Zentrum", 8]]);
+    for (const [label, stops] of zentrum) walked.w.trip(label, stops);
+    expect(lines(walked.w, walked.plan)).toEqual(expected);
+  });
+
+  test("after a change with a walk, riding back to walk on from Zentrum is no second fallback", () => {
+    const { w, plan } = walkedChange(
+      [["Zentrum", "W", 3]],
+      [
+        "RB 8",
+        [
+          ["Hbf", "", "09:03"],
+          ["Zentrum", "09:07", ""],
+        ],
+      ],
+      [
+        "BUS 1",
+        [
+          ["W", "", "09:20"],
+          ["Ziel", "10:40", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([["walk 3m to W 09:20 BUS 1 → 10:40 Ziel", "10:40"]]);
+  });
+
+  test("after a change with a walk, walking on elsewhere to a train walked to from Zentrum is a fallback of its own", () => {
+    const { w, plan } = walkedChange(
+      [
+        ["Zentrum", "W", 3],
+        ["V", "W", 2],
+      ],
+      [
+        "RB 8",
+        [
+          ["Hbf", "", "09:03"],
+          ["V", "09:07", ""],
+        ],
+      ],
+      [
+        "BUS 1",
+        [
+          ["W", "", "09:20"],
+          ["Ziel", "10:40", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([
+      ["walk 3m to W 09:20 BUS 1 → 10:40 Ziel", "10:40"],
+      ["09:03 Hbf RB 8 → 09:07 V ‖11m walk 2m‖ 09:20 W BUS 1 → 10:40 Ziel", "10:40"],
+    ]);
+  });
+
+  test("after a change with a walk, what leaves Hbf is bounded by the fastest from there, walking first too", () => {
+    // From Hbf the fastest walks to W for BUS F (33m): RE S (100m) is only walked to from Zentrum.
+    const { w, plan } = walkedChange(
+      [["Hbf", "W", 3]],
+      [
+        "BUS F",
+        [
+          ["W", "", "09:10"],
+          ["Ziel", "09:40", ""],
+        ],
+      ],
+      [
+        "RE S",
+        [
+          ["Hbf", "", "09:20"],
+          ["Ziel", "11:00", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([["walk 8m to Hbf 09:20 RE S → 11:00 Ziel", "11:00"]]);
+  });
+
+  test("after a change with a walk, a ride back to a train past the window stays", () => {
+    // STR 9 leaves Zentrum after the window from there.
+    const { w, plan } = walkedChange(
+      [],
+      [
+        "RB 8",
+        [
+          ["Hbf", "", "10:58"],
+          ["Zentrum", "11:02", ""],
+        ],
+      ],
+      [
+        "STR 9",
+        [
+          ["Zentrum", "", "11:05"],
+          ["Ziel", "11:40", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan)).toEqual([["10:58 Hbf RB 8 → 11:02 Zentrum ‖3m⚠‖ 11:05 STR 9 → 11:40 Ziel", "11:40"]]);
+  });
+
+  test("after a change with a walk, the same trains changed elsewhere stay two fallbacks", () => {
+    // X to S, then Y: boarded at S with 2 minutes, or at T after a walk with 7.
+    const { w, plan } = walkedChange(
+      [["S", "T", 3]],
+      [
+        "X",
+        [
+          ["Zentrum", "", "09:10"],
+          ["S", "09:30", ""],
+        ],
+      ],
+      [
+        "Y",
+        [
+          ["S", "", "09:32"],
+          ["T", "09:40", "09:40"],
+          ["Ziel", "10:30", ""],
+        ],
+      ],
+    );
+    expect(lines(w, plan).map(([l]) => l)).toEqual([
+      "09:10 X → 09:30 S ‖7m walk 3m‖ 09:40 T Y → 10:30 Ziel",
+      "09:10 X → 09:30 S ‖2m⚠‖ 09:32 Y → 10:30 Ziel",
     ]);
   });
 
