@@ -1148,6 +1148,86 @@ fn a_db_train_turned_short_where_no_board_says_so_runs_up_to_its_new_start() {
 }
 
 #[test]
+fn a_db_train_turned_short_without_a_boarded_new_start_isnt_ridden_past_its_new_end() {
+    // Boards at A, B and D only: B says the train ends there; no board says
+    // where it starts again. G and C: no board, from MOTIS.
+    let stations: Vec<Station> = ["A", "B", "G", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("r1", "RE 70", Some(Regional), &[(0, "", "08:00"), (1, "08:10", "08:11"), (4, "08:30", "")]),
+        0,
+        &["B", "G", "C", "D"],
+    );
+    visits[1].1.departure.as_mut().expect("departs").cancelled = true;
+    let motis = motis_trip(
+        "RE 70",
+        Some(Regional),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    assert_eq!(
+        trips.first().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect::<Vec<_>>()),
+        Some(vec![(0, None, time("08:00")), (1, time("08:10"), None)]),
+        "A to B still runs"
+    );
+    assert!(
+        trips.iter().all(|t| !t.calls.iter().any(|c| c.station == 0) || t.calls.iter().all(|c| c.station <= 1)),
+        "the train from A doesn't reach G, C or D: {trips:?}"
+    );
+}
+
+#[test]
+fn a_db_train_turned_short_without_a_boarded_new_start_runs_again_from_its_next_running_call() {
+    // Boards at A, B, C and D: B says the train ends there; C runs, so the
+    // train started again by then. G: no board, from MOTIS.
+    let stations: Vec<Station> = ["A", "B", "G", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run(
+            "r1",
+            "RE 70",
+            Some(Regional),
+            &[(0, "", "08:00"), (1, "08:10", "08:11"), (3, "08:20", "08:21"), (4, "08:30", "")],
+        ),
+        0,
+        &["B", "G", "C", "D"],
+    );
+    visits[1].1.departure.as_mut().expect("departs").cancelled = true;
+    let motis = motis_trip(
+        "RE 70",
+        Some(Regional),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [
+            vec![(0, None, time("08:00")), (1, time("08:10"), None)],
+            vec![(3, time("08:20"), time("08:21")), (4, time("08:30"), None)],
+        ],
+        "A to B runs; from C it's another train, and G between isn't served"
+    );
+}
+
+#[test]
+fn a_db_train_only_cut_short_ends_at_its_new_end() {
+    // Boards at A and B only: B says the train ends there; it doesn't start again.
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits =
+        path_after(run("r1", "RE 70", Some(Regional), &[(0, "", "08:00"), (1, "08:10", "08:11")]), 0, &["B", "C", "D"]);
+    visits[1].1.departure.as_mut().expect("departs").cancelled = true;
+    let motis = motis_trip(
+        "RE 70",
+        Some(Regional),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(calls, [vec![(0, None, time("08:00")), (1, time("08:10"), None)]], "nothing runs after B");
+}
+
+#[test]
 fn a_db_train_starting_late_doesnt_run_before_its_new_start() {
     // The train doesn't leave A; it starts at C. B: no board, from MOTIS.
     let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
