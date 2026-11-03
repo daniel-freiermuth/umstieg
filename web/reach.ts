@@ -415,7 +415,9 @@ export function network(
     late(ld, footBack, station, t);
     let ahead = 0,
       behind = 0;
+    // Stryker disable next-line AssignmentOperator,EqualityOperator: -n, or all there minus n, tells the same moments apart (where one walks to does not depend on t).
     for (const [x, there] of ea) ahead += (leaving.get(x) ?? []).filter((v) => v >= there).length;
+    // Stryker disable next-line AssignmentOperator,EqualityOperator: -n, or all there minus n, tells the same moments apart (where one walks from does not depend on t).
     for (const [x, by] of ld) behind += (arriving.get(x) ?? []).filter((v) => v <= by).length;
     return `${String(station)}:${String(ahead)}:${String(behind)}`;
   };
