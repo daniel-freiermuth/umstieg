@@ -13,13 +13,24 @@ pub struct DiskCache {
     ttl: Duration,
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// The cache root of the test that started a task running on a runtime
+    /// worker (whose thread is not named after the test).
+    pub static TEST_ROOT: PathBuf;
+}
+
 /// `$XDG_CACHE_HOME/umstieg` (or `~/.cache/umstieg`); under tests a temporary
-/// directory per test (libtest names each test's thread after it), so tests
-/// never read or write the user's caches, nor each other's.
+/// directory per test (libtest names each test's thread after it; tasks on
+/// runtime workers run in `TEST_ROOT`), so tests never read or write the
+/// user's caches, nor each other's.
 #[cfg_attr(test, expect(clippy::unnecessary_wraps, reason = "only the user's cache root can be missing"))]
 pub fn root() -> Option<PathBuf> {
     #[cfg(test)]
     {
+        if let Ok(root) = TEST_ROOT.try_with(Clone::clone) {
+            return Some(root);
+        }
         let thread = std::thread::current();
         let test = thread.name().unwrap_or("unnamed").replace("::", "-");
         Some(std::env::temp_dir().join(format!("umstieg-test-{}", std::process::id())).join(test))
