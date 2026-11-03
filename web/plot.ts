@@ -723,7 +723,7 @@ function chainOf(c: Connection): number {
   if (listed !== undefined) return listed;
   const add = (p: Drawn): Piece => {
     // Drawn only: the search runs over `D.network`, which these never join.
-    const piece = { ...p, skips: [], pts: [] };
+    const piece = { ...p, skips: [], span: null, pts: [] };
     D.pieces.push(piece);
     return piece;
   };

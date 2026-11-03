@@ -244,6 +244,11 @@ struct Piece {
     /// leaves the train there, as the server's. Per call, not per station: a
     /// train may stop at a station it passes at another time.
     skips: Vec<usize>,
+    /// Positions of a ride's first and last call in its train's calls: where
+    /// the network splits a train into runs at a stop, the page's search
+    /// counts that call once, as the server's, and tells it from a second call
+    /// of the train at the same station.
+    span: Option<(usize, usize)>,
 }
 
 struct Builder<'a> {
@@ -302,6 +307,7 @@ impl Builder<'_> {
                         trip: None,
                         pts,
                         skips: Vec::new(),
+                        span: None,
                     }));
                     self.used.insert(fp.to);
                     here = Some((fp.to, to_time));
@@ -327,7 +333,15 @@ impl Builder<'_> {
                                 wait < self.min_transfer,
                             )
                         };
-                        out.push(self.intern(Piece { kind: "wait", info, warn, trip: None, pts, skips: Vec::new() }));
+                        out.push(self.intern(Piece {
+                            kind: "wait",
+                            info,
+                            warn,
+                            trip: None,
+                            pts,
+                            skips: Vec::new(),
+                            span: None,
+                        }));
                     }
                     self.used.insert(b.station);
                     if until == Some(ride) {
@@ -356,7 +370,15 @@ impl Builder<'_> {
                         text::timed(a.arrival.or(a.departure), self.zone),
                         as_.name,
                     );
-                    out.push(self.intern(Piece { kind: "ride", info, warn: false, trip: Some(trip), pts, skips }));
+                    out.push(self.intern(Piece {
+                        kind: "ride",
+                        info,
+                        warn: false,
+                        trip: Some(trip),
+                        pts,
+                        skips,
+                        span: Some((board, alight)),
+                    }));
                     self.used.insert(a.station);
                     let arrival =
                         a.arrival_time().with_context(|| format!("{} alighted where it doesn't arrive", t.label))?;
@@ -452,13 +474,29 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             text::timed(a.arrival.or(a.departure), builder.zone),
             tt.station(a.station)?.name,
         );
-        out.push(builder.intern(Piece { kind: "ride", info, warn: false, trip: Some(run.trip), pts, skips }));
+        out.push(builder.intern(Piece {
+            kind: "ride",
+            info,
+            warn: false,
+            trip: Some(run.trip),
+            pts,
+            skips,
+            span: Some((run.from, run.to)),
+        }));
     }
     for w in &usable.waits {
         let pts = vec![point(w.station, w.from), point(w.station, w.to)];
         let info = format!("at {}", tt.station(w.station)?.name);
         builder.used.insert(w.station);
-        out.push(builder.intern(Piece { kind: "wait", info, warn: false, trip: None, pts, skips: Vec::new() }));
+        out.push(builder.intern(Piece {
+            kind: "wait",
+            info,
+            warn: false,
+            trip: None,
+            pts,
+            skips: Vec::new(),
+            span: None,
+        }));
     }
     for w in &usable.walks {
         let fp = tt.footpath(w.footpath)?;
@@ -466,7 +504,15 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
         let pts = vec![point(fp.from, w.start), point(fp.to, end)];
         let info = format!("walk {} to {}", text::duration(fp.duration), tt.station(fp.to)?.name);
         builder.used.extend([fp.from, fp.to]);
-        out.push(builder.intern(Piece { kind: "walk", info, warn: false, trip: None, pts, skips: Vec::new() }));
+        out.push(builder.intern(Piece {
+            kind: "walk",
+            info,
+            warn: false,
+            trip: None,
+            pts,
+            skips: Vec::new(),
+            span: None,
+        }));
     }
     out.sort_unstable();
     out.dedup();

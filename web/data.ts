@@ -57,6 +57,7 @@ interface PieceData {
   trip: number | null;
   pts: [number, number][];
   skips: number[];
+  span: [number, number] | null;
 }
 const kinds = ["ride", "wait", "walk"] as const;
 export type Kind = (typeof kinds)[number];
@@ -79,6 +80,7 @@ const decodePiece: Decoder<PieceData> = (v, path) => {
     trip: field(o, "trip", nullable(number), path),
     pts: field(o, "pts", array(pair(number, number)), path),
     skips: field(o, "skips", array(number), path),
+    span: field(o, "span", nullable(pair(number, number)), path),
   };
 };
 const decodeDetail: Decoder<DetailData> = (v, path) => {
@@ -173,6 +175,8 @@ export interface Piece {
   raw: [ms: number, s: number][];
   /** Stations the ride passes without stopping (cancelled stops). */
   skips: number[];
+  /** A ride's first and last call, as positions in its train's calls. */
+  span: [number, number] | null;
   pts: Pt[]; // per the chosen metric
 }
 export interface Fallback {
@@ -218,13 +222,14 @@ export function load(data: Data): Plot {
     minTransfer: l.min_transfer * 60e3,
     keepDetours: l.keep_detours,
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips }): Piece => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }): Piece => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60e3, s]),
     skips,
+    span,
     pts: [],
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
