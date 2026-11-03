@@ -50,7 +50,13 @@ export type Need =
   | { kind: "station"; station: number };
 
 export type Step =
-  | { kind: "ride"; trip: number; calls: Call[] }
+  | {
+      kind: "ride";
+      trip: number;
+      calls: Call[];
+      /** Positions in `calls` it only passes (cancelled). */
+      passes: readonly number[];
+    }
   | { kind: "walk"; from: number; to: number; start: number; end: number };
 
 export interface Connection {
@@ -148,7 +154,9 @@ export function meets(steps: readonly Step[], n: Need): boolean {
       return steps.some((s) => s.kind === "walk" && s.from === n.from && s.to === n.to && s.start === n.at);
     case "station":
       return steps.some((s) =>
-        s.kind === "walk" ? s.from === n.station || s.to === n.station : s.calls.some((c) => c.station === n.station),
+        s.kind === "walk"
+          ? s.from === n.station || s.to === n.station
+          : s.calls.some((c, k) => c.station === n.station && !s.passes.includes(k)),
       );
     case "stay":
       return presence(steps).some(([s, a, b]) => s === n.station && a <= n.at && n.at <= b);
@@ -173,7 +181,10 @@ function presence(steps: readonly Step[]): [station: number, from: number, to: n
       last = s.calls[s.calls.length - 1];
     if (!first || !last) continue;
     if (here && first.dep !== null) out.push([here[0], Math.min(here[1], first.dep), Math.max(here[1], first.dep)]);
-    for (const c of s.calls.slice(1, -1)) if (c.arr !== null && c.dep !== null) out.push([c.station, c.arr, c.dep]);
+    // Passing a stop (cancelled) is no standing there.
+    s.calls.slice(1, -1).forEach((c, k) => {
+      if (c.arr !== null && c.dep !== null && !s.passes.includes(k + 1)) out.push([c.station, c.arr, c.dep]);
+    });
     here = last.arr === null ? null : [last.station, last.arr];
   }
   return out;
@@ -408,7 +419,8 @@ function search(
       } else slack = Math.min(slack ?? Infinity, dep - ready);
       used.add(run.trip);
       rides++;
-      const passed: number[] = [];
+      const passed: number[] = [],
+        through: number[] = [];
       for (let j = k + 1; j < run.calls.length; j++) {
         const c = item(run.calls, j);
         // Arriving before departing means merged data disagrees: no riding on.
@@ -416,8 +428,11 @@ function search(
         visited[c.station] = 1;
         passed.push(c.station);
         // Passed without stopping: ridden through, not left.
-        if (run.skips.has(j)) continue;
-        steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1) });
+        if (run.skips.has(j)) {
+          through.push(j - k);
+          continue;
+        }
+        steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
         presence.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);
         presence.pop();
