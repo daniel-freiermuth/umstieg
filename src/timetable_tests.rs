@@ -1826,10 +1826,10 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
 
     let tv_of = |i: usize| stations.list[i].tv.clone();
     assert_eq!((tv_of(origin), tv_of(destination)), (Some("G".to_owned()), Some("Kh".to_owned())));
-    let mut labels: Vec<&str> = found.trips.iter().map(|(t, _)| t.label.as_str()).collect();
+    let mut labels: Vec<&str> = found.trips.iter().map(|(t, ..)| t.label.as_str()).collect();
     labels.sort_unstable();
     assert_eq!(labels, ["Krösatågen 7100", "Krösatågen 7200", "SJ Regional 319", "Öresundståg 1060"]);
-    let trip = |label: &str| &found.trips.iter().find(|(t, _)| t.label == label).unwrap().0;
+    let trip = |label: &str| &found.trips.iter().find(|(t, ..)| t.label == label).unwrap().0;
     let names = |t: &Trip| t.calls.iter().map(|c| stations.list[c.station].name.clone()).collect::<Vec<_>>();
     assert_eq!(
         names(trip("Öresundståg 1060")),
@@ -1843,7 +1843,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
         sj.calls.iter().all(|c| c.from_board && c.trafikverket && !c.cancelled && c.platform.as_deref() == Some("1"))
     );
     assert_eq!(sj.calls[2].arrival, Some(Time { planned: at("09:27"), actual: at("09:30") }));
-    let route = &found.trips.iter().find(|(t, _)| t.label == "SJ Regional 319").unwrap().1;
+    let route = &found.trips.iter().find(|(t, ..)| t.label == "SJ Regional 319").unwrap().1;
     assert_eq!(route, &HashSet::from(["Göteborg C", "Lessebo", "Emmaboda", "Nybro"].map(str::to_owned)));
     // The boards' stations cover every class in the hours they list trains.
     let emmaboda = index_of(&stations, "Emmaboda");
@@ -1912,7 +1912,7 @@ async fn junction_boards_cover_nothing_when_their_runs_fail() {
 
     assert!(warnings.iter().any(|w| w.starts_with("Trafikverket runs:")), "{warnings:?}");
     // The first boards' runs and coverage stay; the junction boards cover nothing.
-    let mut labels: Vec<&str> = found.trips.iter().map(|(t, _)| t.label.as_str()).collect();
+    let mut labels: Vec<&str> = found.trips.iter().map(|(t, ..)| t.label.as_str()).collect();
     labels.sort_unstable();
     assert_eq!(labels, ["Krösatågen 7100", "SJ Regional 319", "Öresundståg 1060"]);
     let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
@@ -2115,7 +2115,7 @@ fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start(
     cancel(&mut run.stops[1].departure);
     cancel(&mut run.stops[2].arrival);
     let mut interned = Stations::default();
-    let (trip, _) = fed_trip(&run, &by_sig, &mut interned);
+    let (trip, ..) = fed_trip(&run, &by_sig, &mut interned);
     let calls: Vec<_> = trip.calls.iter().map(|c| (c.cancelled, c.arrival_time(), c.departure_time())).collect();
     assert_eq!(
         calls[1..3],
@@ -2127,7 +2127,7 @@ fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start(
     let mut both = tv_run("2", Regional, &["A", "B", "C"]);
     cancel(&mut both.stops[1].arrival);
     cancel(&mut both.stops[1].departure);
-    let (trip, _) = fed_trip(&both, &by_sig, &mut interned);
+    let (trip, ..) = fed_trip(&both, &by_sig, &mut interned);
     assert!(
         trip.calls[1].cancelled && trip.calls[1].departure.is_some(),
         "a stop cancelled both ways is ridden through"
@@ -2281,7 +2281,7 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
         Some(LongDistance),
         &[(0, "", "09:41"), (3, "10:14", "10:16"), (2, "11:21", "11:22"), (4, "11:48", "")],
     );
-    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route)], false);
+    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route, Vec::new())], false);
     assert_eq!(labels(&trips), ["Öresundståg 1036"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
     assert!(trips[0].transitous);

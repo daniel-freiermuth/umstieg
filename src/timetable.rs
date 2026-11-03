@@ -914,8 +914,9 @@ async fn fetch_boards(
     boards
 }
 
-/// A train known in full from a board feed, with its route's station names.
-type Fed = (Trip, HashSet<String>);
+/// A train known in full from a board feed, with its route's station names
+/// and the stretches it doesn't run.
+type Fed = (Trip, HashSet<String>, Vec<Gap>);
 
 /// What Trafikverket contributes: its trains, and per boarded station which
 /// classes its board lists by the hour.
@@ -1292,6 +1293,9 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         |m: Option<trafikverket::Moment>| m.map(|m| Time { planned: m.planned, actual: m.live.unwrap_or(m.planned) });
     let mut calls = Vec::new();
     let mut route = HashSet::new();
+    // As for DB's trains in `merge`: where it ends and starts again.
+    let mut gaps = Vec::new();
+    let mut end = None;
     for stop in &run.stops {
         let Some(station) = by_sig.get(stop.signature.as_str()) else { continue };
         if !TV_COUNTRIES.contains(&station.country.as_str()) {
@@ -1310,6 +1314,19 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         // both ways is one the train doesn't call at.
         let cancelled = [stop.arrival, stop.departure].into_iter().flatten().all(|m| m.cancelled);
         let running = |m: Option<trafikverket::Moment>| m.filter(|m| cancelled || !m.cancelled);
+        // Trafikverket announces only some events: a stop where the train
+        // starts again may have no arrival, and one without an arrival is the
+        // origin only if nothing came before it.
+        let new_start = !cancelled && stop.arrival.map_or_else(|| end.is_some(), |m| m.cancelled);
+        if new_start && let Some(start) = running(stop.departure).map(|m| m.planned) {
+            gaps.push((end, start));
+        }
+        if !cancelled {
+            let ends = stop.departure.is_some_and(|m| m.cancelled);
+            end = stop.arrival.filter(|_| ends).map(|m| m.planned);
+        } else if calls.is_empty() && stop.arrival.is_none() {
+            end = Some(DateTime::<Utc>::MIN_UTC);
+        }
         calls.push(Call {
             station: idx,
             arrival: time(running(stop.arrival)),
@@ -1329,7 +1346,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         calls,
         transitous: false,
     };
-    (trip, route)
+    (trip, route, gaps)
 }
 
 /// Whole seconds of a float, rounded and clamped to what a timetable needs.
@@ -1452,10 +1469,10 @@ fn merge(
         routes.push(route);
         gaps.push(gap);
     }
-    for (trip, route) in fed {
+    for (trip, route, gap) in fed {
         trips.push(trip);
         routes.push(route);
-        gaps.push(Vec::new());
+        gaps.push(gap);
     }
     // Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
     // same timetable; while they run together they are one train for us.
