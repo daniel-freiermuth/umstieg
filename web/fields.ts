@@ -74,14 +74,65 @@ export const zoneOf = (values: Record<string, string>, userZone: string): string
 /**
  * What a field starts with: a flag is set only if given (its default is
  * irrelevant), the zone is the given one or the user's, a time not given is
- * `now` in that zone, anything else is the given value or the default.
+ * `now` in that zone, one given with an offset (a link dated in the second of
+ * a repeated hour: "2026-10-25T02:30+01:00", which a datetime-local input
+ * would drop) is its wall time there, anything else is the given value or the
+ * default.
  */
 export function initial(f: Field, values: Record<string, string>, now: Date, userZone: string): string | boolean {
   const value = given(values, f.name);
   if (f.kind === "flag") return value !== undefined;
   if (f.kind === "zone") return zoneOf(values, userZone);
-  if (f.kind === "time") return value ?? wallTime(now, zoneOf(values, userZone));
+  if (f.kind === "time")
+    return value === undefined ? wallTime(now, zoneOf(values, userZone)) : shown(value, zoneOf(values, userZone));
   return value ?? f.default;
+}
+
+/** A given time as a datetime-local value: one with an offset as its wall time in `zone`. */
+function shown(value: string, zone: string): string {
+  const moment = /[+-]\d\d:\d\d$/.test(value) ? new Date(value) : undefined;
+  return moment && !Number.isNaN(moment.getTime()) ? wallTime(moment, zone) : value;
+}
+
+/** `zone`'s offset at `d` in minutes: 60 for "+01:00". */
+function offsetAt(d: Date, zone: string): number {
+  const minute = d.getTime() - (d.getTime() % 60_000);
+  return (Date.parse(`${wallTime(d, zone)}Z`) - minute) / 60_000;
+}
+
+/** An offset in minutes the ISO way: "+01:00", "-05:00", "+10:30". */
+function offsetName(minutes: number): string {
+  const two = (n: number): string => String(n).padStart(2, "0");
+  const abs = Math.abs(minutes);
+  return `${minutes < 0 ? "-" : "+"}${two(Math.floor(abs / 60))}:${two(abs % 60)}`;
+}
+
+/**
+ * `d` the way the server dates "now" (`dated_at`): its wall time in `zone`,
+ * with the offset only in the second of a repeated hour, which the wall time
+ * alone names the first of: "2026-10-25T02:30+01:00".
+ */
+function dated(d: Date, zone: string): string {
+  const wall = wallTime(d, zone);
+  const offset = offsetAt(d, zone);
+  // Clocks put back since 3 hours ago, by `back` minutes: the same wall time then is the first.
+  const back = offsetAt(new Date(d.getTime() - 3 * 3_600_000), zone) - offset;
+  const repeated = back > 0 && wallTime(new Date(d.getTime() - back * 60_000), zone) === wall;
+  return repeated ? `${wall}${offsetName(offset)}` : wall;
+}
+
+/**
+ * The time a search is sent with: the given one, or else `now` (when the form
+ * was loaded), with its offset (the exact moment, not the first of a repeated
+ * hour) while the field still shows it in `zone`, else what the field shows.
+ */
+export function sentTime(field: string, value: string | undefined, now: Date, zone: string): string {
+  try {
+    const moment = value ?? dated(now, zone);
+    return shown(moment, zone) === field ? moment : field;
+  } catch {
+    return field; // `zone` is none (yet): Intl throws.
+  }
 }
 
 // Where fields go: the trip up front, the zone with the time, the stops on
