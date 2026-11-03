@@ -543,6 +543,44 @@ fn fallbacks_of_a_missed_change_leave_after_the_arrival() {
     );
 }
 
+/// A missed change with a walk: the traveller stands where the train arrived
+/// from its arrival on, and where the walk leads from the arrival plus the walk.
+#[test]
+fn fallbacks_of_a_missed_change_with_a_walk_leave_once_at_either_station() {
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:55+10", "")]); // 09:05, at Hbf 09:13
+    b.walk("Zentrum", "Hbf", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("RE 5", &[("Zentrum", "", "09:07"), ("Ziel", "10:20", "")]);
+    b.trip("ICE 3", &[("Hbf", "", "09:15"), ("Ziel", "10:15", "")]);
+    b.trip("ICE 9", &[("Hbf", "", "09:40"), ("Ziel", "10:40", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    assert_eq!(
+        summaries(&tt, &fallbacks.for_change(&walked_change(&tt), 0).unwrap()),
+        expect(&[("ICE 3 Hbf-Ziel", "10:15"), ("RE 5 Zentrum-Ziel", "10:20"), ("ICE 9 Hbf-Ziel", "10:40")])
+    );
+}
+
+/// The network the page gets holds a missed walked change's fallbacks that
+/// leave where the train arrived before the walk would have ended.
+#[test]
+fn the_network_of_a_missed_change_with_a_walk_holds_its_fallbacks_from_the_arrival() {
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:55+10", "")]); // 09:05, at Hbf 09:13
+    b.walk("Zentrum", "Hbf", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("RE 5", &[("Zentrum", "", "09:07"), ("Ziel", "10:20", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let all = fallbacks.for_network(&crate::usable::of_chains(&tt, [&chain]), TimeDelta::minutes(15)).unwrap();
+    let shown: Vec<String> = all.iter().map(|c| show(&tt, &c.steps)).collect();
+    assert!(shown.iter().any(|s| s == "RE 5 Zentrum-Ziel"), "{shown:?}");
+}
+
 /// The fallbacks of every change a connection on the network can make: at
 /// Hamburg after ICE 2, and wherever RJ 384 stands (Altona, Schleswig), also
 /// when arriving a little late (missed by up to `missed_by`); nothing at the

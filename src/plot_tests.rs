@@ -515,6 +515,53 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
 }
 
 #[test]
+fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_start() {
+    let mut b = testkit::Builder::new();
+    let tram = b.trip("STR 4", &[("A", "", "08:00"), ("B", "08:55+10", "")]); // 09:05, at H 09:13
+    b.walk("B", "H", 8);
+    let ice = b.trip("ICE 1", &[("H", "", "09:00"), ("C", "10:00", "")]);
+    b.trip("RE 5", &[("B", "", "09:07"), ("C", "10:20", "")]);
+    b.trip("ICE 3", &[("H", "", "09:15"), ("C", "10:15", "")]);
+    let tt = b.build("A", "C");
+    let net = Network::new(&tt).unwrap();
+    let walk = Step::Walk { footpath: 0 };
+    let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(tram, 0, 1), walk, ride(ice, 0, 1)] }]).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let plot = Plot {
+        bounds: bounds(),
+        usable: &crate::usable::Usable::default(),
+        title: String::new(),
+        subtitle: String::new(),
+        groups: &groups,
+        metric: Metric::RemainingTime,
+        min_transfer: MIN,
+        zone: Berlin,
+        back: None,
+        details_url: None,
+        progress: &|_, _| {},
+    };
+    let data = embedded_json(&render(&net, &mut fallbacks, &plot).unwrap().html, "data");
+    let waits: Vec<_> = data["fallbacks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let first = &data["pieces"][indexes(&f["pieces"])[0]];
+            (first["info"].as_str().unwrap().to_owned(), first["pts"][0].clone())
+        })
+        .collect();
+    let from = |time: &str, name: &str| serde_json::json!([at(time).timestamp().div_euclid(60), station(&tt, name)]);
+    // At H from the arrival plus the walk; at B from the arrival.
+    assert_eq!(
+        waits,
+        [
+            ("2m at H after the missed train".to_owned(), from("09:13", "H")),
+            ("2m at B after the missed train".to_owned(), from("09:05", "B")),
+        ]
+    );
+}
+
+#[test]
 fn only_the_requested_metric_must_be_computable() {
     let mut tt = located();
     tt.stations[tt.origin].position = None;
