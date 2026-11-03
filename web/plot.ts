@@ -131,6 +131,10 @@ function want(chains: readonly number[]): void {
     void (async () => {
       try {
         const response = D.details_url === null ? null : await fetch(`${D.details_url}?ids=${ids.join(",")}`);
+        // The server answers only 200, 400 or 404: any other failure is its
+        // proxy's (a 502 or 504 while the server is slow), not a gone search.
+        if (response && !response.ok && response.status !== 400 && response.status !== 404)
+          throw new Error(`status ${String(response.status)}`);
         // Asked once only: a plot whose search is gone has no details left to give.
         if (response?.ok) {
           const got = decodeDetails(parseJson(await response.text()), "details");
