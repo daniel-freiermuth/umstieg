@@ -89,6 +89,9 @@ struct App {
     endpoints: Endpoints,
     /// The API keys, read when a search starts.
     keys: fn() -> Result<Keys>,
+    /// The cache root of the test that made the app, for its searches.
+    #[cfg(test)]
+    cache_root: std::path::PathBuf,
 }
 
 impl App {
@@ -101,6 +104,8 @@ impl App {
             motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
             endpoints,
             keys,
+            #[cfg(test)]
+            cache_root: crate::cache::root().unwrap_or_default(),
         })
     }
 }
@@ -310,7 +315,10 @@ async fn search(
         let query = raw.unwrap_or_default();
         let job = Job { query, key, started: Instant::now(), log: Vec::new(), now: None, result: None };
         admit(&mut jobs, id, job);
-        tokio::spawn(run(app.clone(), id, args));
+        let job = run(app.clone(), id, args);
+        #[cfg(test)]
+        let job = crate::cache::TEST_ROOT.scope(app.cache_root.clone(), job);
+        tokio::spawn(job);
         id
     });
     let page = if let Some(JobOutcome::Plot(plot)) = jobs.get(&id).and_then(|j| j.result.as_ref()) {
