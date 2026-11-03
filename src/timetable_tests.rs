@@ -1588,6 +1588,8 @@ fn feed_copies_without_a_shared_number_merge_by_the_same_times_at_two_stations()
     let ice_76 = [(0, "", "08:00"), (1, "09:00", "09:05"), (2, "10:00", "")];
     let ice_2558 = [(1, "", "09:05"), (2, "10:00", "")];
     let bus = |o| [(0, "", o), (1, "10:01", "10:01"), (2, "10:05", "10:05"), (3, "10:09", "")];
+    let further = |a, b_arr, b_dep, c_arr, c_dep| [(0, "", a), (1, b_arr, b_dep), (2, c_arr, c_dep), (3, "09:30", "")];
+    let late_b = [(0, "", "08:00"), (1, "08:31", "08:31"), (2, "09:00", "")];
     let cases = [
         // EFA names the number "Zug 4711" but gives no train number; Transitous names the line.
         (
@@ -1606,6 +1608,31 @@ fn feed_copies_without_a_shared_number_merge_by_the_same_times_at_two_stations()
             trip("Bus 12", None, &[], &bus("09:57")),
             trip("Bus 12", None, &[], &bus("10:00")),
         ),
+        // Transitous's copy goes on to D; the feeds disagree at C, next to it.
+        (
+            "copies disagreeing next to a stop one lists",
+            trip("Zug 4711", Some(Regional), &[], &three),
+            trip("RB44 (4711)", Some(Regional), &[4711], &further("08:00", "08:30", "08:31", "09:05", "09:06")),
+        ),
+        (
+            "copies two minutes apart",
+            trip("Zug 4711", Some(Regional), &[], &three),
+            trip("RB44 (4711)", Some(Regional), &[4711], &further("08:02", "08:32", "08:33", "09:02", "09:03")),
+        ),
+        // One copy without the number, a minute off at B: the same name.
+        (
+            "a named copy a minute off",
+            trip("Öresundståg", Some(Regional), &[], &three),
+            trip("Öresundståg (1036)", Some(Regional), &[1036], &late_b),
+        ),
+        (
+            "a line's copy a minute off",
+            trip("RE2", Some(Regional), &[], &three),
+            trip("RE2 (10234)", Some(Regional), &[10234], &late_b),
+        ),
+        // Bare RAIL and trams have no class; a trip name adds "(n)" to the label.
+        ("bare rail copies", trip("RE2", None, &[], &three), trip("RE2 (10234)", None, &[10234], &three)),
+        ("tram copies", trip("RNV 4", None, &[], &three), trip("RNV 4 (12345)", None, &[12345], &three)),
     ];
     let ids =
         [("efa:x:1:20261024", "20261024_08:00_de-DELFI_1"), ("20261024_08:00_de-DELFI_1", "20261024_08:00_de-DELFI_2")];
@@ -3075,10 +3102,8 @@ type Service = (Mode, &'static str, Option<&'static str>, Vec<(&'static str, &'s
 /// A service under its trip id.
 type Ridden = (&'static str, Service);
 
-#[tokio::test]
-async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+/// Different services sharing times at stations: (what, one service, another).
+fn services_sharing_times() -> [(&'static str, Service, Service); 19] {
     let line = |mode, name, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
         (mode, name, None, stops.to_vec())
     };
@@ -3105,8 +3130,10 @@ async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apar
     let north_tie = [("X", "", "09:58"), ("A", "10:01", "10:01"), ("B", "10:01", "10:01"), ("Y", "10:04", "")];
     let south_tie = [("Y", "", "09:58"), ("B", "10:01", "10:01"), ("A", "10:01", "10:01"), ("X", "10:04", "")];
     let tie_ride = [("A", "", "10:01"), ("B", "10:01", "")];
-    // (what, one service, another)
-    let cases: [(&str, Service, Service); 16] = [
+    // Lines a minute apart on the trunk, ridden or run.
+    let to_s_next = [("O", "", "10:01"), ("P", "10:02", "10:02"), ("Q", "10:03", "10:03"), ("S", "10:05", "")];
+    let next_ride = [("O", "", "10:01"), ("P", "10:02", "")];
+    [
         ("a split ICE's halves", ice("ICE 548", "548", essen), ice("ICE 558", "558", wuppertal)),
         ("tram lines on a common trunk", line(Mode::Tram, "Tram 1", &to_r), line(Mode::Tram, "Tram 4", &to_s)),
         ("tram lines joining a common trunk", line(Mode::Tram, "Tram 1", &from_r), line(Mode::Tram, "Tram 4", &from_s)),
@@ -3149,20 +3176,42 @@ async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apar
             line(Mode::Tram, "S5", &early),
             line(Mode::Suburban, "S5", &to_s),
         ),
-    ];
-    // One feed, EFA and Transitous, two of Transitous's feeds.
-    let ids = [
-        ("20261024_10:00_de-DELFI_1", "20261024_10:02_de-DELFI_2"),
-        ("efa:x:1:20261024", "20261024_10:02_de-DELFI_2"),
-        ("20261024_10:00_de-VRN_1", "20261024_10:02_de-DELFI_2"),
-    ];
+        (
+            "a ride on the trunk a minute ahead of another line",
+            line(Mode::Tram, "Tram 1", &short),
+            line(Mode::Tram, "Tram 4", &to_s_next),
+        ),
+        (
+            "a ride a minute behind another line on the trunk",
+            line(Mode::Tram, "Tram 1", &to_r),
+            line(Mode::Tram, "Tram 4", &next_ride),
+        ),
+        (
+            "a ride a minute behind another line on the trunk, first",
+            line(Mode::Tram, "Tram 4", &next_ride),
+            line(Mode::Tram, "Tram 1", &to_r),
+        ),
+    ]
+}
+
+/// One feed, EFA and Transitous, two of Transitous's feeds.
+const SERVICE_IDS: [(&str, &str); 3] = [
+    ("20261024_10:00_de-DELFI_1", "20261024_10:02_de-DELFI_2"),
+    ("efa:x:1:20261024", "20261024_10:02_de-DELFI_2"),
+    ("20261024_10:00_de-VRN_1", "20261024_10:02_de-DELFI_2"),
+];
+
+#[tokio::test]
+async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
     // Feeds number U-Bahn, tram and bus runs by their line ("40004" for every
     // U4), or not at all.
     for numbered in [false, true] {
-        for (what, a, b) in &cases {
+        for (what, a, b) in &services_sharing_times() {
             let number = |s: &Service| if numbered { s.2.or(Some("40004")) } else { s.2 };
-            for (id_a, id_b) in ids {
+            for (id_a, id_b) in SERVICE_IDS {
                 let itineraries = [
                     Itinerary { legs: vec![service(id_a, a.0, a.1, number(a), &a.3)] },
                     Itinerary { legs: vec![service(id_b, b.0, b.1, number(b), &b.3)] },
@@ -3172,6 +3221,100 @@ async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apar
                 if built.timetable.trips.len() != 2 {
                     merged.push(format!("{what} ({id_a}, numbered: {numbered}): {:?}", labels(&built.timetable.trips)));
                 }
+            }
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+#[test]
+fn with_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
+    // DB or Trafikverket asked, but no board train: the planners' trips alone.
+    let mut merged = Vec::new();
+    for numbered in [false, true] {
+        for (what, a, b) in &services_sharing_times() {
+            let number = |s: &Service| if numbered { s.2.or(Some("40004")) } else { s.2 };
+            // Trains sharing a number join by it (`same_run`), a line's runs
+            // numbered by the line too: a follow-up, as for SL's pendeltåg.
+            if a.0.class().is_some() && b.0.class().is_some() && number(a).is_some() && number(a) == number(b) {
+                continue;
+            }
+            for (id_a, id_b) in SERVICE_IDS {
+                let itineraries = [
+                    Itinerary { legs: vec![service(id_a, a.0, a.1, number(a), &a.3)] },
+                    Itinerary { legs: vec![service(id_b, b.0, b.1, number(b), &b.3)] },
+                ];
+                let (stations, rough) = rough(&itineraries, false);
+                let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+                if trips.len() != 2 {
+                    merged.push(format!("{what} ({id_a}, numbered: {numbered}): {:?}", labels(&trips)));
+                }
+            }
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+#[test]
+fn with_db_or_trafikverket_rail_rides_on_another_lines_run_stay_apart() {
+    // No board train: planners' rides on the common part of two trains.
+    let line = |mode, name, number, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
+        (mode, name, number, stops.to_vec())
+    };
+    let to_hannover = [("Berlin Hbf", "", "08:00"), ("Hannover Hbf", "09:30", "")];
+    let to_wuppertal = [
+        ("Berlin Hbf", "", "08:00"),
+        ("Hannover Hbf", "09:30", "09:32"),
+        ("Hamm", "11:00", "11:08"),
+        ("Hagen", "11:30", "11:32"),
+        ("Wuppertal", "11:50", ""),
+    ];
+    let ride = [("O", "", "10:00"), ("P", "10:01", "")];
+    let to_s = [("O", "", "10:02"), ("P", "10:03", "10:03"), ("Q", "10:04", "10:04"), ("S", "10:06", "")];
+    let to_s_next = [("O", "", "10:01"), ("P", "10:02", "10:02"), ("Q", "10:03", "10:03"), ("S", "10:05", "")];
+    let to_r = [("O", "", "10:00"), ("P", "10:01", "10:01"), ("Q", "10:02", "10:02"), ("R", "10:04", "")];
+    let (ice, s, re) = (Mode::HighspeedRail, Mode::Suburban, Mode::RegionalRail);
+    // (what, one service, another)
+    let cases: [(&str, Service, Service); 9] = [
+        (
+            "a split ICE's half ridden to before the split",
+            line(ice, "ICE 548", Some("548"), &to_hannover),
+            line(ice, "ICE 558", Some("558"), &to_wuppertal),
+        ),
+        ("an S-Bahn ride on another line's trunk", line(s, "S1", None, &ride), line(s, "S2", None, &to_s)),
+        ("an S-Bahn ride a minute ahead of another line", line(s, "S1", None, &ride), line(s, "S2", None, &to_s_next)),
+        ("another line's run, then an S-Bahn ride", line(s, "S2", None, &to_s_next), line(s, "S1", None, &ride)),
+        ("a regional ride on another line's trunk", line(re, "RE1", None, &ride), line(re, "RB2", None, &to_s)),
+        // Trains numbered both ways, a minute apart: not coupled, another train.
+        (
+            "a numbered S-Bahn ride a minute ahead of another",
+            line(s, "S1", Some("31000"), &ride),
+            line(s, "S2", Some("32000"), &to_s_next),
+        ),
+        (
+            "another numbered line's run, then an S-Bahn ride",
+            line(s, "S2", Some("32000"), &to_s_next),
+            line(s, "S1", Some("31000"), &ride),
+        ),
+        // A tram has no class: its very times don't make it the S-Bahn's copy.
+        ("an S-Bahn ride at a tram's times", line(s, "S1", None, &ride), line(Mode::Tram, "Tram 1", None, &to_r)),
+        (
+            "a tram's run, then an S-Bahn ride at its times",
+            line(Mode::Tram, "Tram 1", None, &to_r),
+            line(s, "S1", None, &ride),
+        ),
+    ];
+    let mut merged = Vec::new();
+    for (what, a, b) in cases {
+        for (id_a, id_b) in SERVICE_IDS {
+            let itineraries = [
+                Itinerary { legs: vec![service(id_a, a.0, a.1, a.2, &a.3)] },
+                Itinerary { legs: vec![service(id_b, b.0, b.1, b.2, &b.3)] },
+            ];
+            let (stations, rough) = rough(&itineraries, false);
+            let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+            if trips.len() != 2 {
+                merged.push(format!("{what} ({id_a}): {:?}", labels(&trips)));
             }
         }
     }
