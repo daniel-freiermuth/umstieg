@@ -580,6 +580,29 @@ describe("network", () => {
     // Within what reaches the same, the same.
     expect(net.moment(B, 11)).toEqual(net.moment(B, 20));
   });
+
+  test("the moment at a station changes when a wait walked to ends, also where no train leaves then", () => {
+    // T2 leaves C at 10, missed by T1 arriving at 12: the network waits at C
+    // from 10 to 12 (a change missed by a little), and nothing leaves C at 12.
+    // Walking 5 minutes from B one is at C inside that wait from B at 6, past
+    // it from B at 8.
+    const plot = new Plot({
+      T1: ride(1, [
+        [A, 0],
+        [C, 12],
+      ]),
+      waitC: wait(C, 10, 12),
+      T2: ride(2, [
+        [C, 10],
+        [D, 20],
+      ]),
+      w: walk(B, 0, C, 5),
+    });
+    const net = plot.net();
+    expect(plot.show(net.reach({ at: [[B, 6]] }))).toEqual(["waitC 11-12"]);
+    expect(net.reach({ at: [[B, 8]] })).toEqual([]);
+    expect(net.moment(B, 6)).not.toEqual(net.moment(B, 8));
+  });
 });
 
 describe("runs and stays", () => {
