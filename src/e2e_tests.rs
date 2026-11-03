@@ -1195,6 +1195,10 @@ async fn web_front_end_runs_a_search_to_its_plot() {
     }
     // The server's credentials were used: DB's live data is in the plot.
     assert!(!log.iter().any(|l| l.contains("warning")), "{log:#?}");
+    // The job ran on a runtime worker, yet cached in this test's directory,
+    // where StandIn clears the corridor's DB plans.
+    let mine = crate::cache::root().unwrap();
+    assert!(mine.join("db-plan").is_dir(), "nothing cached under {}", mine.display());
 
     // The same link, now that the search is done: its plot.
     let plot = http.get(&link).send().await.unwrap();
