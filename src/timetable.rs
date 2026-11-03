@@ -1449,17 +1449,29 @@ fn merge(
         // new start; without boards before, it may have run anywhere.
         let mut gap = Vec::new();
         let mut end = None;
+        // A known new end with no boarded new start yet: the train starts
+        // again at the latest at the next call that runs, if any.
+        let mut open = false;
         for (call, (_, v)) in board_calls.iter().zip(&calls) {
             let new_start = v.arrival.as_ref().is_some_and(|e| e.cancelled) && !call.cancelled;
             if new_start && let Some(start) = call.departure.map(|t| t.planned) {
+                gap.push((end, start));
+            } else if open
+                && !call.cancelled
+                && let Some(start) = call.planned()
+            {
                 gap.push((end, start));
             }
             if !call.cancelled {
                 let ends = v.departure.as_ref().is_some_and(|e| e.cancelled);
                 end = call.arrival.filter(|_| ends).map(|t| t.planned);
+                open = end.is_some();
             } else if v.arrival.is_none() {
                 end = Some(DateTime::<Utc>::MIN_UTC);
             }
+        }
+        if open && let Some(end) = end {
+            gap.push((Some(end), DateTime::<Utc>::MAX_UTC));
         }
         trips.push(Trip {
             label,
