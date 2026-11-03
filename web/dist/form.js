@@ -112,8 +112,36 @@ function initial(f, values, now, userZone) {
   if (f.kind === "zone")
     return zoneOf(values, userZone);
   if (f.kind === "time")
-    return value ?? wallTime(now, zoneOf(values, userZone));
+    return value === undefined ? wallTime(now, zoneOf(values, userZone)) : shown(value, zoneOf(values, userZone));
   return value ?? f.default;
+}
+function shown(value, zone) {
+  const moment = /[+-]\d\d:\d\d$/.test(value) ? new Date(value) : undefined;
+  return moment && !Number.isNaN(moment.getTime()) ? wallTime(moment, zone) : value;
+}
+function offsetAt(d, zone) {
+  const minute = d.getTime() - d.getTime() % 60000;
+  return (Date.parse(`${wallTime(d, zone)}Z`) - minute) / 60000;
+}
+function offsetName(minutes) {
+  const two = (n) => String(n).padStart(2, "0");
+  const abs = Math.abs(minutes);
+  return `${minutes < 0 ? "-" : "+"}${two(Math.floor(abs / 60))}:${two(abs % 60)}`;
+}
+function dated(d, zone) {
+  const wall = wallTime(d, zone);
+  const offset = offsetAt(d, zone);
+  const back = offsetAt(new Date(d.getTime() - 3 * 3600000), zone) - offset;
+  const repeated = back > 0 && wallTime(new Date(d.getTime() - back * 60000), zone) === wall;
+  return repeated ? `${wall}${offsetName(offset)}` : wall;
+}
+function sentTime(field2, value, now, zone) {
+  try {
+    const moment = value ?? dated(now, zone);
+    return shown(moment, zone) === field2 ? moment : field2;
+  } catch {
+    return field2;
+  }
 }
 var TRIP = ["from", "to", "at"];
 var PLACED = [...TRIP, "time_zone", "via"];
@@ -197,7 +225,7 @@ function stationText(id, typed, chosen) {
   input.setAttribute("aria-autocomplete", "list");
   input.setAttribute("aria-controls", list.id);
   input.setAttribute("aria-expanded", "false");
-  let shown = [];
+  let shown2 = [];
   let active = -1;
   const highlight = (i) => {
     active = i;
@@ -219,7 +247,7 @@ function stationText(id, typed, chosen) {
     chosen({ name: s.name, id: s.id });
   };
   const show = (stops) => {
-    shown = stops;
+    shown2 = stops;
     list.replaceChildren(...stops.map((s, i) => {
       const li = element("li", { id: `${list.id}-${String(i)}` });
       li.setAttribute("role", "option");
@@ -239,9 +267,9 @@ function stationText(id, typed, chosen) {
       return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      highlight(nextIndex(active, shown.length, e.key === "ArrowDown" ? 1 : -1));
+      highlight(nextIndex(active, shown2.length, e.key === "ArrowDown" ? 1 : -1));
     } else if (e.key === "Enter") {
-      const s = shown[active];
+      const s = shown2[active];
       if (s !== undefined) {
         e.preventDefault();
         choose(s);
@@ -356,6 +384,7 @@ function viaField(f, id) {
   return box;
 }
 var USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+var LOADED = new Date;
 function row(f, control, id, help = true) {
   const box = element("div", { className: `field ${f.kind}` });
   const l = element("label", { htmlFor: id, textContent: f.kind === "time" ? "Departure" : label(f.name) });
@@ -370,7 +399,7 @@ function row(f, control, id, help = true) {
   return box;
 }
 function control(f, id) {
-  const value = initial(f, SPEC.values, new Date, USER_ZONE);
+  const value = initial(f, SPEC.values, LOADED, USER_ZONE);
   if (typeof value === "boolean")
     return element("input", { type: "checkbox", checked: value, id, name: f.name });
   if (f.kind === "choice") {
@@ -408,12 +437,12 @@ function timeRow(f, zoneField) {
   list.append(...Intl.supportedValuesOf("timeZone").map((z) => new Option(z)));
   document.body.append(list);
   zone.setAttribute("list", list.id);
-  const shown = element("span", { className: "zone-name", textContent: zone.value });
+  const shown2 = element("span", { className: "zone-name", textContent: zone.value });
   zone.addEventListener("input", () => {
-    shown.textContent = zone.value.trim();
+    shown2.textContent = zone.value.trim();
   });
   const summary = element("summary");
-  summary.append("Times in ", shown);
+  summary.append("Times in ", shown2);
   const details = element("details", { className: "zone", open: zone.value !== USER_ZONE });
   details.append(summary, zone, element("div", { className: "help", textContent: zoneField.help }));
   box.append(details);
@@ -459,10 +488,28 @@ form.addEventListener("submit", () => {
       input.disabled = true;
     }
   }
+  const sent = [];
+  const zone = form.elements.namedItem("time_zone");
+  for (const f of SPEC.fields.filter((f2) => f2.kind === "time")) {
+    const input = form.elements.namedItem(f.name);
+    if (!(input instanceof HTMLInputElement) || input.disabled)
+      continue;
+    const shownZone = zone instanceof HTMLInputElement ? zone.value.trim() : zoneOf(SPEC.values, USER_ZONE);
+    const value = sentTime(input.value, given(SPEC.values, f.name), LOADED, shownZone);
+    if (value === input.value)
+      continue;
+    input.disabled = true;
+    const moment = hidden(f.name);
+    moment.value = value;
+    sent.push(moment);
+  }
+  form.append(...sent);
   setTimeout(() => {
     for (const input of form.elements) {
       if (input instanceof HTMLInputElement || input instanceof HTMLSelectElement)
         input.disabled = false;
     }
+    for (const moment of sent)
+      moment.remove();
   });
 });

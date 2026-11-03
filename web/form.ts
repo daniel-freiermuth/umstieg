@@ -10,12 +10,14 @@ import {
   changed,
   decodeSpec,
   decodeSuggestions,
+  given,
   initial,
   label,
   nextIndex,
   omitted,
   picked,
   sections,
+  sentTime,
   stationSearch,
   unpicked,
   zoneOf,
@@ -252,6 +254,9 @@ function viaField(f: Field, id: string): HTMLElement {
 /** The user's time zone, as the browser knows it: "Europe/Berlin". */
 const USER_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+/** "Now" for a time not given: when the form was loaded. */
+const LOADED = new Date();
+
 /** A row: the label (unless the fold says it), the control, and the option's help below if `help`. */
 function row(f: Field, control: HTMLElement, id: string, help = true): HTMLDivElement {
   const box = element("div", { className: `field ${f.kind}` });
@@ -265,7 +270,7 @@ function row(f: Field, control: HTMLElement, id: string, help = true): HTMLDivEl
 
 /** An option's input, filled with its initial value. */
 function control(f: Field, id: string): HTMLElement {
-  const value = initial(f, SPEC.values, new Date(), USER_ZONE);
+  const value = initial(f, SPEC.values, LOADED, USER_ZONE);
   if (typeof value === "boolean") return element("input", { type: "checkbox", checked: value, id, name: f.name });
   if (f.kind === "choice") {
     const select = element("select", { id, name: f.name });
@@ -357,9 +362,26 @@ form.addEventListener("submit", () => {
       input.disabled = true;
     }
   }
+  // A datetime-local input holds no offset: while it still shows the moment a
+  // link was dated with, or the form's "now", that moment is sent in its place.
+  const sent: HTMLInputElement[] = [];
+  const zone = form.elements.namedItem("time_zone");
+  for (const f of SPEC.fields.filter((f) => f.kind === "time")) {
+    const input = form.elements.namedItem(f.name);
+    if (!(input instanceof HTMLInputElement) || input.disabled) continue;
+    const shownZone = zone instanceof HTMLInputElement ? zone.value.trim() : zoneOf(SPEC.values, USER_ZONE);
+    const value = sentTime(input.value, given(SPEC.values, f.name), LOADED, shownZone);
+    if (value === input.value) continue;
+    input.disabled = true;
+    const moment = hidden(f.name);
+    moment.value = value;
+    sent.push(moment);
+  }
+  form.append(...sent);
   setTimeout(() => {
     for (const input of form.elements) {
       if (input instanceof HTMLInputElement || input instanceof HTMLSelectElement) input.disabled = false;
     }
+    for (const moment of sent) moment.remove();
   });
 });
