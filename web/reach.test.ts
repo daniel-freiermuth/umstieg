@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Interval, Pt } from "./geometry";
 import {
   type Line,
+  type Network,
   type Route,
   type Segment,
   type Source,
@@ -549,6 +550,36 @@ describe("network", () => {
       [C, [0, 1]],
     ]);
   });
+
+  test("the moment at a station changes when a train leaves inside a wait the network merged", () => {
+    // Waits 0–10 and 5–30 at B are one wait of the network; T3 leaves B at 10
+    // inside it: reachable from B at 2, not from B at 20.
+    const plot = new Plot({
+      T1: ride(1, [
+        [A, -10],
+        [B, 0],
+      ]),
+      T2: ride(2, [
+        [D, -10],
+        [B, 5],
+      ]),
+      waitB: wait(B, 0, 30),
+      T3: ride(3, [
+        [B, 10],
+        [C, 20],
+      ]),
+      T4: ride(4, [
+        [B, 30],
+        [C, 40],
+      ]),
+    });
+    const net = plot.net();
+    expect(plot.show(net.reach({ at: [[B, 2]] }))).toContain("T3 10-20");
+    expect(plot.show(net.reach({ at: [[B, 20]] }))).not.toContain("T3 10-20");
+    expect(net.moment(B, 2)).not.toEqual(net.moment(B, 20));
+    // Within what reaches the same, the same.
+    expect(net.moment(B, 11)).toEqual(net.moment(B, 20));
+  });
 });
 
 describe("runs and stays", () => {
@@ -850,6 +881,32 @@ describe("reach on random timetables", () => {
       }
     }
     expect(reaching).toBeGreaterThan(400);
+  });
+
+  test("two moments at a station alike reach the same, up to where reached waits start and end", () => {
+    // Waits clip to the time one can be there, everything else is whole.
+    const show = (net: Network, segments: readonly Segment[]): string[] =>
+      segments
+        .map(([pi, a, b]) =>
+          net.waits.includes(pi) ? `wait ${String(pi)}` : `${String(pi)} ${String(a)} ${String(b)}`,
+        )
+        .sort();
+    let alike = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const rnd = random(seed);
+      const { pieces, chains } = randomPlot(rnd);
+      const net = network(pieces, base(pieces), chains, () => true);
+      const stations = [...net.stays.keys()];
+      const s = stations[rnd(stations.length)] ?? 0;
+      for (let t1 = 0; t1 <= 60; t1 += 3)
+        for (let t2 = t1 + 1; t2 <= 60; t2 += 4) {
+          if (net.moment(s, t1) !== net.moment(s, t2)) continue;
+          alike++;
+          const [r1, r2] = [t1, t2].map((t) => show(net, net.reach({ at: [[s, t]] })));
+          expect({ seed, s, t1, t2, reach: r2 }).toEqual({ seed, s, t1, t2, reach: r1 });
+        }
+    }
+    expect(alike).toBeGreaterThan(1000);
   });
 });
 
