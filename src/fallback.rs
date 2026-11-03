@@ -78,18 +78,18 @@ impl<'n> Fallbacks<'n> {
     /// fallbacks of connections it finds itself.
     pub fn for_network(&mut self, network: &Usable, missed_by: TimeDelta) -> Result<Vec<Chain>> {
         let tt = self.net.tt;
-        // Per station where trains leave: (where the train arrived, when one is ready there).
-        let mut ready: HashMap<usize, Vec<(usize, DateTime<Utc>)>> = HashMap::new();
+        // Per station where trains leave: where trains arrived, and when.
+        let mut ready: HashMap<usize, Vec<Arrived>> = HashMap::new();
         for run in &network.rides {
             for k in run.from.saturating_add(1)..=run.to {
                 let call = tt.call(run.trip, k)?;
                 let Some(arrival) = call.arrival_time() else { continue };
-                ready.entry(call.station).or_default().push((call.station, arrival));
+                ready.entry(call.station).or_default().push((call.station, arrival, arrival));
                 for walk in &network.walks {
                     let fp = tt.footpath(walk.footpath)?;
                     if fp.from == call.station {
                         let there = checked::later(arrival, fp.duration, "walk after a train")?;
-                        ready.entry(fp.to).or_default().push((call.station, there));
+                        ready.entry(fp.to).or_default().push((call.station, arrival, there));
                     }
                 }
             }
@@ -99,9 +99,12 @@ impl<'n> Fallbacks<'n> {
             for k in run.from..run.to {
                 let call = tt.call(run.trip, k)?;
                 let Some(departure) = call.departure_time() else { continue };
-                for &(station, at) in ready.get(&call.station).into_iter().flatten() {
+                for &(station, arrival, at) in ready.get(&call.station).into_iter().flatten() {
                     if checked::earlier_or_min(at, missed_by) <= departure {
+                        // As the page lists a change's: from when one is ready for the next train.
                         changes.insert((station, departure, at));
+                        // As `for_change` lists them: from the arrival on (the same unless missed).
+                        changes.insert((station, departure, arrival));
                     }
                 }
             }
@@ -131,12 +134,14 @@ impl<'n> Fallbacks<'n> {
 
         // A change listed although missed (negative buffer): the traveller is
         // there only after the missed train left; nothing leaves before that.
-        // From where the train arrived: after a change with a walk, fallbacks
-        // walk there too, or elsewhere. And from where the missed train left:
-        // a walk starting there counts only from after the missed departure,
-        // but the traveller already stands there, and may leave right after it.
+        // From where the train arrived, from the arrival on: after a change
+        // with a walk, fallbacks walk there too, or elsewhere. And from where
+        // the missed train left, once walked there: a walk starting there
+        // counts only from after the missed departure, but the traveller
+        // already stands there, and may leave right after it.
         let ready = transfer.ready();
-        let mut candidates: Vec<Chain> = self.candidates(transfer.station, transfer.departure, ready)?.to_vec();
+        let mut candidates: Vec<Chain> =
+            self.candidates(transfer.station, transfer.departure, transfer.arrival())?.to_vec();
         if let Some(ride) = chain.rides().nth(after_change) {
             let boards_at = tt.call(ride.trip, ride.board)?.station;
             if boards_at != transfer.station {
@@ -203,6 +208,9 @@ impl<'n> Fallbacks<'n> {
             .collect())
     }
 }
+
+/// Where a train arrived, when, and when one is ready there for the next train.
+type Arrived = (usize, DateTime<Utc>, DateTime<Utc>);
 
 fn walks_first(chain: &Chain) -> bool {
     matches!(chain.steps.first(), Some(Step::Walk { .. }))
