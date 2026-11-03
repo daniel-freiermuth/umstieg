@@ -482,9 +482,15 @@ fn intern_fallback(
     transfer: &enumerate::Transfer,
     fallback: Fallback,
 ) -> Result<usize> {
-    // A missed change (`--missed-by`): waited from the arrival, as fallbacks
-    // are searched from then on.
-    let since = transfer.departure.max(transfer.ready());
+    // A missed change (`--missed-by`): waited from when the traveller is where
+    // the fallback starts, as fallbacks are searched from then on: where the
+    // train arrived from the arrival, where the missed train left once walked there.
+    let first = match fallback.chain.steps.first() {
+        Some(&Step::Ride { trip, board, .. }) => Some(builder.tt.call(trip, board)?.station),
+        _ => None,
+    };
+    let there = if first.is_some_and(|s| s != transfer.station) { transfer.ready() } else { transfer.arrival() };
+    let since = transfer.departure.max(there);
     let key = (transfer.station, since, fallback.line.clone());
     if let Some(&i) = index.get(&key) {
         return Ok(i);

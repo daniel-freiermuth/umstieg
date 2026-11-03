@@ -77,6 +77,11 @@ impl Transfer {
     pub fn ready(&self) -> DateTime<Utc> {
         checked::earlier_or_min(self.departure, self.slack)
     }
+
+    /// When the previous train arrives, where the walk (if any) starts.
+    pub fn arrival(&self) -> DateTime<Utc> {
+        checked::earlier_or_min(self.ready(), self.walk)
+    }
 }
 
 impl Chain {
