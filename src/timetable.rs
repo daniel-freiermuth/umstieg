@@ -1374,7 +1374,8 @@ type Gap = (Option<DateTime<Utc>>, DateTime<Utc>);
 /// station's board lists other trains of that class for the hour. Without
 /// boards, copies of one train from several feeds become one, EFA's times
 /// winning: by number, and unless `planners_only` also by the same times at
-/// two stations. With `planners_only` (no DB or Trafikverket asked) a copy is
+/// two stations; never losing a half of a call where a feed's ride ends or
+/// starts. With `planners_only` (no DB or Trafikverket asked) a copy is
 /// merged only if none of its stops, nor either half of one, is lost.
 #[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
 fn merge(
@@ -1558,7 +1559,10 @@ fn merge(
         // EFA's rides end or start at hubs the other copy passes through:
         // the copy goes into the first train of its number that takes it
         // whole (`absorbs`). There are no board or fed trains then, so
-        // `by_number` finds nothing and the shared-times rule is off.
+        // `by_number` finds nothing and the shared-times rule is off. With
+        // them, EFA's times still win elsewhere, but a copy disagreeing
+        // where the base's ride ends or starts (`keeps_halves`) stays apart:
+        // merged, the hub's other half and every stop beyond it would go.
         let same_run = || {
             motis.numbers.iter().chain(&named).find_map(|n| {
                 feed_by_number.get(n)?.iter().copied().find(|&i| {
@@ -1570,7 +1574,11 @@ fn merge(
                         })
                     });
                     let rail = base.class.is_some() && motis.class.is_some();
-                    met && (!planners_only || absorbs(base, &motis) && (rail || in_step(base, &motis)))
+                    met && if planners_only {
+                        absorbs(base, &motis) && (rail || in_step(base, &motis))
+                    } else {
+                        keeps_halves(base, &motis)
+                    }
                 })
             })
         };
@@ -1592,7 +1600,15 @@ fn merge(
                     }
                 }
             }
-            shared.into_iter().filter(|&(_, n)| n >= 2).max_by_key(|&(i, n)| (n, Reverse(i))).map(|(i, _)| i)
+            // Into a feed's train, as by number: not losing a hub's half.
+            let takes = |i: usize| {
+                trips.get(i).is_some_and(|t| t.calls.iter().any(|c| c.from_board) || keeps_halves(t, &motis))
+            };
+            shared
+                .into_iter()
+                .filter(|&(i, n)| n >= 2 && takes(i))
+                .max_by_key(|&(i, n)| (n, Reverse(i)))
+                .map(|(i, _)| i)
         });
         let target = twin.and_then(|i| Some((i, trips.get_mut(i)?, routes.get(i)?)));
         if let Some((i, trip, route)) = target {
@@ -1622,9 +1638,12 @@ fn merge(
                     && !route.is_empty()
                     && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
                 let unanchored = from_feed && !anchored(&anchors, call.planned());
-                // Where the base's ride ends or starts, the copy passing
-                // through gives the half it lacks (`absorbs` checked they agree).
-                if planners_only && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station) {
+                // Where a feed's ride ends or starts, the copy passing
+                // through gives the half it lacks if they agree there.
+                if from_feed
+                    && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station)
+                    && agree(&call, base)
+                {
                     base.arrival = base.arrival.or(call.arrival);
                     base.departure = base.departure.or(call.departure);
                 }
@@ -1711,22 +1730,24 @@ fn anchored(anchors: &[(DateTime<Utc>, bool)], t: Option<DateTime<Utc>>) -> bool
 
 /// Whether `other`, a copy of the planners' train `base`, merges into it
 /// losing nothing: they are of `one_run`, a stop `base` lacks is anchored,
-/// and where `base` lacks a half of a call `other` has (its ride ends or
-/// starts there), they agree.
+/// and `keeps_halves`.
 fn absorbs(base: &Trip, other: &Trip) -> bool {
-    if !one_run(base, other) {
+    if !one_run(base, other) || !keeps_halves(base, other) {
         return false;
     }
     let anchors = anchors_of(base, &other.calls);
+    other.calls.iter().all(|c| base.call_at(c.station).is_some() || anchored(&anchors, c.planned()))
+}
+
+/// Whether, where `base` lacks a half of a call `other` has (its ride ends or
+/// starts there), the copies agree.
+fn keeps_halves(base: &Trip, other: &Trip) -> bool {
     other.calls.iter().all(|c| {
-        base.call_at(c.station).map_or_else(
-            || anchored(&anchors, c.planned()),
-            |b| {
-                let lacks =
-                    (c.arrival.is_some() && b.arrival.is_none()) || (c.departure.is_some() && b.departure.is_none());
-                !lacks || agree(c, b)
-            },
-        )
+        base.call_at(c.station).is_none_or(|b| {
+            let lacks =
+                (c.arrival.is_some() && b.arrival.is_none()) || (c.departure.is_some() && b.departure.is_none());
+            !lacks || agree(c, b)
+        })
     })
 }
 

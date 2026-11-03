@@ -2698,6 +2698,81 @@ async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_o
 }
 
 #[test]
+fn with_credentials_but_no_board_data_copies_merge_without_losing_a_hub_half() {
+    // EFA's ride ends at the hub H that Transitous' copy passes through; DB
+    // and Trafikverket were asked but know nothing of it.
+    let ride = |mode, name, number, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
+        (mode, name, number, stops.to_vec())
+    };
+    let re =
+        |stops: &[(&'static str, &'static str, &'static str)]| ride(Mode::RegionalRail, "RE 60", Some("4711"), stops);
+    let tram = |stops: &[(&'static str, &'static str, &'static str)]| ride(Mode::Tram, "5", None, stops);
+    let to_hub = [("O", "", "08:00"), ("H", "08:30", "")];
+    let via_a = [("O", "", "08:00"), ("A", "08:10", "08:11"), ("H", "08:30", "")];
+    let on_via_a = |h: (&'static str, &'static str), d| {
+        [("O", "", "08:00"), ("A", "08:10", "08:11"), ("H", h.0, h.1), ("D", d, "")]
+    };
+    // (what, EFA's ride, Transitous' ride)
+    let cases = [
+        (
+            "the copies agree at the hub",
+            re(&to_hub),
+            re(&[("O", "", "08:00"), ("H", "08:30", "08:32"), ("D", "09:00", "")]),
+        ),
+        // 10 minutes off at the hub (ICE 273's Transitous copy was).
+        (
+            "the copies disagree at the hub",
+            re(&to_hub),
+            re(&[("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")]),
+        ),
+        // An EFA leg has no arrival where it was boarded: ICE 273 boarded at
+        // Karlsruhe, which Transitous has 10 minutes later. As without
+        // credentials, and as for an EFA ICE without a train number, nothing
+        // says which copy is right, so both stay whole.
+        (
+            "the copies disagree where EFA's ride starts",
+            re(&[("Karlsruhe", "", "06:51"), ("Freiburg", "08:00", "")]),
+            re(&[
+                ("Mannheim", "", "06:37"),
+                ("Karlsruhe", "06:59", "07:01"),
+                ("Offenburg", "07:29", "07:30"),
+                ("Freiburg", "08:01", "08:03"),
+                ("Basel", "08:45", ""),
+            ]),
+        ),
+        // Agreeing at two stops, the copies share times enough to merge by them.
+        ("the copies agree at a stop before the hub", re(&via_a), re(&on_via_a(("08:30", "08:32"), "09:00"))),
+        ("the copies agree before the hub, not at it", re(&via_a), re(&on_via_a(("08:40", "08:42"), "09:10"))),
+        // Trams carry line numbers: they only ever merge by shared times.
+        ("a tram agreeing at the hub", tram(&via_a), tram(&on_via_a(("08:30", "08:32"), "09:00"))),
+        ("a tram disagreeing at the hub", tram(&via_a), tram(&on_via_a(("08:40", "08:42"), "09:10"))),
+    ];
+    let mut lost = Vec::new();
+    for (what, efa, transitous) in cases {
+        let rides = [("efa:vrn:08004:s:H:j26:515:20261024", &efa), ("20261024_08:00_de-DELFI_1", &transitous)];
+        let itineraries: Vec<Itinerary> =
+            rides.iter().map(|&(id, s)| Itinerary { legs: vec![service(id, s.0, s.1, s.2, &s.3)] }).collect();
+        let (stations, rough) = rough(&itineraries, false);
+        let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+        // Every stop of each copy, with the halves it has at its times, is still in some trip.
+        for (_, (.., stops)) in rides {
+            for &(name, arrival, departure) in stops {
+                let (arrival, departure) = (time(arrival).map(|t| t.planned), time(departure).map(|t| t.planned));
+                let kept = trips.iter().flat_map(|t| &t.calls).any(|c| {
+                    stations.list[c.station].name == name
+                        && (arrival.is_none() || c.arrival.map(|t| t.planned) == arrival)
+                        && (departure.is_none() || c.departure.map(|t| t.planned) == departure)
+                });
+                if !kept {
+                    lost.push(format!("{what}: {name} (arrives {arrival:?}, departs {departure:?})"));
+                }
+            }
+        }
+    }
+    assert!(lost.is_empty(), "{lost:#?}");
+}
+
+#[test]
 fn copies_are_of_one_run_where_they_pass_two_stations_in_one_order_and_part_on_one_side_at_most() {
     type Stops = &'static [(usize, &'static str, &'static str)];
     // (what, one copy's calls, the other's, one run); stations 0..3.
