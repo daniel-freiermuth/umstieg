@@ -16,13 +16,19 @@ import {
 const M = 60e3;
 /**
  * A train: [station, minute] boards or alights, [station, arrival, departure] stops between;
- * `cancelled`: positions in `calls` of stops it passes without stopping.
+ * `cancelled`: positions in `calls` of stops it passes without stopping; `from`: the
+ * position of its first call in the train's calls.
  */
-function ride(trip: number, calls: ([number, number] | [number, number, number])[], cancelled: number[] = []): Stretch {
+function ride(
+  trip: number,
+  calls: ([number, number] | [number, number, number])[],
+  cancelled: number[] = [],
+  from = 0,
+): Stretch {
   const raw = calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t * M, s]));
   // As the data names them: by the index of their first point.
   const first = (k: number): number => calls.slice(0, k).reduce((n, c) => n + c.length - 1, 0);
-  return { kind: "ride", trip, raw, skips: cancelled.map(first) };
+  return { kind: "ride", trip, raw, skips: cancelled.map(first), span: [from, from + calls.length - 1] };
 }
 /** A walk as the network has it: walked at some time (`at`), `minutes` long. */
 const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
@@ -33,6 +39,7 @@ const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
     [(at + minutes) * M, b],
   ],
   skips: [],
+  span: null,
 });
 const limits = (over: Partial<Limits> = {}): Limits => ({
   origin: 0,
@@ -412,10 +419,15 @@ describe("the best connections", () => {
     const split = [
       pieces[0],
       pieces[2],
-      ride(1067, [
-        [1, 117],
-        [2, 183],
-      ]),
+      ride(
+        1067,
+        [
+          [1, 117],
+          [2, 183],
+        ],
+        [],
+        1,
+      ),
       ride(1067, [
         [0, 81],
         [1, 115],
@@ -426,6 +438,68 @@ describe("the best connections", () => {
       "374:0>1@55 1067:1>2@117 593:2>9@197",
       "374:0>3@55 593:3>9@153",
     ]);
+  });
+
+  test("no detours also where the network splits the train at the stop the connection stood at", () => {
+    // Train 1 to 2 by 10; train 2 from 2 at 12 to 4 by 30; train 3 calls at 2
+    // from 18 to 20 and goes on via 4 (32) to 9. Boarding 3 at 4 is a detour.
+    const on2: Need = { kind: "ride", trip: 2, from: 2, at: 12 * M, to: 4, until: 30 * M };
+    const pieces = (three: Stretch[]): Stretch[] => [
+      ride(1, [
+        [0, 0],
+        [2, 10],
+      ]),
+      ride(2, [
+        [2, 12],
+        [4, 30],
+      ]),
+      ...three,
+    ];
+    const whole = ride(3, [
+      [1, 5],
+      [2, 18, 20],
+      [4, 32],
+      [9, 50],
+    ]);
+    expect(search(pieces([whole]), [on2])).toEqual([]);
+    // Split at 2 (no connection rides train 3 through it): arriving there, then leaving.
+    const split = [
+      ride(3, [
+        [1, 5],
+        [2, 18],
+      ]),
+      ride(
+        3,
+        [
+          [2, 20],
+          [4, 32],
+          [9, 50],
+        ],
+        [],
+        1,
+      ),
+    ];
+    expect(search(pieces(split), [on2])).toEqual([]);
+    // A loop calling at 2 twice, the network without its stops in between: train 3 left 2
+    // at 9 (not on the network), before the connection got there. As the server, only its
+    // first call there counts.
+    const loop = [
+      ride(3, [
+        [1, 5],
+        [2, 8],
+      ]),
+      ride(
+        3,
+        [
+          [2, 40],
+          [4, 50],
+          [9, 60],
+        ],
+        [],
+        3,
+      ),
+    ];
+    expect(search(pieces(loop), [on2])).toEqual(["1:0>2@0 2:2>4@12 3:4>9@50"]);
   });
 
   test("a detour raising the worst buffer stays", () => {
