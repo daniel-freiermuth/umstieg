@@ -4,8 +4,8 @@ use chrono_tz::UTC;
 use clap::Parser;
 
 use super::{
-    Endpoints, Event, Report, SearchArgs, check_via_ids, extra_time, machine_zone, parse_time_in, ride_source,
-    time_zone,
+    Endpoints, Event, Report, SearchArgs, check_via_ids, dated_at, extra_time, machine_zone, parse_time_in,
+    ride_source, time_zone,
 };
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{self, Builder, at};
@@ -54,6 +54,17 @@ fn dst_gap_is_an_error_and_the_repeated_hour_takes_the_first() {
     assert!(err.to_string().contains("does not exist in Europe/Berlin"), "{err}");
     // 02:30 happens twice on 2026-10-25; the earlier one (CEST) counts.
     assert_eq!(parse_time_in(Some("2026-10-25 02:30"), Berlin, now).unwrap(), utc(2026, 10, 25, 0, 30));
+}
+
+#[test]
+fn now_in_the_repeated_hour_is_dated_as_that_moment() {
+    let args = search_args(&["A", "C", "--time-zone", "Europe/Berlin"]);
+    // 00:30 UTC is the first 02:30 on 2026-10-25 (CEST), 01:30 UTC the second (CET).
+    for now in [utc(2026, 10, 25, 0, 30), utc(2026, 10, 25, 1, 30)] {
+        let at = dated_at(&args, now).unwrap();
+        assert_eq!(parse_time_in(Some(&at), Berlin, now).unwrap(), now, "{at}");
+    }
+    assert_eq!(dated_at(&args, utc(2026, 10, 25, 0, 30)).unwrap(), "2026-10-25T02:30");
 }
 
 #[test]
