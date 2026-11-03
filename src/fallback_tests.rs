@@ -624,12 +624,15 @@ fn every_change_on_the_network_gets_its_fallbacks() {
     assert!(strict.is_empty(), "missed by more than allowed: no change there");
 }
 
+/// After a walked change also from where the next train leaves: ICE 2 leaves
+/// Hbf within the walk's length after ICE 1, so only the search from Hbf finds it.
 #[test]
-fn a_change_with_a_walk_gets_the_fallbacks_from_where_the_train_arrived() {
+fn a_change_with_a_walk_gets_the_fallbacks_from_both_stations() {
     let mut b = Builder::new();
     b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
     b.walk("Zentrum", "Hbf", 8);
     b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -645,4 +648,29 @@ fn a_change_with_a_walk_gets_the_fallbacks_from_where_the_train_arrived() {
     let all = fallbacks.for_network(&crate::usable::of_chains(&tt, [&chain]), TimeDelta::minutes(5)).unwrap();
     let shown: Vec<String> = all.iter().map(|c| show(&tt, &c.steps)).collect();
     assert!(shown.iter().any(|s| s.contains("ICE 3")), "{shown:?}");
+    assert!(shown.iter().any(|s| s == "ICE 2 Hbf-Ziel"), "{shown:?}");
+}
+
+/// The page bounds what it lists from Hbf by the fastest from there, walking
+/// first or not, as `for_change` does: the network holds the walks first too.
+/// Without BUS F the page keeps RE S from Hbf, which `for_change` drops (100m
+/// against 33m + 1h) for RE S walked to from Zentrum.
+#[test]
+fn a_change_with_a_walk_sends_from_where_the_train_leaves_what_walks_first_too() {
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
+    b.walk("Zentrum", "Hbf", 8);
+    b.walk("Hbf", "W", 3);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b.trip("BUS F", &[("W", "", "09:10"), ("Ziel", "09:40", "")]);
+    b.trip("RE S", &[("Hbf", "", "09:20"), ("Ziel", "11:00", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let chain = walked_change(&tt);
+    let lines: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().into_iter().map(|f| f.line).collect();
+    assert_eq!(lines, ["walk 8m to Hbf 09:20 UTC RE S → 11:00 UTC Ziel"]);
+    let all = fallbacks.for_network(&crate::usable::of_chains(&tt, [&chain]), TimeDelta::minutes(5)).unwrap();
+    let shown: Vec<String> = all.iter().map(|c| show(&tt, &c.steps)).collect();
+    assert!(shown.iter().any(|s| s == "walk Hbf-W / BUS F W-Ziel"), "{shown:?}");
 }
