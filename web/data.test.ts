@@ -53,6 +53,7 @@ describe("decodeData", () => {
         [29881992, 9],
       ],
       skips: [],
+      span: [0, 2],
     });
     expect(d.chains[0]).toEqual({ group: 0, header: "09:29 → 10:15  46m  2×  min 1m⚠", pieces: [0, 1, 2, 3, 4] });
     expect(d.details?.[0]?.fallbacks).toEqual([

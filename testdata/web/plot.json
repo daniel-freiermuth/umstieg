@@ -157,7 +157,11 @@
      2
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    1
+   ]
   },
   {
    "kind": "wait",
@@ -174,7 +178,8 @@
      2
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": null
   },
   {
    "kind": "ride",
@@ -199,7 +204,11 @@
      9
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    2
+   ]
   },
   {
    "kind": "wait",
@@ -216,7 +225,8 @@
      9
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": null
   },
   {
    "kind": "ride",
@@ -233,7 +243,11 @@
      1
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    1
+   ]
   },
   {
    "kind": "wait",
@@ -250,7 +264,8 @@
      2
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": null
   },
   {
    "kind": "ride",
@@ -267,7 +282,11 @@
      1
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    1
+   ]
   },
   {
    "kind": "wait",
@@ -284,7 +303,8 @@
      2
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": null
   },
   {
    "kind": "ride",
@@ -309,7 +329,11 @@
      9
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    2
+   ]
   },
   {
    "kind": "wait",
@@ -326,7 +350,8 @@
      9
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": null
   },
   {
    "kind": "ride",
@@ -343,7 +368,11 @@
      1
     ]
    ],
-   "skips": []
+   "skips": [],
+   "span": [
+    0,
+    1
+   ]
   }
  ],
  "network": [

@@ -80,7 +80,8 @@ var decodePiece = (v, path) => {
     warn: field(o, "warn", boolean, path),
     trip: field(o, "trip", nullable(number), path),
     pts: field(o, "pts", array(pair(number, number)), path),
-    skips: field(o, "skips", array(number), path)
+    skips: field(o, "skips", array(number), path),
+    span: field(o, "span", nullable(pair(number, number)), path)
   };
 };
 var decodeDetail = (v, path) => {
@@ -157,13 +158,14 @@ function load(data) {
     minTransfer: l.min_transfer * 60000,
     keepDetours: l.keep_detours
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips }) => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }) => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60000, s]),
     skips,
+    span,
     pts: []
   }));
   const fallbacks = rawFallbacks.map((f) => ({ at: f.at, line: f.line, pieces: f.pieces.map((i) => item(pieces, i)) }));
@@ -446,7 +448,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const walks = new Map;
   for (const p of network.map((pi) => item(pieces, pi))) {
     if (p.trip !== null) {
-      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips) });
+      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips), span: p.span });
       continue;
     }
     if (p.kind !== "walk")
@@ -456,9 +458,13 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
     walks.set(a[1], from);
     from.set(b[1], Math.min(from.get(b[1]) ?? Infinity, b[0] - a[0]));
   }
+  const resumed = new Set(runs.flatMap((r) => r.span ? [`${String(r.trip)}:${String(r.span[0])}`] : []));
   const tripCalls = new Map;
-  for (const run of runs)
-    tripCalls.set(run.trip, [...tripCalls.get(run.trip) ?? [], ...run.calls]);
+  for (const run of runs) {
+    const split = run.span !== null && resumed.has(`${String(run.trip)}:${String(run.span[1])}`);
+    const calls = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
+    tripCalls.set(run.trip, [...tripCalls.get(run.trip) ?? [], ...calls]);
+  }
   for (const calls of tripCalls.values())
     calls.sort((a, b) => (a.dep ?? a.arr ?? 0) - (b.dep ?? b.arr ?? 0));
   const departures = new Map;
@@ -1666,7 +1672,7 @@ function chainOf(c) {
   if (listed !== undefined)
     return listed;
   const add = (p) => {
-    const piece = { ...p, skips: [], pts: [] };
+    const piece = { ...p, skips: [], span: null, pts: [] };
     D.pieces.push(piece);
     return piece;
   };

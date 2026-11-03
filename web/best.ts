@@ -14,13 +14,15 @@ export interface Call {
   dep: number | null;
 }
 
-/** What the search needs of a piece: its kind, train, (ms, station) points and stops passed only. */
+/** What the search needs of a piece: its kind, train, (ms, station) points, stops passed only and calls. */
 export interface Stretch {
   kind: "ride" | "wait" | "walk";
   trip: number | null;
   raw: readonly (readonly [number, number])[];
   /** First points of stops a ride passes without stopping (cancelled): never boarded or left there. */
   skips: readonly number[];
+  /** A ride's first and last call, as positions in its train's calls (where runs of it meet). */
+  span: readonly [number, number] | null;
 }
 
 /** The search's limits, times in ms. */
@@ -182,6 +184,7 @@ interface Run {
   calls: Call[];
   /** Positions in `calls` of the stops passed without stopping. */
   skips: ReadonlySet<number>;
+  span: readonly [number, number] | null;
 }
 
 /** A station the connection stopped at, for the detour rule (as the server's search keeps it). */
@@ -265,7 +268,7 @@ function search(
   for (const p of network.map((pi) => item(pieces, pi))) {
     // Rides carry their train; waits are where connections stood.
     if (p.trip !== null) {
-      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips) });
+      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips), span: p.span });
       continue;
     }
     // Stryker disable next-line ConditionalExpression: a wait taken for a walk leads from a station to itself, never walked (visited).
@@ -276,8 +279,16 @@ function search(
     from.set(b[1], Math.min(from.get(b[1]) ?? Infinity, b[0] - a[0]));
   }
   // Every known stop per train, in time order: where it called before boarding.
+  // A stop the network splits the train into runs at is one call, as the
+  // server has it: the departing run's (an arriving run's last call has no departure).
+  // Stryker disable next-line ArrayDeclaration: unreachable, rides always name their calls.
+  const resumed = new Set(runs.flatMap((r) => (r.span ? [`${String(r.trip)}:${String(r.span[0])}`] : [])));
   const tripCalls = new Map<number, Call[]>();
-  for (const run of runs) tripCalls.set(run.trip, [...(tripCalls.get(run.trip) ?? []), ...run.calls]);
+  for (const run of runs) {
+    const split = run.span !== null && resumed.has(`${String(run.trip)}:${String(run.span[1])}`);
+    const calls = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
+    tripCalls.set(run.trip, [...(tripCalls.get(run.trip) ?? []), ...calls]);
+  }
   for (const calls of tripCalls.values()) calls.sort((a, b) => (a.dep ?? a.arr ?? 0) - (b.dep ?? b.arr ?? 0));
   // Departures per station, earliest first: (run, call, time).
   const departures = new Map<number, [Run, number, number][]>();

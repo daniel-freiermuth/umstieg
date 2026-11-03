@@ -169,6 +169,33 @@ fn rides_name_the_cancelled_calls_they_only_pass() {
 }
 
 #[test]
+fn rides_name_their_first_and_last_call_where_runs_of_the_train_meet() {
+    // ICE 1 calls at A twice; the network splits it at the first and lacks B → A.
+    let mut b = testkit::Builder::new();
+    let ice = b.trip(
+        "ICE 1",
+        &[
+            ("X", "", "08:00"),
+            ("A", "08:10", "08:11"),
+            ("B", "08:20", "08:22"),
+            ("A", "08:30", "08:32"),
+            ("C", "09:20", ""),
+        ],
+    );
+    let tt = b.build("X", "C");
+    let mut network = builder(&tt);
+    let runs = [(0, 1), (1, 2), (3, 4)].map(|(from, to)| crate::usable::RideRun { trip: ice, from, to });
+    let usable = crate::usable::Usable { rides: runs.to_vec(), ..Default::default() };
+    let pieces = super::network_pieces(&mut network, &usable).unwrap();
+    let spans: Vec<_> = pieces.iter().map(|&i| network.pieces[i].span).collect();
+    // Where one run ends and the next starts at the same call, the page counts that call once.
+    assert_eq!(spans, [Some((0, 1)), Some((1, 2)), Some((3, 4))]);
+    // A connection's ride is the same piece as the run it rides whole.
+    let ridden = network.pieces(&Chain { steps: vec![ride(ice, 1, 2)] }, None, None).unwrap();
+    assert_eq!(ridden, [pieces[1]]);
+}
+
+#[test]
 fn waits_carry_the_buffer_and_warn_below_the_minimum_transfer() {
     // (departure at B after arriving 09:00, info, warn, drawn from, drawn to)
     let cases = [
