@@ -2134,11 +2134,10 @@ fn a_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_start(
     );
 }
 
-#[test]
-fn a_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
+/// The journeys from A to B, to C and to D on Trafikverket's train `run` along
+/// A–B–X–C–D, with a bus B–C.
+fn tv_journeys(run: &crate::trafikverket::Run) -> [Vec<String>; 3] {
     use crate::enumerate::{Limits, Network, enumerate};
-    type Moment = Option<crate::trafikverket::Moment>;
-    type Shape = fn(&mut Moment, &mut Moment);
     let stations = tv_stations(&[
         ("A", (57.0, 15.0)),
         ("B", (56.8, 15.0)),
@@ -2147,6 +2146,38 @@ fn a_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
         ("D", (56.4, 15.0)),
     ]);
     let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
+    let mut interned = Stations::default();
+    let fed = fed_trip(run, &by_sig, &mut interned);
+    let mut b = Builder::new();
+    b.stations = interned.list;
+    b.trips = merge(&b.stations, &Boards::new(), HashMap::new(), vec![fed], false);
+    b.trip("Bus 1", &[("B", "", "08:15"), ("C", "08:25", "")]);
+    let mut tt = b.build("A", "D");
+    let limits = Limits {
+        origin: tt.origin,
+        depart_from: at("08:00"),
+        depart_until: at("08:00"),
+        max_changes: 5,
+        extra_time: TimeDelta::hours(12),
+        min_transfer: TimeDelta::minutes(5),
+        missed_by: TimeDelta::zero(),
+        keep_detours: false,
+        forward_only: false,
+        max_nodes: 1_000_000,
+    };
+    [1, 3, 4].map(|destination| {
+        tt.destination = destination;
+        let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let mut shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
+        shown.sort();
+        shown
+    })
+}
+
+#[test]
+fn a_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
+    type Moment = Option<crate::trafikverket::Moment>;
+    type Shape = fn(&mut Moment, &mut Moment);
     let cancel = |m: &mut Moment| m.as_mut().unwrap().cancelled = true;
     // Turned at B, X not served, started again at C. A stop has only the
     // events Trafikverket announces: X or C may have no arrival.
@@ -2165,40 +2196,34 @@ fn a_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
         cancel(&mut run.stops[2].departure);
         let (x, c) = run.stops.split_at_mut(3);
         shape(&mut x[2].arrival, &mut c[0].arrival);
-        let mut interned = Stations::default();
-        let fed = fed_trip(&run, &by_sig, &mut interned);
-        let label = fed.0.label.clone();
-        let mut b = Builder::new();
-        b.stations = interned.list;
-        b.trips = merge(&b.stations, &Boards::new(), HashMap::new(), vec![fed], false);
-        b.trip("Bus 1", &[("B", "", "08:15"), ("C", "08:25", "")]);
-        let mut tt = b.build("A", "D");
-        let limits = Limits {
-            origin: tt.origin,
-            depart_from: at("08:00"),
-            depart_until: at("08:00"),
-            max_changes: 5,
-            extra_time: TimeDelta::hours(12),
-            min_transfer: TimeDelta::minutes(5),
-            missed_by: TimeDelta::zero(),
-            keep_detours: false,
-            forward_only: false,
-            max_nodes: 1_000_000,
-        };
-        let mut listed = |destination: usize| {
-            tt.destination = destination;
-            let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
-            let mut shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
-            shown.sort();
-            shown
-        };
-        assert_eq!(listed(1), [format!("{label} A-B")], "{case}: B, where it ends, is reached on it");
-        assert_eq!(listed(3), [format!("{label} A-B / Bus 1 B-C")], "{case}: C, where it starts again, isn't");
+        let label = run.label();
+        let [b, c, d] = tv_journeys(&run);
+        assert_eq!(b, [format!("{label} A-B")], "{case}: B, where it ends, is reached on it");
+        assert_eq!(c, [format!("{label} A-B / Bus 1 B-C")], "{case}: C, where it starts again, isn't");
         assert_eq!(
-            listed(4),
+            d,
             [format!("{label} A-B / Bus 1 B-C / {label} C-D")],
             "{case}: nor D, past the stretch it doesn't run"
         );
+    }
+}
+
+#[test]
+fn a_train_skipping_a_stop_is_ridden_through_it() {
+    // X cancelled both ways, B's departure and C's arrival not: the train
+    // runs on through X, whether or not C has an arrival announced.
+    for (case, c_arrival) in [("C's arrival announced", true), ("C without an arrival", false)] {
+        let mut run = tv_run("1", Regional, &["A", "B", "X", "C", "D"]);
+        run.stops[2].arrival.as_mut().unwrap().cancelled = true;
+        run.stops[2].departure.as_mut().unwrap().cancelled = true;
+        if !c_arrival {
+            run.stops[3].arrival = None;
+        }
+        let label = run.label();
+        let [_, c, d] = tv_journeys(&run);
+        // The bus gets there earlier, with a change.
+        assert_eq!(c, [format!("{label} A-B / Bus 1 B-C"), format!("{label} A-C")], "{case}: C is reached on it");
+        assert_eq!(d, [format!("{label} A-D")], "{case}: so is D");
     }
 }
 
