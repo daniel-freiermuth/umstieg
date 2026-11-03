@@ -391,7 +391,7 @@ function meets(steps, n) {
     case "walk":
       return steps.some((s) => s.kind === "walk" && s.from === n.from && s.to === n.to && s.start === n.at);
     case "station":
-      return steps.some((s) => s.kind === "walk" ? s.from === n.station || s.to === n.station : s.calls.some((c) => c.station === n.station));
+      return steps.some((s) => s.kind === "walk" ? s.from === n.station || s.to === n.station : s.calls.some((c, k) => c.station === n.station && !s.passes.includes(k)));
     case "stay":
       return presence(steps).some(([s, a, b]) => s === n.station && a <= n.at && n.at <= b);
   }
@@ -411,9 +411,10 @@ function presence(steps) {
       continue;
     if (here && first.dep !== null)
       out.push([here[0], Math.min(here[1], first.dep), Math.max(here[1], first.dep)]);
-    for (const c of s.calls.slice(1, -1))
-      if (c.arr !== null && c.dep !== null)
+    s.calls.slice(1, -1).forEach((c, k) => {
+      if (c.arr !== null && c.dep !== null && !s.passes.includes(k + 1))
         out.push([c.station, c.arr, c.dep]);
+    });
     here = last.arr === null ? null : [last.station, last.arr];
   }
   return out;
@@ -587,16 +588,18 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         slack = Math.min(slack ?? Infinity, dep - ready);
       used.add(run.trip);
       rides++;
-      const passed = [];
+      const passed = [], through = [];
       for (let j = k + 1;j < run.calls.length; j++) {
         const c = item(run.calls, j);
         if (visited[c.station] || c.arr === null || c.arr > limit || c.arr < dep)
           break;
         visited[c.station] = 1;
         passed.push(c.station);
-        if (run.skips.has(j))
+        if (run.skips.has(j)) {
+          through.push(j - k);
           continue;
-        steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1) });
+        }
+        steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
         presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);
         presence2.pop();
@@ -889,6 +892,19 @@ var byText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 var arrive = (lands, planned, clock) => `${clock(lands)} (+${duration(Math.max(0, lands - planned))})`;
 
 // reach.ts
+function callsAt(p) {
+  if (p.skips.length === 0)
+    return () => true;
+  const passed = new Set;
+  let skipped = false;
+  p.raw.forEach(([t, s], i) => {
+    if (p.raw[i - 1]?.[1] !== s)
+      skipped = p.skips.includes(i);
+    if (skipped)
+      passed.add(`${String(t)}:${String(s)}`);
+  });
+  return (x) => !passed.has(`${String(x[0])}:${String(x[2])}`);
+}
 function covers(segments, lines, spot) {
   if ("piece" in spot) {
     const { piece, from, to } = spot;
@@ -898,10 +914,10 @@ function covers(segments, lines, spot) {
   return segments.some(([pi, a, b]) => {
     if (t < a || t > b)
       return false;
-    const pts = item(lines, pi).pts;
-    return pts.some((q, k) => {
-      const p = pts[k - 1];
-      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0];
+    const line = item(lines, pi), calls = callsAt(line);
+    return line.pts.some((q, k) => {
+      const p = line.pts[k - 1];
+      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0] && calls(p);
     });
   });
 }
@@ -964,6 +980,10 @@ function intersectReach(segmentLists) {
   }
   return out;
 }
+function onStretch(r) {
+  const [[t, , s]] = r.pts;
+  return { at: [], back: r.stops[0] ? [[s, t]] : [], ride: { trip: r.trip, from: t, until: t } };
+}
 var atMost = (v, t) => v !== undefined && v <= t;
 var atLeast = (v, t) => v !== undefined && v >= t;
 function early(ea, foot, x, t) {
@@ -989,10 +1009,12 @@ function network(pieces, base, chains, visible) {
   for (const pi of base) {
     const p = item(pieces, pi);
     if (p.trip !== null) {
+      const stops = callsAt(p);
       for (let k = 1;k < p.pts.length; k++) {
         const a = item(p.pts, k - 1), b = item(p.pts, k);
-        rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set });
-        if (a[2] === b[2])
+        const at = [stops(a), stops(b)];
+        rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set, stops: at });
+        if (a[2] === b[2] && at[0])
           stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
       }
     } else if (p.kind === "wait") {
@@ -1010,13 +1032,15 @@ function network(pieces, base, chains, visible) {
       return;
     for (const pi of c.pieces) {
       const p = item(pieces, pi);
-      for (const [, , s] of p.pts)
-        entry(touching, s, () => new Set).add(i);
+      const calls = callsAt(p);
+      for (const q of p.pts)
+        if (calls(q))
+          entry(touching, q[2], () => new Set).add(i);
       if (p.trip !== null) {
         for (let k = 1;k < p.pts.length; k++) {
           const a = item(p.pts, k - 1), b = item(p.pts, k);
           rides.get(stretchKey(p.trip, a, b))?.chains.add(i);
-          if (a[2] === b[2])
+          if (a[2] === b[2] && calls(a))
             entry(present, a[2], () => []).push({ from: a[0], to: b[0], chain: i });
         }
       } else if (p.kind === "wait") {
@@ -1069,11 +1093,11 @@ function network(pieces, base, chains, visible) {
         for (const r of group) {
           const [a, b] = r.pts;
           const since = boarded.get(r.trip);
-          if (ahead.has(r) || !(since !== undefined && a[0] >= since || atMost(ea.get(a[2]), a[0])))
+          if (ahead.has(r) || !(since !== undefined && a[0] >= since || r.stops[0] && atMost(ea.get(a[2]), a[0])))
             continue;
           boarded.set(r.trip, a[0]);
           const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
-          if (!boarding)
+          if (!boarding && r.stops[1])
             early(ea, foot, b[2], b[0]);
           ahead.add(r);
           again ||= b[0] === a[0];
@@ -1087,10 +1111,11 @@ function network(pieces, base, chains, visible) {
         for (const r of group) {
           const [a, b] = r.pts;
           const until = alighted.get(r.trip);
-          if (behind.has(r) || !(until !== undefined && b[0] <= until || atLeast(ld.get(b[2]), b[0])))
+          if (behind.has(r) || !(until !== undefined && b[0] <= until || r.stops[1] && atLeast(ld.get(b[2]), b[0])))
             continue;
           alighted.set(r.trip, b[0]);
-          late(ld, footBack, a[2], a[0]);
+          if (r.stops[0])
+            late(ld, footBack, a[2], a[0]);
           behind.add(r);
           again ||= b[0] === a[0];
         }
@@ -1365,7 +1390,7 @@ function buildModel() {
           reach: {
             key: id,
             with: e.chains,
-            segments: closure({ at: [], back: [[a[2], a[0]]], ride: { trip: e.trip, from: a[0], until: a[0] } })
+            segments: closure(onStretch(e))
           }
         };
         return t;

@@ -14,9 +14,26 @@ export type Segment = [piece: number, from: number, to: number];
 export type Spot = { piece: number; from: number; to: number } | { station: number; t: number };
 
 /**
+ * Whether `p` calls at a point of it: not at the points of a call it only
+ * passes (cancelled), as `raw` and `skips` name them; points at the station
+ * of the one before belong to its call.
+ */
+function callsAt(p: Line): (x: Pt) => boolean {
+  if (p.skips.length === 0) return () => true;
+  const passed = new Set<string>();
+  let skipped = false;
+  p.raw.forEach(([t, s], i) => {
+    if (p.raw[i - 1]?.[1] !== s) skipped = p.skips.includes(i);
+    if (skipped) passed.add(`${String(t)}:${String(s)}`);
+  });
+  return (x) => !passed.has(`${String(x[0])}:${String(x[2])}`);
+}
+
+/**
  * Whether a highlight's `segments` cover `spot`: a stretch shares time with a
  * segment of its piece (an instant one lies in it); a moment at a station
- * lies in a segment of a piece staying there then (a wait, a standing train).
+ * lies in a segment of a piece staying there then (a wait, a standing train;
+ * a train only passing it is not there).
  */
 export function covers(segments: readonly Segment[], lines: readonly Line[], spot: Spot): boolean {
   if ("piece" in spot) {
@@ -26,10 +43,11 @@ export function covers(segments: readonly Segment[], lines: readonly Line[], spo
   const { station, t } = spot;
   return segments.some(([pi, a, b]) => {
     if (t < a || t > b) return false;
-    const pts = item(lines, pi).pts;
-    return pts.some((q, k) => {
-      const p = pts[k - 1];
-      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0];
+    const line = item(lines, pi),
+      calls = callsAt(line);
+    return line.pts.some((q, k) => {
+      const p = line.pts[k - 1];
+      return p?.[2] === station && q[2] === station && p[0] <= t && t <= q[0] && calls(p);
     });
   });
 }
@@ -60,6 +78,9 @@ export interface Line {
   warn: boolean;
   trip: number | null;
   pts: readonly Pt[];
+  /** Points as (time, station), and the first point of each call it only passes (cancelled). */
+  raw: readonly (readonly [number, number])[];
+  skips: readonly number[];
 }
 /** A connection: its pieces by index. */
 export interface Route {
@@ -164,15 +185,18 @@ export interface Ride {
   /** The network piece it is part of. */
   piece: number;
   chains: Set<number>;
+  /** Whether the train calls at its start (end): can be boarded (left) there; false where it only passes. */
+  stops: [boolean, boolean];
 }
 
 /**
  * Where hovering a stretch of a train starts: on the train from the
- * stretch's start on (and up to it), and at that station by then.
+ * stretch's start on (and up to it), and at that station by then, if the
+ * train calls there (where it only passes, nothing led onto it there).
  */
-export function onStretch(r: Pick<Ride, "trip" | "pts">): Source {
+export function onStretch(r: Pick<Ride, "trip" | "pts" | "stops">): Source {
   const [[t, , s]] = r.pts;
-  return { at: [], back: [[s, t]], ride: { trip: r.trip, from: t, until: t } };
+  return { at: [], back: r.stops[0] ? [[s, t]] : [], ride: { trip: r.trip, from: t, until: t } };
 }
 /** The plot's network: everything on some connection, and the listed connections in it. */
 export interface Network {
@@ -186,7 +210,7 @@ export interface Network {
   walks: Map<number, Set<number>>;
   /** The listed connections at a station at a time (waiting or in a standing train). */
   chainsAt: (station: number, t: number) => number[];
-  /** Per station: every listed connection with a point there. */
+  /** Per station: every listed connection with a point there (not where it only passes). */
   touching: Map<number, Set<number>>;
   /** Everything reachable from a source, transitively over all rides and walks. */
   reach: (src: Source) => Segment[];
@@ -243,11 +267,14 @@ export function network(
     const p = item(pieces, pi);
     // Rides carry their train, waits and walks none.
     if (p.trip !== null) {
+      const stops = callsAt(p);
       for (let k = 1; k < p.pts.length; k++) {
         const a = item(p.pts, k - 1),
           b = item(p.pts, k);
-        rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set() });
-        if (a[2] === b[2]) stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
+        const at: [boolean, boolean] = [stops(a), stops(b)];
+        rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set(), stops: at });
+        // Passing a stop is no standing there.
+        if (a[2] === b[2] && at[0]) stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
       }
     } else if (p.kind === "wait") {
       const first = p.pts[0],
@@ -265,13 +292,15 @@ export function network(
     if (!visible(i)) return;
     for (const pi of c.pieces) {
       const p = item(pieces, pi);
-      for (const [, , s] of p.pts) entry(touching, s, () => new Set()).add(i);
+      const calls = callsAt(p);
+      // Passing a station (a cancelled call) is not being there.
+      for (const q of p.pts) if (calls(q)) entry(touching, q[2], () => new Set()).add(i);
       if (p.trip !== null) {
         for (let k = 1; k < p.pts.length; k++) {
           const a = item(p.pts, k - 1),
             b = item(p.pts, k);
           rides.get(stretchKey(p.trip, a, b))?.chains.add(i);
-          if (a[2] === b[2]) entry(present, a[2], () => []).push({ from: a[0], to: b[0], chain: i });
+          if (a[2] === b[2] && calls(a)) entry(present, a[2], () => []).push({ from: a[0], to: b[0], chain: i });
         }
       } else if (p.kind === "wait") {
         const first = p.pts[0],
@@ -339,12 +368,13 @@ export function network(
         for (const r of group) {
           const [a, b] = r.pts;
           const since = boarded.get(r.trip);
-          if (ahead.has(r) || !((since !== undefined && a[0] >= since) || atMost(ea.get(a[2]), a[0]))) continue;
+          if (ahead.has(r) || !((since !== undefined && a[0] >= since) || (r.stops[0] && atMost(ea.get(a[2]), a[0]))))
+            continue;
           boarded.set(r.trip, a[0]);
           // The picked train standing where it is boarded: being on it there
           // is no getting off to wait for a later one.
           const boarding = src.ride?.trip === r.trip && b[0] <= src.ride.from;
-          if (!boarding) early(ea, foot, b[2], b[0]);
+          if (!boarding && r.stops[1]) early(ea, foot, b[2], b[0]);
           ahead.add(r);
           // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
           again ||= b[0] === a[0];
@@ -358,9 +388,10 @@ export function network(
         for (const r of group) {
           const [a, b] = r.pts;
           const until = alighted.get(r.trip);
-          if (behind.has(r) || !((until !== undefined && b[0] <= until) || atLeast(ld.get(b[2]), b[0]))) continue;
+          if (behind.has(r) || !((until !== undefined && b[0] <= until) || (r.stops[1] && atLeast(ld.get(b[2]), b[0]))))
+            continue;
           alighted.set(r.trip, b[0]);
-          late(ld, footBack, a[2], a[0]);
+          if (r.stops[0]) late(ld, footBack, a[2], a[0]);
           behind.add(r);
           // Stryker disable next-line ConditionalExpression: repeating anyway only costs a pass.
           again ||= b[0] === a[0];
