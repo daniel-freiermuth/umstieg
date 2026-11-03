@@ -105,6 +105,10 @@ impl<'n> Fallbacks<'n> {
                         changes.insert((station, departure, at));
                         // As `for_change` lists them: from the arrival on (the same unless missed).
                         changes.insert((station, departure, arrival));
+                        // After a walk, as both list them: also from where the next train
+                        // leaves (without a walk, the first again). All of them, also what
+                        // walks first: the fastest of those bounds what is listed from there.
+                        changes.insert((call.station, departure, at));
                     }
                 }
             }
