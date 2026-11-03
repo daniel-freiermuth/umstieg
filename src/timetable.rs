@@ -1539,6 +1539,8 @@ fn merge(
     // Trains from those feeds by number: the same number at the same time at
     // one station is one train, whatever class the feeds gave it.
     let mut feed_by_number: HashMap<u32, Vec<usize>> = HashMap::new();
+    // Trips from `planned` on are the planners' own, with no board or fed train.
+    let planned = trips.len();
     for (id, motis) in raw {
         let by_number = motis.numbers.iter().find_map(|n| {
             by_number.get(n)?.iter().copied().find(|&i| {
@@ -1586,13 +1588,46 @@ fn merge(
                     // Altona; different product classes are different trains.
                     let same_class =
                         !matches!((motis.class, trips.get(i).and_then(|t| t.class)), (Some(a), Some(b)) if a != b);
-                    if same_class && (close(arr, other_arr) || close(dep, other_dep)) {
+                    // A planner's trams and buses carry no train number and
+                    // follow each other a minute or two apart: their copies
+                    // differ by rounding at most. So do a tram-train's, which
+                    // one feed may call a tram and the other an S-Bahn.
+                    let local = i >= planned
+                        && trips.get(i).is_some_and(|t| motis.class.is_none() || t.class.is_none());
+                    let tolerance = if local { TimeDelta::minutes(1) } else { SAME_TIME };
+                    let same = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| {
+                        matches!((a, b), (Some(a), Some(b)) if a.signed_duration_since(b).abs() <= tolerance)
+                    };
+                    if same_class && (same(arr, other_arr) || same(dep, other_dep)) {
                         let count = shared.entry(i).or_default();
                         *count = count.saturating_add(1);
                     }
                 }
             }
-            shared.into_iter().filter(|&(_, n)| n >= 2).max_by_key(|&(i, n)| (n, Reverse(i))).map(|(i, _)| i)
+            // A planner's trip has no board behind it: a copy goes into it
+            // only as one run (`one_run`), or a split train's halves become
+            // one trip, and only as the same service, or a ride on two lines'
+            // trunk joins the other line's run. Trains numbered both ways are
+            // one by a number, or coupled where the copy runs (`same_times`,
+            // at no station of its own); a train numbered one way only, a
+            // tram or a bus by its name (`named_alike`), a train also by the
+            // very times (Entur's "Op" Öresundståg).
+            let copy = |base: &Trip| {
+                let rail = motis.class.is_some() && base.class.is_some();
+                let numbered = !base.numbers.is_empty() && !motis.numbers.is_empty();
+                let same = if rail && numbered {
+                    let within = motis.calls.iter().all(|c| base.call_at(c.station).is_some());
+                    base.numbers.iter().any(|n| motis.numbers.contains(n)) || (within && same_times(base, &motis))
+                } else {
+                    named_alike(base, &motis) || (rail && same_times(base, &motis))
+                };
+                same && one_run(base, &motis)
+            };
+            shared
+                .into_iter()
+                .filter(|&(i, n)| n >= 2 && (i < planned || trips.get(i).is_some_and(copy)))
+                .max_by_key(|&(i, n)| (n, Reverse(i)))
+                .map(|(i, _)| i)
         });
         let target = twin.and_then(|i| Some((i, trips.get_mut(i)?, routes.get(i)?)));
         if let Some((i, trip, route)) = target {
@@ -1761,6 +1796,40 @@ fn one_run(base: &Trip, other: &Trip) -> bool {
     let (Some(theirs), Some(ours)) = (ends(|s| s.0), ends(|s| s.1)) else { return false };
     let (a, b) = (own_stops(&other.calls, base, theirs), own_stops(&base.calls, other, ours));
     same_way && !((a.0 && b.0) || (a.1 && b.1))
+}
+
+/// Whether `other` has `base`'s very times at every station both list.
+fn same_times(base: &Trip, other: &Trip) -> bool {
+    let same = |a: Option<Time>, b: Option<Time>| a.zip(b).is_none_or(|(a, b)| a.planned == b.planned);
+    other
+        .calls
+        .iter()
+        .all(|c| base.call_at(c.station).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure)))
+}
+
+/// Whether two planners' copies are named as one service: by the line, or
+/// one naming the other's number ("Zug 4711" and "RB44 (4711)").
+fn named_alike(a: &Trip, b: &Trip) -> bool {
+    let names = |x: &Trip, y: &Trip| {
+        let digits = name(&x.label).split(|c: char| !c.is_ascii_digit());
+        y.numbers.iter().any(|&n| digits.clone().any(|d| d.parse::<u32>().ok() == Some(n)))
+    };
+    let (la, lb) = (line(&a.label), line(&b.label));
+    (!la.is_empty() && la == lb) || names(a, b) || names(b, a)
+}
+
+/// A service's label without the train number `Leg::label` adds: "RE2" in
+/// "RE2 (10234)". Feeds numbering trams by their line give "Tram 1 (40004)"
+/// and "Tram 4 (40004)", which name no number of their own.
+fn name(label: &str) -> &str {
+    let numbered = |(_, n): &(&str, &str)| n.parse::<u32>().is_ok();
+    label.trim_end().strip_suffix(')').and_then(|l| l.rsplit_once('(')).filter(numbered).map_or(label, |(l, _)| l)
+}
+
+/// A service's line as its `name` ends: "4" in "RNV 4", "4" and
+/// "RNV 4 (12345)", "RE2" in "RE2 (10234)".
+fn line(label: &str) -> &str {
+    name(label).split_whitespace().next_back().unwrap_or_default().trim_matches(|c: char| !c.is_alphanumeric())
 }
 
 /// Whether `calls` has stops `of` doesn't list before and after `(lo, hi)`.
