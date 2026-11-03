@@ -766,8 +766,9 @@ fn write_groups(
 
 /// For `at` relative to `now` (nothing, "HH:MM"): the date and time it stands
 /// for in the search's zone, as "YYYY-MM-DDTHH:MM", so that a link names one
-/// search, not whichever "now" it is opened at. `None` for a dated `at`, or
-/// one that won't parse.
+/// search, not whichever "now" it is opened at. In the second of a repeated
+/// hour, which that would read as the first, with the offset:
+/// "YYYY-MM-DDTHH:MM+01:00". `None` for a dated `at`, or one that won't parse.
 pub fn dated_at(args: &SearchArgs, now: DateTime<Utc>) -> Option<String> {
     let at = args.at.as_deref().filter(|a| !a.is_empty());
     if at.is_some_and(|a| NaiveTime::parse_from_str(a, "%H:%M").is_err()) {
@@ -778,12 +779,20 @@ pub fn dated_at(args: &SearchArgs, now: DateTime<Utc>) -> Option<String> {
         None => machine_zone().ok()?,
     };
     let time = parse_time_in(at, zone, now).ok()?;
-    Some(time.with_timezone(&zone).format("%Y-%m-%dT%H:%M").to_string())
+    let local = time.with_timezone(&zone);
+    let wall = local.format("%Y-%m-%dT%H:%M").to_string();
+    let first = zone.from_local_datetime(&local.naive_local()).earliest();
+    let repeated = first.is_some_and(|first| first != local);
+    Some(if repeated { format!("{wall}{}", local.format("%:z")) } else { wall })
 }
 
-/// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`.
+/// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`;
+/// "YYYY-MM-DDTHH:MM+01:00" (from `dated_at`) is that moment.
 fn parse_time_in(at: Option<&str>, zone: Tz, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(now) };
+    if let Ok(t) = DateTime::parse_from_str(at, "%Y-%m-%dT%H:%M%:z") {
+        return Ok(t.with_timezone(&Utc));
+    }
     let naive = if let Ok(t) = NaiveTime::parse_from_str(at, "%H:%M") {
         NaiveDateTime::new(now.with_timezone(&zone).date_naive(), t)
     } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M") {
