@@ -652,7 +652,7 @@ function header(c, minTransfer, clock) {
   const min = c.slack === null ? "direct" : `min ${buffer(c.slack, minTransfer)}`;
   return `${clock(c.departure)} → ${clock(c.arrival)}  ${duration(c.arrival - c.departure)}  ${String(c.changes)}×  ${min}`;
 }
-function route(c, names, trips, minTransfer, clock, rejoin = null) {
+function route(c, names, trips, minTransfer, clock, rejoin = null, start = null) {
   const name = (s) => item(names, s);
   const rides = c.steps.flatMap((s, i) => s.kind === "ride" ? [i] : []);
   const [first, final] = [rides[0] ?? 0, rides[rides.length - 1] ?? 0];
@@ -675,6 +675,8 @@ function route(c, names, trips, minTransfer, clock, rejoin = null) {
       parts.push(`‖${buffer(a.dep - last[1] - walked, minTransfer)}${walk}‖`);
       if (name(a.station) !== name(last[0]))
         from = ` ${name(a.station)}`;
+    } else if (start !== null && c.steps[0]?.kind === "ride" && name(a.station) !== name(start)) {
+      from = ` ${name(a.station)}`;
     }
     if (ride === rejoin) {
       parts.push(`${clock(a.dep)}${from} ${trainName(item(trips, s.trip))} (back on plan)`);
@@ -806,9 +808,17 @@ class Fallbacks {
     const g = this.ground;
     const t = item(transfers(plan), change);
     const rejoin = rejoins(plan);
-    const ranked = this.candidates(t.station, t.departure, t.ready).map((c) => {
+    let candidates = this.candidates(t.station, t.departure, t.ready);
+    const rides = plan.steps.filter((s) => s.kind === "ride");
+    const boardsAt = item(item(rides, change + 1).calls, 0).station;
+    if (boardsAt !== t.station) {
+      const listed = new Set(candidates.map((c) => way(c.steps)));
+      const fromBoarding = this.candidates(boardsAt, t.departure, t.ready).filter((c) => c.steps[0]?.kind === "ride" && !ridesBack(c, listed));
+      candidates = once([...candidates, ...fromBoarding]);
+    }
+    const ranked = candidates.map((c) => {
       const { back, changes, slack, lands } = standing(c, rejoin, plan.arrival);
-      const line = route(c, g.names, g.trips, g.limits.minTransfer, g.clock, back);
+      const line = route(c, g.names, g.trips, g.limits.minTransfer, g.clock, back, t.station);
       return { c, back, changes, slack, lands, line };
     });
     ranked.sort((a, b) => a.lands - b.lands || a.changes - b.changes || b.slack - a.slack || byText(a.line, b.line));
@@ -825,6 +835,44 @@ class Fallbacks {
       })
     }));
   }
+}
+var way = (steps) => signature(steps.map((s) => ({ ...s, start: 0, end: 0 })));
+function ridesBack(c, listed) {
+  const listedOn = (steps) => listed.has(way(steps));
+  let changed = false;
+  for (const [i, s] of c.steps.entries()) {
+    const rest = c.steps.slice(i + 1);
+    if (s.kind === "ride") {
+      const through = s.calls.slice(1, -1);
+      if (changed && through.some((_, k) => listedOn([{ ...s, calls: s.calls.slice(k + 1) }, ...rest])))
+        return true;
+      changed = true;
+    }
+    if (listedOn(rest))
+      return true;
+  }
+  return false;
+}
+function once(found) {
+  const copies = found.flatMap((c) => {
+    const first = c.steps.findIndex((s) => s.kind === "ride");
+    const ride = c.steps[first];
+    if (ride?.kind !== "ride")
+      return [];
+    const end = item(ride.calls, ride.calls.length - 1);
+    const key = `${String(ride.trip)}>${String(end.station)}@${String(end.arr)} ${way(c.steps.slice(first + 1))}`;
+    return [{ c, key, board: ride.calls.length, walked: first > 0 }];
+  });
+  copies.sort((a, b) => b.board - a.board);
+  const direct = new Set(copies.filter((x) => !x.walked).map((x) => `${x.key}|${String(x.board)}`));
+  const slots = new Set;
+  return copies.filter((x) => {
+    const slot = x.walked ? `${x.key}|${String(x.board)}` : x.key;
+    if (slots.has(slot) || x.walked && direct.has(slot))
+      return false;
+    slots.add(slot);
+    return true;
+  }).map((x) => x.c);
 }
 function rejoins(plan) {
   return new Map(plan.steps.flatMap((s) => s.kind === "ride" ? [[s.trip, alightAt(s)]] : []));

@@ -2,8 +2,8 @@
 // (best.ts): as the server's src/fallback.rs, over the network it sends, which
 // holds the stretches of every fallback of every change on it.
 
-import { type Connection, type Limits, type Stretch, alightAt, boardAt, everyConnection } from "./best";
-import { type Clock, type Drawn, duration, piecesOf, route } from "./connections";
+import { type Connection, type Limits, type Step, type Stretch, alightAt, boardAt, everyConnection } from "./best";
+import { type Clock, type Drawn, duration, piecesOf, route, signature } from "./connections";
 import { item } from "./util";
 
 /** How long after a missed train fallbacks may leave, and how they're bounded. */
@@ -103,9 +103,29 @@ export class Fallbacks {
     const g = this.ground;
     const t = item(transfers(plan), change);
     const rejoin = rejoins(plan);
-    const ranked = this.candidates(t.station, t.departure, t.ready).map((c) => {
+    // From where the train arrived: after a change with a walk, fallbacks walk
+    // there too, or elsewhere. And from where the missed train left, once
+    // walked there: a walk starting there counts only from after the missed
+    // departure, but the traveller already stands there, and may leave right after it.
+    let candidates = this.candidates(t.station, t.departure, t.ready);
+    const rides = plan.steps.filter((s) => s.kind === "ride");
+    const boardsAt = item(item(rides, change + 1).calls, 0).station;
+    // Stryker disable next-line ConditionalExpression: the same without it, from one station the search lists each chain once.
+    if (boardsAt !== t.station) {
+      // From there, only what boards a train right there, and doesn't come
+      // back for what is listed from where the train arrived: the fallbacks
+      // are shown from there, so a walk first would be shown as one from
+      // there, and the rest is a second copy.
+      const listed = new Set(candidates.map((c) => way(c.steps)));
+      const fromBoarding = this.candidates(boardsAt, t.departure, t.ready).filter(
+        (c) => c.steps[0]?.kind === "ride" && !ridesBack(c, listed),
+      );
+      candidates = once([...candidates, ...fromBoarding]);
+    }
+    const ranked = candidates.map((c) => {
       const { back, changes, slack, lands } = standing(c, rejoin, plan.arrival);
-      const line = route(c, g.names, g.trips, g.limits.minTransfer, g.clock, back);
+      // A first train from where the missed one left is named with its station.
+      const line = route(c, g.names, g.trips, g.limits.minTransfer, g.clock, back, t.station);
       return { c, back, changes, slack, lands, line };
     });
     ranked.sort((a, b) => a.lands - b.lands || a.changes - b.changes || b.slack - a.slack || byText(a.line, b.line));
@@ -124,6 +144,61 @@ export class Fallbacks {
       }),
     }));
   }
+}
+
+/** The same trains and walks, as the server's steps: a walk whenever it is taken (rides keep their calls' times). */
+const way = (steps: readonly Step[]): string => signature(steps.map((s) => ({ ...s, start: 0, end: 0 })));
+
+/**
+ * Whether `c` goes on as one of the `listed` connections (by `way`) does,
+ * after a train or a walk, or from a stop ridden through after a change: the
+ * listed ones leave where the train arrived, so `c` came back there. Riding
+ * through on the first train is that connection boarded elsewhere (`once`).
+ */
+function ridesBack(c: Connection, listed: ReadonlySet<string>): boolean {
+  const listedOn = (steps: readonly Step[]): boolean => listed.has(way(steps));
+  let changed = false;
+  for (const [i, s] of c.steps.entries()) {
+    const rest = c.steps.slice(i + 1);
+    if (s.kind === "ride") {
+      // Stryker disable next-line MethodExpression: the same over every call: on from the first is checked after the step before, from the last never listed.
+      const through = s.calls.slice(1, -1);
+      if (changed && through.some((_, k) => listedOn([{ ...s, calls: s.calls.slice(k + 1) }, ...rest]))) return true;
+      changed = true;
+    }
+    if (listedOn(rest)) return true;
+  }
+  return false;
+}
+
+/**
+ * Each fallback once: the same connection from its first train on, boarded
+ * without a walk, is one fallback, boarded where it calls first. Walked to,
+ * it is one of its own, unless also boarded at that call without a walk.
+ */
+function once(found: readonly Connection[]): Connection[] {
+  const copies = found.flatMap((c) => {
+    const first = c.steps.findIndex((s) => s.kind === "ride");
+    const ride = c.steps[first];
+    if (ride?.kind !== "ride") return [];
+    const end = item(ride.calls, ride.calls.length - 1);
+    // The train, where it is left and all after it; where it is boarded:
+    // of the same train left at the same call, the more calls, the earlier.
+    const key = `${String(ride.trip)}>${String(end.station)}@${String(end.arr)} ${way(c.steps.slice(first + 1))}`;
+    return [{ c, key, board: ride.calls.length, walked: first > 0 }];
+  });
+  // Earliest boarding first: of the copies in a slot, the first stays.
+  copies.sort((a, b) => b.board - a.board);
+  const direct = new Set(copies.filter((x) => !x.walked).map((x) => `${x.key}|${String(x.board)}`));
+  const slots = new Set<string>();
+  return copies
+    .filter((x) => {
+      const slot = x.walked ? `${x.key}|${String(x.board)}` : x.key;
+      if (slots.has(slot) || (x.walked && direct.has(slot))) return false;
+      slots.add(slot);
+      return true;
+    })
+    .map((x) => x.c);
 }
 
 /**
