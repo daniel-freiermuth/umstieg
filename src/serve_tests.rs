@@ -472,7 +472,9 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
     let (path, rest, at) = link_at(&headers[header::LOCATION.as_str()]);
     assert_eq!((path.as_str(), &rest), ("/search", &same));
     let minute = |t: chrono::DateTime<chrono_tz::Tz>| t.format("%Y-%m-%dT%H:%M").to_string();
-    assert!([minute(before), minute(after)].contains(&at), "{at} is not now");
+    // In the second of a repeated hour, with the offset that tells it from the first.
+    let exact = |t: chrono::DateTime<chrono_tz::Tz>| t.format("%Y-%m-%dT%H:%M%:z").to_string();
+    assert!([minute(before), minute(after), exact(before), exact(after)].contains(&at), "{at} is not now");
 
     // "HH:MM" is today.
     let (code, headers, page) = get_page(&app, &format!("/search?from=A&to=C&{zone}&at=08:00")).await;
