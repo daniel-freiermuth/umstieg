@@ -3106,7 +3106,7 @@ async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apar
     let south_tie = [("Y", "", "09:58"), ("B", "10:01", "10:01"), ("A", "10:01", "10:01"), ("X", "10:04", "")];
     let tie_ride = [("A", "", "10:01"), ("B", "10:01", "")];
     // (what, one service, another)
-    let cases: [(&str, Service, Service); 15] = [
+    let cases: [(&str, Service, Service); 16] = [
         ("a split ICE's halves", ice("ICE 548", "548", essen), ice("ICE 558", "558", wuppertal)),
         ("tram lines on a common trunk", line(Mode::Tram, "Tram 1", &to_r), line(Mode::Tram, "Tram 4", &to_s)),
         ("tram lines joining a common trunk", line(Mode::Tram, "Tram 1", &from_r), line(Mode::Tram, "Tram 4", &from_s)),
@@ -3142,6 +3142,13 @@ async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apar
         ),
         ("a short-turning tram behind another", line(Mode::Tram, "Tram 4", &to_s), line(Mode::Tram, "Tram 4", &short)),
         ("a line's runs 2 minutes apart", line(Mode::Subway, "U4", &early), line(Mode::Subway, "U4", &to_s)),
+        // A tram-train (Karlsruhe's S-lines): one feed calls it a tram, the
+        // other an S-Bahn, both number it by its line.
+        (
+            "a tram-train's runs 2 minutes apart, a tram in one feed",
+            line(Mode::Tram, "S5", &early),
+            line(Mode::Suburban, "S5", &to_s),
+        ),
     ];
     // One feed, EFA and Transitous, two of Transitous's feeds.
     let ids = [
