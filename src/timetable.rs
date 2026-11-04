@@ -1511,6 +1511,12 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
     }
     if open && let Some(end) = end {
         gap.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
+    } else if board_calls.last().is_some_and(|c| c.cancelled)
+        && let Some(ends_at) = ends_at
+    {
+        // Only cut short, with no board at its new end: its last boards
+        // aren't called at, so it ends where its changed route does.
+        gap.push((None, DateTime::<Utc>::MAX_UTC, Some(ends_at)));
     }
     (
         Trip {
