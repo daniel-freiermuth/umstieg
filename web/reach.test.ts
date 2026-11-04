@@ -475,7 +475,7 @@ describe("reach is transitive over everything plotted", () => {
   });
 
   test("a call a train only passes (cancelled) is no change: neither boarded nor left there", () => {
-    // ICE 1 passes B (cancelled) at 30–32; RE 3 leaves B at 40; T2 stops at B at 35.
+    // ICE 1 passes B (cancelled) at 30–32; RE 3 leaves B at 40; T2 stops at B at 35; RB 5 leaves C at 90.
     const plot = new Plot(
       {
         ICE: ride(
@@ -499,25 +499,28 @@ describe("reach is transitive over everything plotted", () => {
           [D, 10],
           [B, 20],
         ]),
+        RB: ride(5, [
+          [C, 90],
+          [E, 100],
+        ]),
       },
       ["ICE"],
     );
     const net = plot.net();
-    const hover = (from: number): string[] => {
-      const r = net.rides.find((x) => x.trip === 1 && x.pts[0][0] === from);
+    const hover = (trip: number, from: number): string[] => {
+      const r = net.rides.find((x) => x.trip === trip && x.pts[0][0] === from);
       return r ? plot.show(net.reach(onStretch(r))) : [];
     };
-    // On the ICE, hovered from A or leaving B: on to C, but neither off at B
-    // onto the RE nor on at B from T4.
-    expect([hover(0), hover(32)]).toEqual([["ICE 0-80"], ["ICE 0-80"]]);
-    // On the RE: not back onto the ICE at B, but T2 and T4 stop there.
-    expect(plot.reach({ at: [], back: [[B, 40]], ride: { trip: 3, from: 40, until: 40 } })).toEqual([
-      "RE 40-80",
-      "T2 5-35",
-      "T4 10-20",
+    // On the ICE, hovered from A or leaving B: on to C and off there onto
+    // the RB, but neither off at B onto the RE nor on at B from T4.
+    expect([hover(1, 0), hover(1, 32)]).toEqual([
+      ["ICE 0-80", "RB 90-100"],
+      ["ICE 0-80", "RB 90-100"],
     ]);
+    // On the RE: not back onto the ICE at B, but T2 and T4 stop there.
+    expect(hover(3, 40)).toEqual(["RB 90-100", "RE 40-80", "T2 5-35", "T4 10-20"]);
     // Through B by T4: the RE, but not on the ICE there.
-    expect(plot.reach({ at: [], fwd: [[B, 20]] })).toEqual(["RE 40-80"]);
+    expect(plot.reach({ at: [], fwd: [[B, 20]] })).toEqual(["RB 90-100", "RE 40-80"]);
     // At B by 40: T2 and T4, but not off the ICE there.
     expect(plot.reach({ at: [], back: [[B, 40]] })).toEqual(["T2 5-35", "T4 10-20"]);
     // Passing B is no standing there, nor being there at all.
