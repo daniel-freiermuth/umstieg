@@ -19,8 +19,8 @@ export type Spot = { piece: number; from: number; to: number } | { station: numb
  * of the one before belong to its call.
  */
 function callsAt(p: Line): (x: Pt) => boolean {
-  if (p.skips.length === 0) return () => true;
   const passed = new Set<string>();
+  // Stryker disable next-line BooleanLiteral: the first point always sets it.
   let skipped = false;
   p.raw.forEach(([t, s], i) => {
     if (p.raw[i - 1]?.[1] !== s) skipped = p.skips.includes(i);
@@ -368,7 +368,15 @@ export function network(
         for (const r of group) {
           const [a, b] = r.pts;
           const since = boarded.get(r.trip);
-          if (ahead.has(r) || !((since !== undefined && a[0] >= since) || (r.stops[0] && atMost(ea.get(a[2]), a[0]))))
+          if (
+            ahead.has(r) ||
+            !(
+              (since !== undefined &&
+                // Stryker disable next-line ConditionalExpression: a train's stretches before the hovered one end by its start (boarding below), reached backward.
+                a[0] >= since) ||
+              (r.stops[0] && atMost(ea.get(a[2]), a[0]))
+            )
+          )
             continue;
           boarded.set(r.trip, a[0]);
           // The picked train standing where it is boarded: being on it there
