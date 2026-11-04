@@ -5,6 +5,7 @@ mod db;
 mod efa;
 mod enumerate;
 mod fallback;
+mod http;
 mod keys;
 mod motis;
 mod page;

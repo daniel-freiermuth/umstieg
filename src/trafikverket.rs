@@ -25,6 +25,8 @@ const MAX_CONCURRENT_REQUESTS: usize = 4;
 const MAX_ATTEMPTS: u32 = 3;
 /// First retry delay, doubled per attempt; tests don't wait seconds.
 const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
+/// A request still unanswered after this is given up on.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Train runs asked for in one request.
 const RUNS_PER_REQUEST: usize = 40;
 /// The station list hardly changes: kept a week.
@@ -243,7 +245,7 @@ pub struct Trafikverket {
 impl Trafikverket {
     pub fn new(url: &str, key: &str, user_agent: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(30)).build()?,
+            http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             url: url.to_owned(),
             key: key.to_owned(),
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
