@@ -690,6 +690,27 @@ describe("network", () => {
     expect(plot.show(net.reach({ at: [[B, 8]] }))).toEqual(["w 40-45", "waitB 0-30", "waitC 13-60"]);
     expect(net.moment(B, 2)).not.toEqual(net.moment(B, 8));
   });
+
+  test("the moment at a station stays the same while a wait walked to or from is reached whole", () => {
+    // 5 minutes on foot between B and C either way: from B at 10 and 15 one is
+    // at C by the start of its wait 20–30, from B at 35, 36 and 38 one could
+    // have left C after its end (and is there after the walk back leaves, no
+    // wait).
+    const plot = new Plot({ there: walk(B, 0, C, 5), waitC: wait(C, 20, 30), back: walk(C, 38, B, 43) });
+    const net = plot.net();
+    for (const ts of [
+      [10, 15],
+      [35, 36, 38],
+    ]) {
+      const [first = 0, ...rest] = ts;
+      for (const t of rest) {
+        expect(plot.show(net.reach({ at: [[B, t]] }))).toEqual(plot.show(net.reach({ at: [[B, first]] })));
+        expect(net.moment(B, t)).toEqual(net.moment(B, first));
+      }
+    }
+    expect(plot.show(net.reach({ at: [[B, 15]] }))).toContain("waitC 20-30");
+    expect(plot.show(net.reach({ at: [[B, 35]] }))).toContain("waitC 20-30");
+  });
 });
 
 describe("runs and stays", () => {
