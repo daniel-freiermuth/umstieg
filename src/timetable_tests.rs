@@ -1148,6 +1148,37 @@ fn a_db_train_turned_short_where_no_board_says_so_runs_up_to_its_new_start() {
 }
 
 #[test]
+fn a_db_train_turned_short_where_no_board_says_so_ends_where_its_changed_route_does() {
+    // Boards only at A, C and D; A's changed route ends at B, so the train
+    // doesn't reach G, a MOTIS stop between B and C.
+    let stations: Vec<Station> = ["A", "B", "G", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("r1", "RE 70", Some(Regional), &[(0, "", "08:00"), (3, "08:20", "08:21"), (4, "08:30", "")]),
+        0,
+        &["B", "G", "C", "D"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+    visits[1].1.arrival.as_mut().expect("arrives").cancelled = true;
+    visits[1].1.arrival.as_mut().expect("arrives").planned_path = ["A", "B", "G"].map(str::to_owned).to_vec();
+    let motis = motis_trip(
+        "RE 70",
+        Some(Regional),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [
+            vec![(0, None, time("08:00")), (1, time("08:10"), time("08:11"))],
+            vec![(3, None, time("08:21")), (4, time("08:30"), None)],
+        ],
+        "A to B runs, G doesn't; from C it's another train"
+    );
+}
+
+#[test]
 fn a_db_train_turned_short_without_a_boarded_new_start_isnt_ridden_past_its_new_end() {
     // Boards at A, B and D only: B says the train ends there; no board says
     // where it starts again. G and C: no board, from MOTIS.
