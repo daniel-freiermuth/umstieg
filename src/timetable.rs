@@ -1617,7 +1617,10 @@ fn merge(
         // EFA's rides end or start at hubs the other copy passes through:
         // the copy goes into the first train of its number that takes it
         // whole (`absorbs`). There are no board or fed trains then, so
-        // `by_number` finds nothing and the shared-times rule is off.
+        // `by_number` finds nothing and the shared-times rule is off. With
+        // them, a copy goes in as one run (`one_run`): SL's pendeltåg and GB's
+        // split portions share a number; `anchored` drops the stops it adds
+        // where the copies disagree.
         let same_run = || {
             motis.numbers.iter().chain(&named).find_map(|n| {
                 feed_by_number.get(n)?.iter().copied().find(|&i| {
@@ -1629,7 +1632,11 @@ fn merge(
                         })
                     });
                     let rail = base.class.is_some() && motis.class.is_some();
-                    met && (!planners_only || absorbs(base, &motis) && (rail || in_step(base, &motis)))
+                    met && if planners_only {
+                        absorbs(base, &motis) && (rail || in_step(base, &motis))
+                    } else {
+                        one_run(base, &motis)
+                    }
                 })
             })
         };
