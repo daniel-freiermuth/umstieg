@@ -20,7 +20,7 @@ use crate::timetable::ProductClass;
 /// The DB Timetables API (`--db-api` overrides it).
 pub const API: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
 /// Free plan quota: requests per `QUOTA_WINDOW`.
-const REQUESTS_PER_MINUTE: usize = 60;
+pub const REQUESTS_PER_MINUTE: usize = 60;
 /// A minute; tests don't wait that long when a mistake makes them hit the quota.
 const QUOTA_WINDOW: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(60) };
 const MAX_CONCURRENT_REQUESTS: usize = 4;

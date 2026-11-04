@@ -514,7 +514,11 @@ impl Feeds {
             .as_ref()
             .map(|db| {
                 let quota = db.waiting().map_or_else(String::new, |left| {
-                    format!(" · waiting {} s more for DB's limit of 60 requests per minute", left.as_secs())
+                    format!(
+                        " · waiting {} s more for DB's limit of {} requests per minute",
+                        left.as_secs(),
+                        db::REQUESTS_PER_MINUTE
+                    )
                 });
                 format!(", {} to DB{quota}", db.request_count())
             })
