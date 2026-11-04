@@ -143,8 +143,19 @@ describe("the best connections", () => {
     const lowerBound = [36, 40, 20, 0, 0, 0, 0, 0, 0, 0];
     expect(search(net, [onTrain1], { lowerBound })).toEqual([]);
     expect(search(net, [], { lowerBound })).toEqual(["3:0>2@20 2:2>9@50"]);
-    // A station missing from the server's bounds is never left at.
+    // Equal is no progress either.
+    expect(search(net, [onTrain1], { lowerBound: [36, 36, 20, 0, 0, 0, 0, 0, 0, 0] })).toEqual([]);
+    // A station missing from the server's bounds is never left at...
     expect(search(net, [], { lowerBound: [36, 30, 20] })).toEqual([]);
+    // ...nor a train boarded there: the server's search never boarded there.
+    const away = [
+      ride(41, [
+        [9, 10],
+        [0, 30],
+      ]),
+    ];
+    expect(search(away, [], { origin: 9, destination: 0 })).toEqual(["41:9>0@10"]);
+    expect(search(away, [], { origin: 9, destination: 0, lowerBound: [0] })).toEqual([]);
   });
 
   test("latest departure first, then earliest arrival; changes counted", () => {
