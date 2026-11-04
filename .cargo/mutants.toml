@@ -13,9 +13,9 @@ exclude_re = [
   'replace < with (==|<=) in earliest_arrival::improve',
   # Re-relaxing an equal bound changes nothing (or loops on zero-time edges).
   'replace < with <= in lower_bounds',
-  # At pop time d >= best, so this only stops skipping stale heap entries, which can't improve anything.
-  'replace > with < in lower_bounds',
-  'replace > with < in remaining_ride_minutes',
+  # At pop time d >= best, so this only stops skipping stale heap entries, which
+  # can't improve anything. (The Dijkstra lives in shortest_paths since ccf9503.)
+  'replace > with < in shortest_paths$',
   # Stores the value already there, or loops re-scanning zero-time rides.
   'replace < with <= in fastest_journeys',
   # Pushes a second entry with the same departure instead of overwriting; lookups take the last one.
