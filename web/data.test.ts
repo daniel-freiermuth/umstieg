@@ -118,6 +118,10 @@ describe("load", () => {
       keepDetours: false,
       lowerBound: null,
     });
+    // With forward only, the least remaining times in seconds; a station the destination
+    // can't be reached from comes before all others, as the server's `None` does.
+    const lowerBound = load(decodeData(patched(["limits", "lower_bound"], [7200, null, 0]), "data")).limits.lowerBound;
+    expect(lowerBound).toEqual([7200e3, -Infinity, 0]);
   });
 
   test("details not in the page are added as they arrive, linked up the same way", () => {
