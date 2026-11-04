@@ -52,6 +52,26 @@ export function covers(segments: readonly Segment[], lines: readonly Line[], spo
   });
 }
 
+/**
+ * The stations a highlight's `segments` touch: a call of its piece inside a
+ * segment's time, or a stay there sharing time with it. Riding between two
+ * stations touches neither, nor passing one (cancelled).
+ */
+export function stationsOf(segments: readonly Segment[], lines: readonly Line[]): Set<number> {
+  const out = new Set<number>();
+  for (const [pi, a, b] of segments) {
+    const line = item(lines, pi),
+      calls = callsAt(line);
+    line.pts.forEach((q, k) => {
+      const p = line.pts[k - 1];
+      // Stryker disable next-line EqualityOperator: a stay touching a segment's end has its call there, counted anyway.
+      const near = (a <= q[0] && q[0] <= b) || (p?.[2] === q[2] && p[0] <= b && a <= q[0]);
+      if (near && calls(q)) out.add(q[2]);
+    });
+  }
+  return out;
+}
+
 /** A stretch of time at a station: waiting, or in a train standing there (`trip`). */
 export interface Span {
   from: number;
