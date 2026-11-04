@@ -1322,7 +1322,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         // origin only if nothing came before it.
         let new_start = !cancelled && stop.arrival.map_or_else(|| end.is_some(), |m| m.cancelled);
         if new_start && let Some(start) = running(stop.departure).map(|m| m.planned) {
-            gaps.push((end, start));
+            gaps.push((end, start, None));
         }
         if !cancelled {
             let ends = stop.departure.is_some_and(|m| m.cancelled);
@@ -1365,8 +1365,9 @@ type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 /// Two times: (one copy's, the other's) planned time at a station, or (earliest, latest).
 type Span = (DateTime<Utc>, DateTime<Utc>);
 /// A stretch a DB train turned short doesn't run: (where it ends, if a board
-/// says so; its new start). Its origin cancelled, it ends before anything.
-type Gap = (Option<DateTime<Utc>>, DateTime<Utc>);
+/// says so; its new start; else the station its changed route ends at, if
+/// any). Its origin cancelled, it ends before anything.
+type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<String>);
 
 /// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
 /// merged into them by number. The boards win where they have data: a MOTIS
@@ -1449,29 +1450,37 @@ fn merge(
         // new start; without boards before, it may have run anywhere.
         let mut gap = Vec::new();
         let mut end = None;
+        // Where no board says where it ends: the end of the last running
+        // departure's changed route (IRIS's cpth), which is cut short.
+        let mut ends_at: Option<String> = None;
         // A known new end with no boarded new start yet: the train starts
         // again at the latest at the next call that runs, if any.
         let mut open = false;
         for (call, (_, v)) in board_calls.iter().zip(&calls) {
             let new_start = v.arrival.as_ref().is_some_and(|e| e.cancelled) && !call.cancelled;
             if new_start && let Some(start) = call.departure.map(|t| t.planned) {
-                gap.push((end, start));
+                gap.push((end, start, end.is_none().then(|| ends_at.clone()).flatten()));
             } else if open
                 && !call.cancelled
                 && let Some(start) = call.planned()
             {
-                gap.push((end, start));
+                gap.push((end, start, None));
             }
             if !call.cancelled {
                 let ends = v.departure.as_ref().is_some_and(|e| e.cancelled);
                 end = call.arrival.filter(|_| ends).map(|t| t.planned);
                 open = end.is_some();
+                ends_at = v
+                    .departure
+                    .as_ref()
+                    .filter(|e| !e.cancelled)
+                    .and_then(|e| e.changed_path.as_ref()?.last().cloned());
             } else if v.arrival.is_none() {
                 end = Some(DateTime::<Utc>::MIN_UTC);
             }
         }
         if open && let Some(end) = end {
-            gap.push((Some(end), DateTime::<Utc>::MAX_UTC));
+            gap.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
         }
         trips.push(Trip {
             label,
@@ -1704,15 +1713,26 @@ fn merge(
     }
     // Only now, with every feed's stops in, a train turned short becomes one
     // train up to where it ends and one from its new start; the stops between
-    // are dropped. Where no board says where it ends, the first train keeps
-    // every stop before the new start; starting late, there is none.
+    // are dropped. Where no board says where it ends, it ends at the last stop
+    // before the new start its changed route ends at; failing that, the first
+    // train keeps every stop before the new start; starting late, there is none.
     let mut split = Vec::with_capacity(trips.len());
     for (i, mut trip) in trips.into_iter().enumerate() {
         let gaps = gaps.get(i).map_or(&[][..], Vec::as_slice);
         if !gaps.is_empty() {
             trip.calls.sort_by_key(Call::planned);
         }
-        for &(end, start) in gaps {
+        for (end, start, ends_at) in gaps {
+            let start = *start;
+            let end = end.or_else(|| {
+                let name = ends_at.as_deref()?;
+                trip.calls
+                    .iter()
+                    .filter(|c| c.planned() < Some(start))
+                    .filter(|c| stations.get(c.station).and_then(|s| s.board_name.as_deref()) == Some(name))
+                    .filter_map(Call::planned)
+                    .next_back()
+            });
             let ran = |c: &Call| end.map_or_else(|| c.planned() < Some(start), |end| c.planned() <= Some(end));
             // `unrun` keeps the stops between, which go.
             let mut unrun = trip.calls.split_off(trip.calls.partition_point(ran));
