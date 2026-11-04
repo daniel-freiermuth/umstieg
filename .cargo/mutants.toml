@@ -52,4 +52,8 @@ exclude_re = [
   # list, is at another station: a train isn't at two at once.
   'replace < with <= in own_stops$',
   'replace > with >= in own_stops$',
+  # A stop at the very time of the new start is the new start itself: a train
+  # isn't at two stations at once, and the route it was cut short to doesn't
+  # reach the station it starts again at.
+  'replace < with <= in last_call_before$',
 ]

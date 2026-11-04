@@ -1724,15 +1724,7 @@ fn merge(
         }
         for (end, start, ends_at) in gaps {
             let start = *start;
-            let end = end.or_else(|| {
-                let name = ends_at.as_deref()?;
-                trip.calls
-                    .iter()
-                    .filter(|c| c.planned() < Some(start))
-                    .filter(|c| stations.get(c.station).and_then(|s| s.board_name.as_deref()) == Some(name))
-                    .filter_map(Call::planned)
-                    .next_back()
-            });
+            let end = end.or_else(|| last_call_before(&trip.calls, stations, ends_at.as_deref()?, start));
             let ran = |c: &Call| end.map_or_else(|| c.planned() < Some(start), |end| c.planned() <= Some(end));
             // `unrun` keeps the stops between, which go.
             let mut unrun = trip.calls.split_off(trip.calls.partition_point(ran));
@@ -1752,6 +1744,17 @@ fn merge(
         split.push(trip);
     }
     split
+}
+
+/// When `calls`, sorted by planned time, last stop before `start` at the
+/// station boarded as `name`.
+fn last_call_before(calls: &[Call], stations: &[Station], name: &str, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    calls
+        .iter()
+        .filter(|c| c.planned() < Some(start))
+        .filter(|c| stations.get(c.station).and_then(|s| s.board_name.as_deref()) == Some(name))
+        .filter_map(Call::planned)
+        .next_back()
 }
 
 /// Whether two copies' calls at a station agree: the same planned arrival or
