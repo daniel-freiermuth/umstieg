@@ -316,7 +316,9 @@ describe("fallbacks, as the server finds them", () => {
       ["walk", "Zentrum", "Hbf"],
       ["ICE 1", "Hbf", "Ziel"],
     ]);
-    expect(transfers(plan)).toEqual([{ station: w.station("Zentrum"), departure: ms("09:00"), ready: ms("08:38") }]);
+    expect(transfers(plan)).toEqual([
+      { station: w.station("Zentrum"), arrival: ms("08:30"), departure: ms("09:00"), ready: ms("08:38") },
+    ]);
     // ICE 2 leaves within the walk's length after ICE 1, yet the traveller is at Hbf.
     const found = w.fallbacks().forChange(plan, 0);
     expect(found.map((a) => [a.line, clock(a.lands)])).toEqual([

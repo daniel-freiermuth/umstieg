@@ -12,9 +12,10 @@ const EXTRA = 60 * 60e3;
 const CHANGES = 3;
 const SHOWN = 3;
 
-/** A change of a connection: where the train arrived, the next departure, when one is ready for it. */
+/** A change of a connection: where the train arrived and when, the next departure, when one is ready for it. */
 export interface Transfer {
   station: number;
+  arrival: number;
   departure: number;
   ready: number;
 }
@@ -32,7 +33,7 @@ export function transfers(c: Connection): Transfer[] {
     const board = item(s.calls, 0),
       alight = item(s.calls, s.calls.length - 1);
     if (arrived !== null && board.dep !== null)
-      out.push({ station: arrived[0], departure: board.dep, ready: arrived[1] + walked });
+      out.push({ station: arrived[0], arrival: arrived[1], departure: board.dep, ready: arrived[1] + walked });
     arrived = alight.arr === null ? null : [alight.station, alight.arr];
     walked = 0;
   }
@@ -103,11 +104,11 @@ export class Fallbacks {
     const g = this.ground;
     const t = item(transfers(plan), change);
     const rejoin = rejoins(plan);
-    // From where the train arrived: after a change with a walk, fallbacks walk
-    // there too, or elsewhere. And from where the missed train left, once
-    // walked there: a walk starting there counts only from after the missed
+    // From where the train arrived, from the arrival on: after a change with a
+    // walk, fallbacks walk there too, or elsewhere. And from where the missed
+    // train left, once walked there: a walk starting there counts only from after the missed
     // departure, but the traveller already stands there, and may leave right after it.
-    let candidates = this.candidates(t.station, t.departure, t.ready);
+    let candidates = this.candidates(t.station, t.departure, t.arrival);
     const rides = plan.steps.filter((s) => s.kind === "ride");
     const boardsAt = item(item(rides, change + 1).calls, 0).station;
     // Stryker disable next-line ConditionalExpression: the same without it, from one station the search lists each chain once.
@@ -132,17 +133,23 @@ export class Fallbacks {
     // The same line is the same route up to the plan (and so ranked alike): once.
     const seen = new Set<string>();
     const shown = ranked.filter((r) => !seen.has(r.line) && seen.add(r.line)).slice(0, SHOWN);
-    // Drawn from the missed departure on, or from the arrival if later (a missed change).
-    const since = Math.max(t.departure, t.ready);
-    return shown.map((r) => ({
-      station: t.station,
-      line: r.line,
-      lands: r.lands,
-      pieces: piecesOf(r.c, g.names, g.trips, g.limits.minTransfer, g.clock, {
-        start: [t.station, since],
-        until: r.back,
-      }),
-    }));
+    return shown.map((r) => {
+      // Drawn from the missed departure on, or, for a missed change, from when
+      // the traveller is where the fallback starts: where the train arrived from
+      // the arrival, where the missed train left once walked there.
+      const first = r.c.steps[0];
+      const there = first?.kind === "ride" && item(first.calls, 0).station !== t.station ? t.ready : t.arrival;
+      const since = Math.max(t.departure, there);
+      return {
+        station: t.station,
+        line: r.line,
+        lands: r.lands,
+        pieces: piecesOf(r.c, g.names, g.trips, g.limits.minTransfer, g.clock, {
+          start: [t.station, since],
+          until: r.back,
+        }),
+      };
+    });
   }
 }
 
