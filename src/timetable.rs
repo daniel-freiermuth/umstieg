@@ -1335,6 +1335,8 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
     // As for DB's trains in `merge`: where it ends and starts again.
     let mut gaps = Vec::new();
     let mut end = None;
+    // A known new end with no new start yet: as for DB's trains in `merge`.
+    let mut open = false;
     for stop in &run.stops {
         let Some(station) = by_sig.get(stop.signature.as_str()) else { continue };
         if !TV_COUNTRIES.contains(&station.country.as_str()) {
@@ -1359,10 +1361,16 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         let new_start = !cancelled && stop.arrival.map_or_else(|| end.is_some(), |m| m.cancelled);
         if new_start && let Some(start) = running(stop.departure).map(|m| m.planned) {
             gaps.push((end, start, None));
+        } else if open
+            && !cancelled
+            && let Some(start) = running(stop.arrival).or_else(|| running(stop.departure)).map(|m| m.planned)
+        {
+            gaps.push((end, start, None));
         }
         if !cancelled {
             let ends = stop.departure.is_some_and(|m| m.cancelled);
             end = stop.arrival.filter(|_| ends).map(|m| m.planned);
+            open = end.is_some();
         } else if calls.is_empty() && stop.arrival.is_none() {
             end = Some(DateTime::<Utc>::MIN_UTC);
         }
@@ -1375,6 +1383,9 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
             from_board: true,
             trafikverket: true,
         });
+    }
+    if open && let Some(end) = end {
+        gaps.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
     }
     let headsign = run.stops.last().and_then(|s| by_sig.get(s.signature.as_str())).map(|s| s.name.clone());
     let trip = Trip {
