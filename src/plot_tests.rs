@@ -334,6 +334,7 @@ fn bounds() -> super::Bounds {
         max_changes: 3,
         missed_by: TimeDelta::minutes(5),
         keep_detours: false,
+        lower_bound: None,
     }
 }
 
@@ -392,6 +393,36 @@ fn idx(v: &Value) -> usize {
 }
 
 #[test]
+fn with_forward_only_the_page_gets_the_least_remaining_times_the_enumeration_kept_to() {
+    let tt = located();
+    let net = Network::new(&tt).unwrap();
+    // A, B, C, X: here ICE 1 then RE 2, RE 2, there, Bus 3 on.
+    let mins = |m: [i64; 4]| m.map(|m| Some(TimeDelta::minutes(m))).to_vec();
+    assert_eq!(net.lower_bound, mins([110, 50, 0, 89]));
+    // Completing stops after the enumeration can lower the timetable's bounds;
+    // the page keeps to those the enumeration used, as given, not to its own.
+    let mut used = mins([120, 50, 0, 89]);
+    used[3] = None;
+    let groups = chains(&net);
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let plot = Plot {
+        bounds: super::Bounds { lower_bound: Some(used), ..bounds() },
+        usable: &crate::usable::Usable::default(),
+        title: "A → C".to_owned(),
+        subtitle: "sub".to_owned(),
+        groups: &groups,
+        metric: Metric::Axis,
+        min_transfer: MIN,
+        zone: Berlin,
+        back: None,
+        details_url: None,
+        progress: &|_, _| {},
+    };
+    let data = embedded_json(&render(&net, &mut fallbacks, &plot).unwrap().html, "data");
+    assert_eq!(data["limits"]["lower_bound"], serde_json::json!([7200, 3000, 0, null]));
+}
+
+#[test]
 fn only_a_served_plot_links_its_logo_to_a_new_search() {
     let tt = located();
     let net = Network::new(&tt).unwrap();
@@ -438,6 +469,7 @@ fn rendered_data_is_consistent() {
             "origin": tt.origin, "destination": tt.destination,
             "depart_from": minutes("07:00"), "depart_until": minutes("09:00"),
             "max_duration": 300, "max_changes": 3, "missed_by": 5, "min_transfer": 5, "keep_detours": false,
+            "lower_bound": null,
         })
     );
 

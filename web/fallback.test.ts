@@ -87,6 +87,7 @@ class World {
         missedBy: 5 * 60e3,
         minTransfer: 5 * 60e3,
         keepDetours: false,
+        lowerBound: null,
       },
       names: this.names,
       trips: this.trips,

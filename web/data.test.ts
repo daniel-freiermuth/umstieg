@@ -116,6 +116,7 @@ describe("load", () => {
       missedBy: 5 * MIN,
       minTransfer: 5 * MIN,
       keepDetours: false,
+      lowerBound: null,
     });
   });
 
