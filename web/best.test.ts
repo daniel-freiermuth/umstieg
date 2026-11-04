@@ -290,11 +290,13 @@ describe("the best connections", () => {
   });
 
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
+    // Boarded at its second call, 0: what it passes counts from there.
     const ice = (cancelled: number[]): Stretch[] => [
       ride(
         1,
         [
-          [0, 0],
+          [3, 0],
+          [0, 10, 12],
           [5, 30, 32],
           [9, 80],
         ],
@@ -302,9 +304,9 @@ describe("the best connections", () => {
       ),
     ];
     const needs: Need[][] = [[], [{ kind: "station", station: 5 }], [{ kind: "stay", station: 5, at: 31 * M }]];
-    expect([needs.map((n) => search(ice([1]), n)), needs.map((n) => search(ice([]), n))]).toEqual([
-      [["1:0>9@0"], [], []],
-      [["1:0>9@0"], ["1:0>9@0"], ["1:0>9@0"]],
+    expect([needs.map((n) => search(ice([2]), n)), needs.map((n) => search(ice([]), n))]).toEqual([
+      [["1:0>9@12"], [], []],
+      [["1:0>9@12"], ["1:0>9@12"], ["1:0>9@12"]],
     ]);
   });
 
