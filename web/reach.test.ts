@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { Interval, Pt } from "./geometry";
 import {
   type Line,
-  type Network,
   type Route,
   type Segment,
   type Source,
@@ -681,6 +680,16 @@ describe("network", () => {
     expect(net.reach({ at: [[B, 8]] })).toEqual([]);
     expect(net.moment(B, 6)).not.toEqual(net.moment(B, 8));
   });
+
+  test("the moment at a station changes with where a wait walked to is cut, also where nothing leaves or arrives", () => {
+    // Walking 5 minutes from B one is at C from 7 on from B at 2, from 13 on
+    // from B at 8: C's wait is reached from then on.
+    const plot = new Plot({ waitB: wait(B, 0, 30), w: walk(B, 40, C, 45), waitC: wait(C, 0, 60) });
+    const net = plot.net();
+    expect(plot.show(net.reach({ at: [[B, 2]] }))).toEqual(["w 40-45", "waitB 0-30", "waitC 7-60"]);
+    expect(plot.show(net.reach({ at: [[B, 8]] }))).toEqual(["w 40-45", "waitB 0-30", "waitC 13-60"]);
+    expect(net.moment(B, 2)).not.toEqual(net.moment(B, 8));
+  });
 });
 
 describe("runs and stays", () => {
@@ -981,14 +990,8 @@ describe("reach on random timetables", () => {
     expect(reaching).toBeGreaterThan(400);
   });
 
-  test("two moments at a station alike reach the same, up to where reached waits start and end", () => {
-    // Waits clip to the time one can be there, everything else is whole.
-    const show = (net: Network, segments: readonly Segment[]): string[] =>
-      segments
-        .map(([pi, a, b]) =>
-          net.waits.includes(pi) ? `wait ${String(pi)}` : `${String(pi)} ${String(a)} ${String(b)}`,
-        )
-        .sort();
+  test("two moments at a station alike reach the same", () => {
+    const show = (segments: readonly Segment[]): string[] => segments.map((x) => x.join(" ")).sort();
     let alike = 0;
     for (let seed = 1; seed <= 200; seed++) {
       const rnd = random(seed);
@@ -1000,7 +1003,7 @@ describe("reach on random timetables", () => {
         for (let t2 = t1 + 1; t2 <= 60; t2 += 4) {
           if (net.moment(s, t1) !== net.moment(s, t2)) continue;
           alike++;
-          const [r1, r2] = [t1, t2].map((t) => show(net, net.reach({ at: [[s, t]] })));
+          const [r1, r2] = [t1, t2].map((t) => show(net.reach({ at: [[s, t]] })));
           expect({ seed, s, t1, t2, reach: r2 }).toEqual({ seed, s, t1, t2, reach: r1 });
         }
     }
