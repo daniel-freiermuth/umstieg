@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use proptest::prelude::*;
 
-use crate::timetable::{Call, Footpath, Station, Time, Timetable, Trip};
+use crate::timetable::{Call, CallIdx, Footpath, Station, StationIdx, Time, Timetable, Trip, TripIdx};
 
 /// 2026-10-24 at "HH:MM" UTC.
 pub fn at(hhmm: &str) -> DateTime<Utc> {
@@ -53,9 +53,9 @@ impl Builder {
     }
 
     /// The station named `name`, added on first use.
-    pub fn station(&mut self, name: &str) -> usize {
+    pub fn station(&mut self, name: &str) -> StationIdx {
         if let Some(i) = self.stations.iter().position(|s| s.name == name) {
-            return i;
+            return StationIdx(i);
         }
         self.stations.push(Station {
             name: name.to_owned(),
@@ -65,12 +65,12 @@ impl Builder {
             position: None,
             motis_id: None,
         });
-        self.stations.len() - 1
+        StationIdx(self.stations.len() - 1)
     }
 
     /// A train calling at `stops` as (station, arrival, departure); returns its index.
     /// Train numbers are the digits of the label ("ICE 774" → 774).
-    pub fn trip(&mut self, label: &str, stops: &[(&str, &str, &str)]) -> usize {
+    pub fn trip(&mut self, label: &str, stops: &[(&str, &str, &str)]) -> TripIdx {
         let calls = stops
             .iter()
             .map(|&(name, arrival, departure)| Call {
@@ -92,13 +92,13 @@ impl Builder {
             calls,
             transitous: false,
         });
-        self.trips.len() - 1
+        TripIdx(self.trips.len() - 1)
     }
 
     /// Cancels `trip`'s stop at `station`.
-    pub fn cancel(&mut self, trip: usize, station: &str) {
+    pub fn cancel(&mut self, trip: TripIdx, station: &str) {
         let s = self.station(station);
-        for call in self.trips[trip].calls.iter_mut().filter(|c| c.station == s) {
+        for call in self.trips[trip.0].calls.iter_mut().filter(|c| c.station == s) {
             call.cancelled = true;
         }
     }
@@ -205,16 +205,16 @@ pub async fn serve_faulty(
 /// A chain's steps as "ICE 1 A-B / walk B-C / RE 2 C-D" (labels and station names).
 pub fn show(tt: &Timetable, steps: &[crate::enumerate::Step]) -> String {
     use crate::enumerate::Step;
-    let name = |s: usize| tt.stations[s].name.as_str();
+    let name = |s: StationIdx| tt.stations[s.0].name.as_str();
     steps
         .iter()
         .map(|step| match *step {
             Step::Ride { trip, board, alight } => {
-                let t = &tt.trips[trip];
-                format!("{} {}-{}", t.label, name(t.calls[board].station), name(t.calls[alight].station))
+                let t = &tt.trips[trip.0];
+                format!("{} {}-{}", t.label, name(t.calls[board.0].station), name(t.calls[alight.0].station))
             }
             Step::Walk { footpath } => {
-                let fp = &tt.footpaths[footpath];
+                let fp = &tt.footpaths[footpath.0];
                 format!("walk {}-{}", name(fp.from), name(fp.to))
             }
         })
@@ -226,13 +226,14 @@ pub fn show(tt: &Timetable, steps: &[crate::enumerate::Step]) -> String {
 pub fn ride(tt: &Timetable, label: &str, from: &str, to: &str) -> crate::enumerate::Step {
     let trip = tt.trips.iter().position(|t| t.label == label).unwrap_or_else(|| panic!("no trip {label}"));
     let call = |name: &str| {
-        tt.trips[trip]
+        let k = tt.trips[trip]
             .calls
             .iter()
-            .position(|c| tt.stations[c.station].name == name)
-            .unwrap_or_else(|| panic!("{label} doesn't call at {name}"))
+            .position(|c| tt.stations[c.station.0].name == name)
+            .unwrap_or_else(|| panic!("{label} doesn't call at {name}"));
+        CallIdx(k)
     };
-    crate::enumerate::Step::Ride { trip, board: call(from), alight: call(to) }
+    crate::enumerate::Step::Ride { trip: TripIdx(trip), board: call(from), alight: call(to) }
 }
 
 /// Set in the child process of [`rerun_with_env`].
@@ -347,7 +348,7 @@ pub fn timetable(spec: &Spec) -> Timetable {
             planned += TimeDelta::minutes(stop.run);
             let middle = i > 0 && i < last;
             calls.push(Call {
-                station: stop.station,
+                station: StationIdx(stop.station),
                 arrival: arrival.filter(|_| !(middle && stop.missing == 0)),
                 departure: departure.filter(|_| !(middle && stop.missing == 1)),
                 platform: None,
@@ -366,7 +367,11 @@ pub fn timetable(spec: &Spec) -> Timetable {
         });
     }
     for &(from, to, minutes) in &spec.walks {
-        b.footpaths.push(Footpath { from, to, duration: TimeDelta::minutes(minutes) });
+        b.footpaths.push(Footpath {
+            from: StationIdx(from),
+            to: StationIdx(to),
+            duration: TimeDelta::minutes(minutes),
+        });
     }
     let destination = format!("S{}", spec.stations - 1);
     b.build("S0", &destination)

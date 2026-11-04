@@ -9,6 +9,7 @@ use super::{
 };
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{self, Builder, at};
+use crate::timetable::{CallIdx, StationIdx, TripIdx};
 
 fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
@@ -340,19 +341,19 @@ fn the_drawn_network_holds_the_fallbacks_too() {
     let mut fallbacks = crate::fallback::Fallbacks::new(&net, TimeDelta::minutes(5), UTC);
     let chain = enumerate::Chain {
         steps: vec![
-            enumerate::Step::Ride { trip: re1, board: 0, alight: 1 },
-            enumerate::Step::Ride { trip: re2, board: 0, alight: 1 },
+            enumerate::Step::Ride { trip: re1, board: CallIdx(0), alight: CallIdx(1) },
+            enumerate::Step::Ride { trip: re2, board: CallIdx(0), alight: CallIdx(1) },
         ],
     };
     let drawn = super::drawn(&tt, &[chain], &mut fallbacks, TimeDelta::minutes(5)).unwrap();
-    let trips: Vec<usize> = drawn.rides.iter().map(|r| r.trip).collect();
+    let trips: Vec<TripIdx> = drawn.rides.iter().map(|r| r.trip).collect();
     assert_eq!(trips, [re1, re2, re3]);
 }
 
 #[test]
 fn ride_source_names_the_board_feed_the_times_come_from() {
     let call = |from_board, trafikverket| crate::timetable::Call {
-        station: 0,
+        station: StationIdx(0),
         arrival: None,
         departure: None,
         platform: None,

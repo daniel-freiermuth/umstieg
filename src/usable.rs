@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::enumerate::{Chain, Step};
-use crate::timetable::Timetable;
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx};
 
 /// Times as unix seconds.
 type Secs = i64;
@@ -17,15 +17,15 @@ type Secs = i64;
 /// A train run ridden through on some connection: calls `from..=to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RideRun {
-    pub trip: usize,
-    pub from: usize,
-    pub to: usize,
+    pub trip: TripIdx,
+    pub from: CallIdx,
+    pub to: CallIdx,
 }
 
 /// Waiting at a station on some connection, merged per station.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wait {
-    pub station: usize,
+    pub station: StationIdx,
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
 }
@@ -33,7 +33,7 @@ pub struct Wait {
 /// A walk taken on some connection, starting then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Walk {
-    pub footpath: usize,
+    pub footpath: FootpathIdx,
     pub start: DateTime<Utc>,
 }
 
@@ -54,31 +54,31 @@ fn time(s: Secs) -> DateTime<Utc> {
 /// by a little from the departure to the arrival), their walks.
 pub fn of_chains<'c>(tt: &Timetable, chains: impl IntoIterator<Item = &'c Chain>) -> Usable {
     // (trip, call k): stretch k → k + 1 ridden; standing at call k.
-    let mut stretches: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut through: HashSet<(usize, usize)> = HashSet::new();
-    let mut waits: Vec<(usize, Secs, Secs)> = Vec::new();
-    let mut walks: Vec<(usize, Secs)> = Vec::new();
+    let mut stretches: BTreeSet<(TripIdx, CallIdx)> = BTreeSet::new();
+    let mut through: HashSet<(TripIdx, CallIdx)> = HashSet::new();
+    let mut waits: Vec<(StationIdx, Secs, Secs)> = Vec::new();
+    let mut walks: Vec<(FootpathIdx, Secs)> = Vec::new();
     for chain in chains {
         let Ok(start) = chain.departure(tt) else { continue };
-        let mut here: Option<(usize, Secs)> = None;
+        let mut here: Option<(StationIdx, Secs)> = None;
         for step in &chain.steps {
             match *step {
                 Step::Walk { footpath } => {
-                    let Some(fp) = tt.footpaths.get(footpath) else { continue };
+                    let Ok(fp) = tt.footpath(footpath) else { continue };
                     let at = here.map_or_else(|| start.timestamp(), |(_, t)| t);
                     walks.push((footpath, at));
                     here = here.map(|(_, t)| (fp.to, t.saturating_add(fp.duration.num_seconds())));
                 }
                 Step::Ride { trip, board, alight } => {
-                    let time = |k: usize, departs: bool| {
+                    let time = |k: CallIdx, departs: bool| {
                         let call = tt.call(trip, k).ok()?;
                         if departs { call.departure_time() } else { call.arrival_time() }.map(|t| t.timestamp())
                     };
                     if let (Some((s, ready)), Some(dep)) = (here, time(board, true)) {
                         waits.push((s, ready.min(dep), ready.max(dep)));
                     }
-                    stretches.extend((board..alight).map(|k| (trip, k)));
-                    through.extend((board.saturating_add(1)..alight).map(|k| (trip, k)));
+                    stretches.extend((board.0..alight.0).map(|k| (trip, CallIdx(k))));
+                    through.extend((board.0.saturating_add(1)..alight.0).map(|k| (trip, CallIdx(k))));
                     here = tt.call(trip, alight).ok().zip(time(alight, false)).map(|(c, t)| (c.station, t));
                 }
             }
@@ -87,7 +87,7 @@ pub fn of_chains<'c>(tt: &Timetable, chains: impl IntoIterator<Item = &'c Chain>
     let mut out = Usable::default();
     let mut run: Option<RideRun> = None;
     for (trip, k) in stretches {
-        let to = k.saturating_add(1);
+        let to = CallIdx(k.0.saturating_add(1));
         run = match run {
             Some(r) if r.trip == trip && r.to == k && through.contains(&(trip, k)) => Some(RideRun { to, ..r }),
             r => {

@@ -9,20 +9,20 @@ use super::{Builder, Metric, Plot, heights, render};
 use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::fallback::Fallbacks;
 use crate::testkit::{self, at, embedded_json};
-use crate::timetable::{Timetable, meters};
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx, meters};
 
 const MIN: TimeDelta = TimeDelta::minutes(5);
 
-fn ride(trip: usize, board: usize, alight: usize) -> Step {
-    Step::Ride { trip, board, alight }
+fn ride(trip: TripIdx, board: usize, alight: usize) -> Step {
+    Step::Ride { trip, board: CallIdx(board), alight: CallIdx(alight) }
 }
 
-fn station(tt: &Timetable, name: &str) -> usize {
-    tt.stations.iter().position(|s| s.name == name).unwrap()
+fn station(tt: &Timetable, name: &str) -> StationIdx {
+    StationIdx(tt.stations.iter().position(|s| s.name == name).unwrap())
 }
 
 /// A piece point: (unix minutes, station).
-fn pt(tt: &Timetable, hhmm: &str, name: &str) -> (i64, usize) {
+fn pt(tt: &Timetable, hhmm: &str, name: &str) -> (i64, StationIdx) {
     (at(hhmm).timestamp().div_euclid(60), station(tt, name))
 }
 
@@ -55,7 +55,7 @@ fn network() -> Timetable {
 fn time_heights_are_remaining_minutes_with_and_without_waits() {
     let tt = network();
     let net = Network::new(&tt).unwrap();
-    let (a, b, c, d) = (station(&tt, "A"), station(&tt, "B"), station(&tt, "C"), station(&tt, "D"));
+    let (a, b, c, d) = (station(&tt, "A").0, station(&tt, "B").0, station(&tt, "C").0, station(&tt, "D").0);
 
     let remaining = heights(&net, Metric::RemainingTime).unwrap();
     // Fastest ride per stretch, waits ignored: 60 + 20. D only has the bus from
@@ -96,19 +96,19 @@ fn geographic_heights_follow_their_geometry() {
     let axis = heights(&net, Metric::Axis).unwrap();
     let ratio = heights(&net, Metric::Ratio).unwrap();
     for (name, h, x, r) in cases {
-        let s = station(&tt, name);
+        let s = station(&tt, name).0;
         assert!(close(hyperbolic[s], h), "{name} hyperbolic {:?} != {h}", hyperbolic[s]);
         assert!((axis[s].unwrap() - x).abs() < 1e-3, "{name} axis {:?} != {x}", axis[s]);
         assert!(close(ratio[s], r), "{name} ratio {:?} != {r}", ratio[s]);
     }
-    let nowhere = station(&tt, "Nowhere");
+    let nowhere = station(&tt, "Nowhere").0;
     assert_eq!((hyperbolic[nowhere], axis[nowhere], ratio[nowhere]), (None, None, None));
 }
 
 #[test]
 fn geographic_heights_need_both_ends_located() {
     let mut tt = network();
-    tt.stations[tt.destination].position = Some((0.0, 1.0));
+    tt.stations[tt.destination.0].position = Some((0.0, 1.0));
     let net = Network::new(&tt).unwrap();
     for metric in [Metric::Hyperbolic, Metric::Axis, Metric::Ratio] {
         let err = heights(&net, metric).unwrap_err().to_string();
@@ -124,7 +124,7 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
         .trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "09:02+5"), ("C", "10:00+4", "10:05"), ("D", "11:00", "")]);
     b.trip("RE 9", &[("B", "", "09:30"), ("D", "10:00", "")]);
     let mut tt = b.build("A", "D");
-    tt.trips[ice].headsign = Some("D".to_owned());
+    tt.trips[ice.0].headsign = Some("D".to_owned());
     let mut plot = builder(&tt);
     let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 2)] }, None, None).unwrap();
     assert_eq!(pieces, [0]);
@@ -134,7 +134,7 @@ fn a_ride_has_a_point_per_arrival_and_departure_between_its_ends() {
     assert_eq!(piece.pts, [pt(&tt, "08:00", "A"), pt(&tt, "09:00", "B"), pt(&tt, "09:07", "B"), pt(&tt, "10:04", "C")]);
     assert_eq!(piece.info, "ICE 1 → D · 08:00 UTC A → 10:04 UTC (+4) C");
     // Rows for where one boards and alights, not for stops passed.
-    let used: HashSet<usize> = ["A", "C", "D"].iter().map(|n| station(&tt, n)).collect();
+    let used: HashSet<StationIdx> = ["A", "C", "D"].iter().map(|n| station(&tt, n)).collect();
     assert_eq!(plot.used, used);
 }
 
@@ -147,12 +147,12 @@ fn rides_name_the_cancelled_calls_they_only_pass() {
     );
     let mut tt = b.build("X", "C");
     // Only its second stop at X is cancelled: the train is boarded at the first.
-    tt.trips[ice].calls[2].cancelled = true;
+    tt.trips[ice.0].calls[2].cancelled = true;
     // Passed without a time, so without a point to name.
-    tt.trips[ice].calls[3].cancelled = true;
+    tt.trips[ice.0].calls[3].cancelled = true;
     let mut network = builder(&tt);
     let usable = crate::usable::Usable {
-        rides: vec![crate::usable::RideRun { trip: ice, from: 0, to: 4 }],
+        rides: vec![crate::usable::RideRun { trip: ice, from: CallIdx(0), to: CallIdx(4) }],
         ..Default::default()
     };
     let pieces = super::network_pieces(&mut network, &usable).unwrap();
@@ -184,12 +184,16 @@ fn rides_name_their_first_and_last_call_where_runs_of_the_train_meet() {
     );
     let tt = b.build("X", "C");
     let mut network = builder(&tt);
-    let runs = [(0, 1), (1, 2), (3, 4)].map(|(from, to)| crate::usable::RideRun { trip: ice, from, to });
+    let runs = [(0, 1), (1, 2), (3, 4)].map(|(from, to)| crate::usable::RideRun {
+        trip: ice,
+        from: CallIdx(from),
+        to: CallIdx(to),
+    });
     let usable = crate::usable::Usable { rides: runs.to_vec(), ..Default::default() };
     let pieces = super::network_pieces(&mut network, &usable).unwrap();
     let spans: Vec<_> = pieces.iter().map(|&i| network.pieces[i].span).collect();
     // Where one run ends and the next starts at the same call, the page counts that call once.
-    assert_eq!(spans, [Some((0, 1)), Some((1, 2)), Some((3, 4))]);
+    assert_eq!(spans, [Some((CallIdx(0), CallIdx(1))), Some((CallIdx(1), CallIdx(2))), Some((CallIdx(3), CallIdx(4)))]);
     // A connection's ride is the same piece as the run it rides whole.
     let ridden = network.pieces(&Chain { steps: vec![ride(ice, 1, 2)] }, None, None).unwrap();
     assert_eq!(ridden, [pieces[1]]);
@@ -248,9 +252,8 @@ fn walks_are_drawn_from_the_arrival_and_the_wait_after_them_counts_from_the_walk
     b.walk("B", "B2", 4);
     let tt = b.build("A", "C");
     let mut plot = builder(&tt);
-    let pieces = plot
-        .pieces(&Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] }, None, None)
-        .unwrap();
+    let walk = Step::Walk { footpath: FootpathIdx(0) };
+    let pieces = plot.pieces(&Chain { steps: vec![ride(ice, 0, 1), walk, ride(s, 0, 1)] }, None, None).unwrap();
     let got: Vec<(&str, &str, bool)> =
         pieces.iter().map(|&i| (plot.pieces[i].kind, plot.pieces[i].info.as_str(), plot.pieces[i].warn)).collect();
     assert_eq!(got[1..3], [("walk", "walk 4m to B2", false), ("wait", "6m at B2", false)]);
@@ -266,7 +269,9 @@ fn a_walk_to_the_first_train_starts_at_the_origin_when_the_connection_leaves() {
     let bus = b.trip("Bus 654", &[("A2", "", "07:00"), ("C", "10:25", "")]);
     let tt = b.build("A", "C");
     let mut plot = builder(&tt);
-    let pieces = plot.pieces(&Chain { steps: vec![Step::Walk { footpath: 0 }, ride(bus, 0, 1)] }, None, None).unwrap();
+    let pieces = plot
+        .pieces(&Chain { steps: vec![Step::Walk { footpath: FootpathIdx(0) }, ride(bus, 0, 1)] }, None, None)
+        .unwrap();
     let kinds: Vec<&str> = pieces.iter().map(|&i| plot.pieces[i].kind).collect();
     assert_eq!(kinds, ["walk", "ride"], "no change, so no wait before the bus");
     assert_eq!(plot.pieces[pieces[0]].pts, [pt(&tt, "06:55", "A"), pt(&tt, "07:00", "A2")]);
@@ -482,7 +487,7 @@ fn rendered_data_is_consistent() {
     assert_eq!(data["metrics"][idx(&data["metric"])]["id"], "axis");
     for m in data["metrics"].as_array().unwrap() {
         assert_eq!(m["heights"].as_array().unwrap().len(), tt.stations.len());
-        assert_eq!(m["heights"][tt.destination], 0.0, "{}", m["id"]);
+        assert_eq!(m["heights"][tt.destination.0], 0.0, "{}", m["id"]);
     }
 
     let names = data["names"].as_array().unwrap();
@@ -490,7 +495,7 @@ fn rendered_data_is_consistent() {
     let stations = indexes(&data["stations"]);
     assert!(stations.is_sorted());
     // X is only passed through.
-    let want: Vec<usize> = ["A", "B", "C"].iter().map(|n| station(&tt, n)).collect();
+    let want: Vec<usize> = ["A", "B", "C"].iter().map(|n| station(&tt, n).0).collect();
     assert_eq!(stations, want);
 
     let pieces = data["pieces"].as_array().unwrap();
@@ -583,7 +588,7 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
     b.trip("ICE 3", &[("H", "", "09:15"), ("C", "10:15", "")]);
     let tt = b.build("A", "C");
     let net = Network::new(&tt).unwrap();
-    let walk = Step::Walk { footpath: 0 };
+    let walk = Step::Walk { footpath: FootpathIdx(0) };
     let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(tram, 0, 1), walk, ride(ice, 0, 1)] }]).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
@@ -623,7 +628,7 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
 #[test]
 fn only_the_requested_metric_must_be_computable() {
     let mut tt = located();
-    tt.stations[tt.origin].position = None;
+    tt.stations[tt.origin.0].position = None;
     let err = render_data(&tt, Metric::Ratio).unwrap_err().to_string();
     assert!(err.contains("Ratio"), "{err}");
     let data = render_data(&tt, Metric::FastestReal).unwrap();
@@ -642,9 +647,9 @@ fn time_heights_are_rounded_to_hundredths() {
     arrival.actual += TimeDelta::seconds(20);
     arrival.planned += TimeDelta::seconds(20);
     let data = render_data(&tt, Metric::FastestReal).unwrap();
-    assert_eq!(data["metrics"][1]["heights"][tt.origin], 10.33);
+    assert_eq!(data["metrics"][1]["heights"][tt.origin.0], 10.33);
     // Remaining ride time counts whole minutes, as the plot draws them.
-    assert_eq!(data["metrics"][0]["heights"][tt.origin], 10.0);
+    assert_eq!(data["metrics"][0]["heights"][tt.origin.0], 10.0);
 }
 
 proptest::proptest! {
@@ -713,7 +718,7 @@ fn the_network_is_drawn_from_what_the_connections_use() {
         &tt,
         &[
             Chain { steps: vec![ride(ice, 0, 2), ride(re, 0, 1)] },
-            Chain { steps: vec![ride(ice, 0, 2), Step::Walk { footpath: 0 }, ride(s, 0, 1)] },
+            Chain { steps: vec![ride(ice, 0, 2), Step::Walk { footpath: FootpathIdx(0) }, ride(s, 0, 1)] },
         ],
     );
     let net = Network::new(&tt).unwrap();
@@ -740,7 +745,10 @@ fn the_network_is_drawn_from_what_the_connections_use() {
             (p["kind"].as_str().unwrap().to_owned(), pts)
         })
         .collect();
-    let at_ = |hhmm: &str, name: &str| pt(&tt, hhmm, name);
+    let at_ = |hhmm: &str, name: &str| {
+        let (t, s) = pt(&tt, hhmm, name);
+        (t, s.0)
+    };
     assert_eq!(
         drawn,
         [
@@ -757,7 +765,7 @@ fn the_network_is_drawn_from_what_the_connections_use() {
     assert_eq!(
         rows,
         ["A", "B", "C", "B2"]
-            .map(|n| station(&tt, n))
+            .map(|n| station(&tt, n).0)
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()

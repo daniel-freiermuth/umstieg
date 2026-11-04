@@ -4,7 +4,7 @@ use chrono_tz::UTC;
 use super::*;
 use crate::enumerate::{Ride, Step};
 use crate::testkit::{Builder, at, ride, show};
-use crate::timetable::Timetable;
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx};
 
 const MIN_TRANSFER: TimeDelta = TimeDelta::minutes(5);
 
@@ -43,13 +43,13 @@ fn plan(tt: &Timetable, rides: &[(&str, &str, &str)]) -> Chain {
 fn summary(tt: &Timetable, f: &Fallback) -> (String, DateTime<Utc>) {
     assert_eq!(f.line.contains("(back on plan)"), f.rejoins_at.is_some(), "{}", f.line);
     let rides: Vec<_> = f.chain.rides().collect();
-    let name = |trip: usize, call: usize| tt.stations[tt.trips[trip].calls[call].station].name.as_str();
+    let name = |trip: TripIdx, call: CallIdx| tt.stations[tt.trips[trip.0].calls[call.0].station.0].name.as_str();
     let parts: Vec<String> = rides
         .iter()
         .enumerate()
         .take(f.rejoins_at.map_or(rides.len(), |k| k.saturating_add(1)))
         .map(|(i, &Ride { trip, board, alight })| {
-            let label = &tt.trips[trip].label;
+            let label = &tt.trips[trip.0].label;
             if Some(i) == f.rejoins_at {
                 format!("{label} from {} (back on plan)", name(trip, board))
             } else {
@@ -75,7 +75,7 @@ fn candidates_leave_after_the_missed_train_within_the_window() {
     let tt = hamburg();
     let net = Network::new(&tt).unwrap();
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    let hamburg = tt.stations.iter().position(|s| s.name == "Hamburg").unwrap();
+    let hamburg = StationIdx(tt.stations.iter().position(|s| s.name == "Hamburg").unwrap());
     let mut got: Vec<String> =
         fallbacks.candidates(hamburg, at("12:00"), at("11:51")).unwrap().iter().map(|c| show(&tt, &c.steps)).collect();
     got.sort();
@@ -216,7 +216,7 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),
@@ -241,7 +241,7 @@ fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
     b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),
@@ -265,7 +265,7 @@ fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
     b.trip("ICE 5", &[("Hbf", "", "11:05"), ("Ziel", "12:05", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),
@@ -293,7 +293,7 @@ fn after_a_change_with_a_walk_fallbacks_walk_only_from_where_the_train_arrived()
     b.trip("STR 9", &[("Zentrum", "", "11:05"), ("Ziel", "11:40", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),
@@ -318,7 +318,7 @@ fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() 
     b.trip("ICE 7", &[("Hbf", "", "09:50"), ("Ziel", "10:50", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),
@@ -339,8 +339,8 @@ fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() 
 
 /// STR 4 to Zentrum, the walk to Hbf, ICE 1 from there.
 fn walked_change(tt: &Timetable) -> Chain {
-    let named = |s: usize, name: &str| tt.stations[s].name == name;
-    let walk = tt.footpaths.iter().position(|f| named(f.from, "Zentrum") && named(f.to, "Hbf")).unwrap();
+    let named = |s: StationIdx, name: &str| tt.stations[s.0].name == name;
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| named(f.from, "Zentrum") && named(f.to, "Hbf")).unwrap());
     Chain {
         steps: vec![
             ride(tt, "STR 4", "Dorf", "Zentrum"),
@@ -591,7 +591,7 @@ fn every_change_on_the_network_gets_its_fallbacks() {
     let net = Network::new(&tt).unwrap();
     let p = plan(&tt, &[("ICE 2", "Frankfurt", "Hamburg"), ("RJ 384", "Hamburg", "København")]);
     let network = crate::usable::of_chains(&tt, [&p]);
-    let station = |name: &str| tt.stations.iter().position(|s| s.name == name).unwrap();
+    let station = |name: &str| StationIdx(tt.stations.iter().position(|s| s.name == name).unwrap());
     let shows = |chains: &[Chain]| {
         let mut out: Vec<String> = chains.iter().map(|c| show(&tt, &c.steps)).collect();
         out.sort();
@@ -636,7 +636,7 @@ fn a_change_with_a_walk_gets_the_fallbacks_from_both_stations() {
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = tt.footpaths.iter().position(|f| tt.stations[f.from].name == "Zentrum").unwrap();
+    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
     let chain = Chain {
         steps: vec![
             ride(&tt, "STR 4", "Dorf", "Zentrum"),

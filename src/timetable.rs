@@ -98,9 +98,30 @@ impl Time {
     }
 }
 
+/// Position of a station in [`Timetable::stations`]. The index newtypes
+/// serialize as plain numbers: the plot page refers to stations, trips and
+/// calls by them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct StationIdx(pub usize);
+
+/// Position of a trip in [`Timetable::trips`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct TripIdx(pub usize);
+
+/// Position of a call in its trip's [`Trip::calls`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct CallIdx(pub usize);
+
+/// Position of a footpath in [`Timetable::footpaths`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FootpathIdx(pub usize);
+
 #[derive(Debug, Clone)]
 pub struct Call {
-    pub station: usize,
+    pub station: StationIdx,
     pub arrival: Option<Time>,
     pub departure: Option<Time>,
     pub platform: Option<String>,
@@ -140,7 +161,7 @@ pub struct Trip {
 }
 
 impl Trip {
-    fn call_at(&self, station: usize) -> Option<&Call> {
+    fn call_at(&self, station: StationIdx) -> Option<&Call> {
         self.calls.iter().find(|c| c.station == station)
     }
 }
@@ -161,8 +182,8 @@ pub struct Station {
 
 #[derive(Debug, Clone)]
 pub struct Footpath {
-    pub from: usize,
-    pub to: usize,
+    pub from: StationIdx,
+    pub to: StationIdx,
     pub duration: TimeDelta,
 }
 
@@ -170,31 +191,31 @@ pub struct Timetable {
     pub stations: Vec<Station>,
     pub trips: Vec<Trip>,
     pub footpaths: Vec<Footpath>,
-    pub origin: usize,
-    pub destination: usize,
+    pub origin: StationIdx,
+    pub destination: StationIdx,
     /// Set by `ignore_delays`: stops added later keep planned times too.
     pub delays_ignored: bool,
 }
 
 impl Timetable {
     /// Station `i`; an error if the index came from somewhere else.
-    pub fn station(&self, i: usize) -> anyhow::Result<&Station> {
-        self.stations.get(i).ok_or_else(|| anyhow::anyhow!("no station {i} in the timetable"))
+    pub fn station(&self, i: StationIdx) -> anyhow::Result<&Station> {
+        self.stations.get(i.0).ok_or_else(|| anyhow::anyhow!("no station {} in the timetable", i.0))
     }
 
     /// Trip `i`.
-    pub fn trip(&self, i: usize) -> anyhow::Result<&Trip> {
-        self.trips.get(i).ok_or_else(|| anyhow::anyhow!("no trip {i} in the timetable"))
+    pub fn trip(&self, i: TripIdx) -> anyhow::Result<&Trip> {
+        self.trips.get(i.0).ok_or_else(|| anyhow::anyhow!("no trip {} in the timetable", i.0))
     }
 
     /// Call `call` of trip `trip`.
-    pub fn call(&self, trip: usize, call: usize) -> anyhow::Result<&Call> {
-        self.trip(trip)?.calls.get(call).ok_or_else(|| anyhow::anyhow!("trip {trip} has no call {call}"))
+    pub fn call(&self, trip: TripIdx, call: CallIdx) -> anyhow::Result<&Call> {
+        self.trip(trip)?.calls.get(call.0).ok_or_else(|| anyhow::anyhow!("trip {} has no call {}", trip.0, call.0))
     }
 
     /// Footpath `i`.
-    pub fn footpath(&self, i: usize) -> anyhow::Result<&Footpath> {
-        self.footpaths.get(i).ok_or_else(|| anyhow::anyhow!("no footpath {i} in the timetable"))
+    pub fn footpath(&self, i: FootpathIdx) -> anyhow::Result<&Footpath> {
+        self.footpaths.get(i.0).ok_or_else(|| anyhow::anyhow!("no footpath {} in the timetable", i.0))
     }
 
     /// Planned times everywhere: delays are dropped, while the latest schedule
@@ -241,10 +262,10 @@ struct Sighting<'a> {
 #[derive(Default)]
 struct Stations {
     list: Vec<Station>,
-    by_key: HashMap<String, usize>,
+    by_key: HashMap<String, StationIdx>,
     /// Stations named after a bus stop (the coach stop at Malmö C): the first
     /// train stop there names them.
-    bus_named: HashSet<usize>,
+    bus_named: HashSet<StationIdx>,
 }
 
 impl Stations {
@@ -252,6 +273,7 @@ impl Stations {
     fn from_list(list: Vec<Station>) -> Self {
         let mut by_key = HashMap::new();
         for (i, s) in list.iter().enumerate() {
+            let i = StationIdx(i);
             by_key.insert(format!("name:{}", db::station_key(&s.name)), i);
             if let Some(name) = &s.board_name {
                 by_key.insert(format!("name:{}", db::station_key(name)), i);
@@ -267,8 +289,8 @@ impl Stations {
     }
 
     /// Station `idx` is Trafikverket's `station`: its trains from there on.
-    fn claim(&mut self, idx: usize, station: &trafikverket::Station) {
-        let Some(st) = self.list.get_mut(idx) else { return };
+    fn claim(&mut self, idx: StationIdx, station: &trafikverket::Station) {
+        let Some(st) = self.list.get_mut(idx.0) else { return };
         st.tv = Some(station.signature.clone());
         if st.board_name.is_none() {
             st.board_name = Some(station.name.clone());
@@ -283,8 +305,9 @@ impl Stations {
     /// Stations whose name doesn't say where they are ("Hauptbahnhof": a
     /// local feed's name for Stuttgart Hbf) go by DB's name; not `ends`,
     /// named as asked for. Names that do ("Mannheim, Hauptbahnhof") stay.
-    fn name_by_db(&mut self, ends: (usize, usize)) {
+    fn name_by_db(&mut self, ends: (StationIdx, StationIdx)) {
         for (idx, st) in self.list.iter_mut().enumerate() {
+            let idx = StationIdx(idx);
             if idx == ends.0 || idx == ends.1 || st.eva.is_none() {
                 continue;
             }
@@ -299,9 +322,10 @@ impl Stations {
     /// name) go by its names ("Malmö C", "Landskrona"), whatever a feed called
     /// them first ("Landskrona St.", "Malmö Centralstation"); not `ends`,
     /// named as asked for, nor bus stops.
-    fn name_by_trafikverket(&mut self, list: &[trafikverket::Station], ends: (usize, usize)) {
+    fn name_by_trafikverket(&mut self, list: &[trafikverket::Station], ends: (StationIdx, StationIdx)) {
         let by_sig: HashMap<&str, &trafikverket::Station> = list.iter().map(|s| (s.signature.as_str(), s)).collect();
         for (idx, st) in self.list.iter_mut().enumerate() {
+            let idx = StationIdx(idx);
             if idx == ends.0 || idx == ends.1 || self.bus_named.contains(&idx) {
                 continue;
             }
@@ -321,7 +345,7 @@ impl Stations {
     /// numbers or signatures stay separate: nearby (S-Bahn vs. long-distance
     /// station) they get a footpath instead; alike named (two local feeds'
     /// "Hauptbahnhof") they are different places.
-    fn intern(&mut self, s: Sighting<'_>) -> usize {
+    fn intern(&mut self, s: Sighting<'_>) -> StationIdx {
         let name_key = format!("name:{}", db::station_key(s.name));
         let eva_key = s.eva.map(|e| format!("eva:{e}"));
         let tv_key = s.tv.map(|t| format!("tv:{t}"));
@@ -331,22 +355,25 @@ impl Stations {
             .into_iter()
             .flatten()
             .find_map(|k| self.by_key.get(k))
-            .or_else(|| self.by_key.get(&name_key).filter(|&&i| self.list.get(i).is_some_and(compatible)))
+            .or_else(|| self.by_key.get(&name_key).filter(|&&i| self.list.get(i.0).is_some_and(compatible)))
             .copied()
             .or_else(|| {
                 let here = s.position?;
-                self.list.iter().position(|st| {
-                    compatible(st) && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
-                })
+                self.list
+                    .iter()
+                    .position(|st| {
+                        compatible(st) && st.position.is_some_and(|p| meters(p, here) <= SAME_STATION_METERS)
+                    })
+                    .map(StationIdx)
             });
         if let Some(idx) = found.filter(|i| !s.bus && self.bus_named.remove(i))
-            && let Some(station) = self.list.get_mut(idx)
+            && let Some(station) = self.list.get_mut(idx.0)
         {
             s.name.clone_into(&mut station.name);
         }
         let idx = found.unwrap_or_else(|| {
             if s.bus {
-                self.bus_named.insert(self.list.len());
+                self.bus_named.insert(StationIdx(self.list.len()));
             }
             self.list.push(Station {
                 name: s.name.to_owned(),
@@ -356,14 +383,14 @@ impl Stations {
                 position: None,
                 motis_id: None,
             });
-            self.list.len().saturating_sub(1)
+            StationIdx(self.list.len().saturating_sub(1))
         });
         self.by_key.insert(name_key, idx);
         for k in [eva_key, tv_key].into_iter().flatten() {
             self.by_key.insert(k, idx);
         }
         // `idx` came from the list itself, so the station is always there.
-        let Some(station) = self.list.get_mut(idx) else { return idx };
+        let Some(station) = self.list.get_mut(idx.0) else { return idx };
         if station.eva.is_none() {
             station.eva = s.eva.map(str::to_owned);
         }
@@ -525,13 +552,18 @@ struct Rough {
     /// Trains keyed by MOTIS trip id.
     trips: HashMap<String, Trip>,
     /// Stations of rail legs, with the time span MOTIS has there; their DB boards are fetched.
-    corridor: HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
+    corridor: HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
     /// Shortest walk seen per (from, to).
-    footpaths: HashMap<(usize, usize), TimeDelta>,
+    footpaths: HashMap<(StationIdx, StationIdx), TimeDelta>,
 }
 
 /// Shortest walk per (from, to); none from a station to itself.
-fn add_walk(footpaths: &mut HashMap<(usize, usize), TimeDelta>, from: usize, to: usize, walk: TimeDelta) {
+fn add_walk(
+    footpaths: &mut HashMap<(StationIdx, StationIdx), TimeDelta>,
+    from: StationIdx,
+    to: StationIdx,
+    walk: TimeDelta,
+) {
     if from != to {
         let entry = footpaths.entry((from, to)).or_insert(walk);
         *entry = (*entry).min(walk);
@@ -544,7 +576,7 @@ fn from_motis(
     itineraries: &[Itinerary],
     resolved: &HashMap<String, db::Station>,
     stations: &mut Stations,
-    ends: (usize, usize),
+    ends: (StationIdx, StationIdx),
     all_stops: bool,
 ) -> Rough {
     let (origin_idx, destination_idx) = ends;
@@ -552,11 +584,11 @@ fn from_motis(
     for itinerary in itineraries {
         // Walks at the ends lead from / to the queried place: coordinates
         // (no stop id) stand for our origin or destination, stops for a hub.
-        let end_station = |stations: &mut Stations, p: &Place, coordinate: usize| match p.stop_id {
+        let end_station = |stations: &mut Stations, p: &Place, coordinate: StationIdx| match p.stop_id {
             Some(_) => stations.intern(sighting(resolved, &p.name, p.lat.zip(p.lon), p.station_id())),
             None => coordinate,
         };
-        let mut previous_end: Option<usize> = None;
+        let mut previous_end: Option<StationIdx> = None;
         let mut walk = TimeDelta::zero();
         for leg in &itinerary.legs {
             let Some(trip_id) = &leg.trip_id else {
@@ -642,12 +674,12 @@ fn finish(trips: Vec<Trip>) -> Vec<Trip> {
 
 /// The walks from MOTIS, plus walks between nearby stations kept apart
 /// (different EVA numbers), sorted by (from, to).
-fn footpaths(stations: &[Station], mut walks: HashMap<(usize, usize), TimeDelta>) -> Vec<Footpath> {
+fn footpaths(stations: &[Station], mut walks: HashMap<(StationIdx, StationIdx), TimeDelta>) -> Vec<Footpath> {
     for (a, sa) in stations.iter().enumerate() {
         for (b, sb) in stations.iter().enumerate().filter(|&(b, _)| b != a) {
             let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
             if meters(pa, pb) <= SAME_STATION_METERS {
-                walks.entry((a, b)).or_insert(NEARBY_WALK);
+                walks.entry((StationIdx(a), StationIdx(b))).or_insert(NEARBY_WALK);
             }
         }
     }
@@ -737,11 +769,11 @@ fn leg_calls(leg: &Leg, resolved: &HashMap<String, db::Station>, stations: &mut 
 /// from DB boards only) lacks between its first and last known call: for the
 /// display, after the search. Nothing is added if the two disagree on a time
 /// where both stop. Returns where each old call went, if anything was added.
-pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize>> {
+pub fn add_stops(tt: &mut Timetable, trip: TripIdx, leg: &Leg) -> Option<Vec<CallIdx>> {
     let mut stations = Stations::from_list(std::mem::take(&mut tt.stations));
     let calls = leg_calls(leg, &HashMap::new(), &mut stations);
     tt.stations = stations.list;
-    let known = &tt.trips.get(trip)?.calls;
+    let known = &tt.trips.get(trip.0)?.calls;
     let close = |a: Option<Time>, b: Option<Time>| {
         a.zip(b).is_none_or(|(a, b)| a.planned.signed_duration_since(b.planned).abs() <= SAME_TIME)
     };
@@ -764,14 +796,14 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
     if !shared || added.is_empty() {
         return None;
     }
-    let trip = tt.trips.get_mut(trip)?;
+    let trip = tt.trips.get_mut(trip.0)?;
     let old = std::mem::take(&mut trip.calls).into_iter().enumerate().map(|(i, c)| (Some(i), c));
     let mut all: Vec<(Option<usize>, Call)> = old.chain(added.into_iter().map(|c| (None, c))).collect();
     all.sort_by_key(|(_, c)| c.planned());
-    let mut remap = vec![0; all.iter().filter(|(old, _)| old.is_some()).count()];
+    let mut remap = vec![CallIdx(0); all.iter().filter(|(old, _)| old.is_some()).count()];
     for (new, (old, _)) in all.iter().enumerate() {
         if let Some(slot) = old.and_then(|old| remap.get_mut(old)) {
-            *slot = new;
+            *slot = CallIdx(new);
         }
     }
     // The search rode the known calls at their times: only the added stops
@@ -801,7 +833,7 @@ pub fn add_stops(tt: &mut Timetable, trip: usize, leg: &Leg) -> Option<Vec<usize
 }
 
 /// Fetched DB boards per station index.
-type Boards = HashMap<usize, (Vec<Visit>, Coverage)>;
+type Boards = HashMap<StationIdx, (Vec<Visit>, Coverage)>;
 
 /// Hour starts covering `[lo - margin, hi + margin]`, capped.
 fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
@@ -818,7 +850,11 @@ fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
     out
 }
 
-async fn load_boards(db: &Db, wanted: Vec<(usize, String, Vec<DateTime<Utc>>)>, warnings: &mut Vec<String>) -> Boards {
+async fn load_boards(
+    db: &Db,
+    wanted: Vec<(StationIdx, String, Vec<DateTime<Utc>>)>,
+    warnings: &mut Vec<String>,
+) -> Boards {
     let fetches =
         wanted.into_iter().map(|(idx, eva, hours)| async move { (idx, eva.clone(), db.visits(&eva, &hours).await) });
     let mut boards = Boards::new();
@@ -840,18 +876,18 @@ async fn fetch_boards(
     motis: &Motis,
     db: &Db,
     stations: &mut Stations,
-    corridor: &HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
+    corridor: &HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
     discovered: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> Boards {
     let wanted: Vec<_> = corridor
         .iter()
-        .filter_map(|(&idx, &(lo, hi))| Some((idx, stations.list.get(idx)?.eva.clone()?, hours(lo, hi))))
+        .filter_map(|(&idx, &(lo, hi))| Some((idx, stations.list.get(idx.0)?.eva.clone()?, hours(lo, hi))))
         .collect();
     let mut boards = load_boards(db, wanted, warnings).await;
 
-    let by_db_name: HashMap<String, usize> =
-        boards.keys().filter_map(|&idx| Some((stations.list.get(idx)?.board_name.clone()?, idx))).collect();
+    let by_db_name: HashMap<String, StationIdx> =
+        boards.keys().filter_map(|&idx| Some((stations.list.get(idx.0)?.board_name.clone()?, idx))).collect();
     let mut between: HashMap<String, (usize, DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
     for (visits, _) in boards.values() {
         for visit in visits.iter().filter(|v| v.class == Some(ProductClass::LongDistance)) {
@@ -926,7 +962,7 @@ type Fed = (Trip, HashSet<String>, Vec<Gap>);
 #[derive(Default)]
 struct Swedish {
     trips: Vec<Fed>,
-    coverage: Vec<(usize, Coverage)>,
+    coverage: Vec<(StationIdx, Coverage)>,
     /// Trafikverket had none: Transitous's departures instead, each up to
     /// its last stop.
     departures: Vec<Leg>,
@@ -1001,8 +1037,8 @@ async fn swedish(
     tv: &Trafikverket,
     motis: &Motis,
     stations: &mut Stations,
-    corridor: &HashMap<usize, (DateTime<Utc>, DateTime<Utc>)>,
-    ends: (usize, usize),
+    corridor: &HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
+    ends: (StationIdx, StationIdx),
     discovered: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> Swedish {
@@ -1022,9 +1058,9 @@ async fn swedish(
     };
     let by_sig: HashMap<&str, &trafikverket::Station> = list.iter().map(|s| (s.signature.as_str(), s)).collect();
     let mut first: HashMap<String, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
-    let mut boarded: HashMap<String, usize> = HashMap::new();
+    let mut boarded: HashMap<String, StationIdx> = HashMap::new();
     for (&idx, &(lo, hi)) in corridor {
-        let Some(st) = stations.list.get(idx) else { continue };
+        let Some(st) = stations.list.get(idx.0) else { continue };
         let Some(found) = tv_station(&list, st.position, &st.name) else { continue };
         stations.claim(idx, found);
         boarded.insert(found.signature.clone(), idx);
@@ -1035,7 +1071,7 @@ async fn swedish(
         return Swedish::default();
     }
     let line =
-        stations.list.get(ends.0).and_then(|s| s.position).zip(stations.list.get(ends.1).and_then(|s| s.position));
+        stations.list.get(ends.0.0).and_then(|s| s.position).zip(stations.list.get(ends.1.0).and_then(|s| s.position));
     let mut known = HashSet::new();
     let (mut listed, keys) = tv_boards(tv, &first, &mut known, |_| true, warnings).await;
     if !listed.is_empty() && listed.values().all(Vec::is_empty) {
@@ -1092,7 +1128,7 @@ async fn swedish(
 struct Board<'a> {
     list: &'a [trafikverket::Station],
     by_sig: &'a HashMap<&'a str, &'a trafikverket::Station>,
-    boarded: &'a HashMap<String, usize>,
+    boarded: &'a HashMap<String, StationIdx>,
 }
 
 /// Trains in Sweden from Transitous's departures with their next stops, in
@@ -1136,7 +1172,7 @@ async fn departures_at(
 ) -> Vec<String> {
     let fetches = wanted.iter().map(|(sig, &(lo, hi))| {
         // Transitous's stop if known, else Trafikverket's station by position.
-        let stop = at.boarded.get(sig).and_then(|&i| stations.list.get(i)).and_then(|s| s.motis_id.clone());
+        let stop = at.boarded.get(sig).and_then(|&i| stations.list.get(i.0)).and_then(|s| s.motis_id.clone());
         let center = at.by_sig.get(sig.as_str()).and_then(|s| s.position);
         async move {
             let (from, until) = board_span(lo, hi);
@@ -1359,7 +1395,7 @@ pub const fn whole_seconds(s: f64) -> i64 {
 }
 
 /// A DB train's calls as (station, planned arrival, planned departure).
-type Signature = Vec<(usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
+type Signature = Vec<(StationIdx, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
 /// A train seen at a station: (trip, planned arrival, planned departure).
 type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 /// Two times: (one copy's, the other's) planned time at a station, or (earliest, latest).
@@ -1385,7 +1421,7 @@ fn merge(
     fed: Vec<Fed>,
     planners_only: bool,
 ) -> Vec<Trip> {
-    let mut runs: HashMap<&str, Vec<(usize, &Visit)>> = HashMap::new();
+    let mut runs: HashMap<&str, Vec<(StationIdx, &Visit)>> = HashMap::new();
     for (&idx, (visits, _)) in boards {
         for v in visits {
             runs.entry(v.trip.as_str()).or_default().push((idx, v));
@@ -1402,7 +1438,7 @@ fn merge(
         calls.sort_by_key(|(_, v)| v.seq);
         let mut route = HashSet::new();
         for &(idx, v) in &calls {
-            route.extend(stations.get(idx).and_then(|s| s.board_name.clone()));
+            route.extend(stations.get(idx.0).and_then(|s| s.board_name.clone()));
             for e in [&v.arrival, &v.departure].into_iter().flatten() {
                 route.extend(e.path().iter().cloned());
             }
@@ -1537,8 +1573,8 @@ fn merge(
     };
     // Feeds disagree on train numbers ("ICE 76" vs " (2558)"); the same
     // timetable at two stations identifies the same train too.
-    let mut at_station: HashMap<usize, Vec<Seen>> = HashMap::new();
-    let index = |at_station: &mut HashMap<usize, Vec<Seen>>, i: usize, calls: &[Call]| {
+    let mut at_station: HashMap<StationIdx, Vec<Seen>> = HashMap::new();
+    let index = |at_station: &mut HashMap<StationIdx, Vec<Seen>>, i: usize, calls: &[Call]| {
         for c in calls {
             let (arr, dep) = (c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned));
             at_station.entry(c.station).or_default().push((i, arr, dep));
@@ -1672,7 +1708,7 @@ fn merge(
             let anchors = anchors_of(trip, &motis.calls);
             let mut added = Vec::new();
             for call in motis.calls {
-                let name = stations.get(call.station).and_then(|s| s.board_name.as_ref());
+                let name = stations.get(call.station.0).and_then(|s| s.board_name.as_ref());
                 let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
                 let unknown_inside = name.is_none()
                     && !route.is_empty()
@@ -1752,7 +1788,7 @@ fn last_call_before(calls: &[Call], stations: &[Station], name: &str, start: Dat
     calls
         .iter()
         .filter(|c| c.planned() < Some(start))
-        .filter(|c| stations.get(c.station).and_then(|s| s.board_name.as_deref()) == Some(name))
+        .filter(|c| stations.get(c.station.0).and_then(|s| s.board_name.as_deref()) == Some(name))
         .filter_map(Call::planned)
         .next_back()
 }

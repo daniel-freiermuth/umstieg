@@ -18,7 +18,7 @@ use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::{Fallback, Fallbacks};
 use crate::page;
 use crate::text;
-use crate::timetable::{Timetable, meters};
+use crate::timetable::{CallIdx, StationIdx, Timetable, TripIdx, meters};
 use crate::usable::Usable;
 
 /// How a station's height is computed; all are "remaining", goal = 0.
@@ -103,16 +103,16 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
 /// down. Heights are i32 minutes: a lower bound beyond ~4000 years saturates.
 fn remaining_ride_minutes(tt: &Timetable) -> Result<Vec<Option<i32>>> {
     let minute = |t: DateTime<Utc>| t.timestamp().div_euclid(60);
-    let mut edges: Vec<Vec<(usize, i64)>> = vec![Vec::new(); tt.stations.len()];
-    let mut connect = |a: usize, b: usize, w: i64| -> Result<()> {
+    let mut edges: Vec<Vec<(StationIdx, i64)>> = vec![Vec::new(); tt.stations.len()];
+    let mut connect = |a: StationIdx, b: StationIdx, w: i64| -> Result<()> {
         if a != b {
-            edges.get_mut(a).with_context(|| format!("no station {a} in the timetable"))?.push((b, w));
-            edges.get_mut(b).with_context(|| format!("no station {b} in the timetable"))?.push((a, w));
+            edges.get_mut(a.0).with_context(|| format!("no station {} in the timetable", a.0))?.push((b, w));
+            edges.get_mut(b.0).with_context(|| format!("no station {} in the timetable", b.0))?.push((a, w));
         }
         Ok(())
     };
     for trip in &tt.trips {
-        let mut previous: Option<(usize, i64, i64)> = None;
+        let mut previous: Option<(StationIdx, i64, i64)> = None;
         for call in &trip.calls {
             let at = |t: crate::timetable::Time| (minute(t.planned), minute(t.actual));
             if let (Some((from, planned, live)), Some((p, l))) = (previous, call.arrival.or(call.departure).map(at)) {
@@ -143,7 +143,7 @@ struct Data {
     /// Index into `metrics` shown first.
     metric: usize,
     /// Stations with a row: where connections board, alight or walk.
-    stations: Vec<usize>,
+    stations: Vec<StationIdx>,
     /// Names of all stations, indexed by the station ids in piece points.
     names: Vec<String>,
     /// "ICE 378 → Berlin Hbf" per trip, indexed by `Piece::trip`.
@@ -168,8 +168,8 @@ struct Data {
 /// finds the best connections through picked lines by them.
 #[derive(Serialize)]
 struct LimitsOut {
-    origin: usize,
-    destination: usize,
+    origin: StationIdx,
+    destination: StationIdx,
     depart_from: i64,
     depart_until: i64,
     max_duration: i64,
@@ -241,8 +241,8 @@ struct Piece {
     warn: bool,
     /// Index into `Data::trips` for rides: hovering works per train and stop-to-stop
     /// stretch, so overlapping rides of the same train count as one line.
-    trip: Option<usize>,
-    pts: Vec<(i64, usize)>,
+    trip: Option<TripIdx>,
+    pts: Vec<(i64, StationIdx)>,
     /// Stops a ride passes without stopping (cancelled calls), as the index of
     /// their first point: drawn, but the page's search neither boards nor
     /// leaves the train there, as the server's. Per call, not per station: a
@@ -252,19 +252,19 @@ struct Piece {
     /// the network splits a train into runs at a stop, the page's search
     /// counts that call once, as the server's, and tells it from a second call
     /// of the train at the same station.
-    span: Option<(usize, usize)>,
+    span: Option<(CallIdx, CallIdx)>,
 }
 
 struct Builder<'a> {
     tt: &'a Timetable,
     min_transfer: TimeDelta,
     zone: Tz,
-    used: HashSet<usize>,
+    used: HashSet<StationIdx>,
     pieces: Vec<Piece>,
     index: HashMap<Piece, usize>,
 }
 
-const fn point(station: usize, t: DateTime<Utc>) -> (i64, usize) {
+const fn point(station: StationIdx, t: DateTime<Utc>) -> (i64, StationIdx) {
     (t.timestamp().div_euclid(60), station)
 }
 
@@ -286,7 +286,7 @@ impl Builder<'_> {
         &mut self,
         chain: &Chain,
         until: Option<usize>,
-        start: Option<(usize, DateTime<Utc>)>,
+        start: Option<(StationIdx, DateTime<Utc>)>,
     ) -> Result<Vec<usize>> {
         let tt = self.tt;
         let mut out = Vec::new();
@@ -352,7 +352,8 @@ impl Builder<'_> {
                         break;
                     }
                     let (mut pts, mut skips) = (Vec::new(), Vec::new());
-                    for (k, call) in t.calls.iter().enumerate().take(alight.saturating_add(1)).skip(board) {
+                    for (k, call) in t.calls.iter().enumerate().take(alight.0.saturating_add(1)).skip(board.0) {
+                        let k = CallIdx(k);
                         let first = pts.len();
                         if k > board {
                             pts.extend(call.arrival_time().map(|at| point(call.station, at)));
@@ -456,7 +457,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
     for run in &usable.rides {
         let t = tt.trip(run.trip)?;
         let (mut pts, mut skips) = (Vec::new(), Vec::new());
-        for k in run.from..=run.to {
+        for k in (run.from.0..=run.to.0).map(CallIdx) {
             let call = tt.call(run.trip, k)?;
             let first = pts.len();
             if k > run.from {
@@ -530,7 +531,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
 /// per (station, start of the wait, line).
 fn intern_fallback(
     out: &mut Vec<FallbackOut>,
-    index: &mut HashMap<(usize, DateTime<Utc>, String), usize>,
+    index: &mut HashMap<(StationIdx, DateTime<Utc>, String), usize>,
     builder: &mut Builder<'_>,
     transfer: &enumerate::Transfer,
     fallback: Fallback,
@@ -573,7 +574,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     };
 
     let mut fallback_out: Vec<FallbackOut> = Vec::new();
-    let mut fallback_index: HashMap<(usize, DateTime<Utc>, String), usize> = HashMap::new();
+    let mut fallback_index: HashMap<(StationIdx, DateTime<Utc>, String), usize> = HashMap::new();
     let mut chains = Vec::new();
     let mut details = Vec::new();
     let total: usize = plot.groups.iter().map(|g| g.chains.len()).sum();
@@ -607,7 +608,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     }
 
     let network = network_pieces(&mut builder, plot.usable)?;
-    let mut stations: Vec<usize> = builder.used.into_iter().collect();
+    let mut stations: Vec<StationIdx> = builder.used.into_iter().collect();
     stations.sort_unstable();
 
     let data = Data {

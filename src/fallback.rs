@@ -12,7 +12,7 @@ use chrono_tz::Tz;
 use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::text;
-use crate::timetable::Timetable;
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx};
 use crate::usable::Usable;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
@@ -38,7 +38,7 @@ pub struct Fallbacks<'n> {
     min_transfer: TimeDelta,
     /// Where the fallbacks' times are shown in.
     zone: Tz,
-    cache: HashMap<(usize, DateTime<Utc>), Vec<Chain>>,
+    cache: HashMap<(StationIdx, DateTime<Utc>), Vec<Chain>>,
 }
 
 impl<'n> Fallbacks<'n> {
@@ -47,7 +47,7 @@ impl<'n> Fallbacks<'n> {
     }
 
     /// What leaves `station` after the `missed` train, once there at `ready`.
-    fn candidates(&mut self, station: usize, missed: DateTime<Utc>, ready: DateTime<Utc>) -> Result<&[Chain]> {
+    fn candidates(&mut self, station: StationIdx, missed: DateTime<Utc>, ready: DateTime<Utc>) -> Result<&[Chain]> {
         let (net, min_transfer) = (self.net, self.min_transfer);
         let after = checked::later(missed, TimeDelta::minutes(1), "departure after a missed train")?.max(ready);
         match self.cache.entry((station, after)) {
@@ -79,10 +79,10 @@ impl<'n> Fallbacks<'n> {
     pub fn for_network(&mut self, network: &Usable, missed_by: TimeDelta) -> Result<Vec<Chain>> {
         let tt = self.net.tt;
         // Per station where trains leave: where trains arrived, and when.
-        let mut ready: HashMap<usize, Vec<Arrived>> = HashMap::new();
+        let mut ready: HashMap<StationIdx, Vec<Arrived>> = HashMap::new();
         for run in &network.rides {
-            for k in run.from.saturating_add(1)..=run.to {
-                let call = tt.call(run.trip, k)?;
+            for k in run.from.0.saturating_add(1)..=run.to.0 {
+                let call = tt.call(run.trip, CallIdx(k))?;
                 let Some(arrival) = call.arrival_time() else { continue };
                 ready.entry(call.station).or_default().push((call.station, arrival, arrival));
                 for walk in &network.walks {
@@ -96,8 +96,8 @@ impl<'n> Fallbacks<'n> {
         }
         let mut changes = HashSet::new();
         for run in &network.rides {
-            for k in run.from..run.to {
-                let call = tt.call(run.trip, k)?;
+            for k in run.from.0..run.to.0 {
+                let call = tt.call(run.trip, CallIdx(k))?;
                 let Some(departure) = call.departure_time() else { continue };
                 for &(station, arrival, at) in ready.get(&call.station).into_iter().flatten() {
                     if checked::earlier_or_min(at, missed_by) <= departure {
@@ -132,7 +132,7 @@ impl<'n> Fallbacks<'n> {
         let after_change = change.saturating_add(1);
         // Catching a later train of the plan (also the missed one, further on)
         // before the plan leaves it ends the detour. Trip → where the plan leaves it.
-        let rejoin: HashMap<usize, usize> =
+        let rejoin: HashMap<TripIdx, CallIdx> =
             chain.rides().skip(after_change).map(|ride| (ride.trip, ride.alight)).collect();
         let arrival = chain.arrival(tt)?;
 
@@ -172,8 +172,8 @@ impl<'n> Fallbacks<'n> {
                     .filter_map(|c| onward(&c).map(|(key, rank)| (key, rank, c)))
                     .collect();
                 copies.sort_by_key(|&(_, rank, _)| rank);
-                let mut kept: HashMap<(Onward, Option<usize>), Chain> = HashMap::new();
-                let mut direct: HashMap<Onward, HashSet<usize>> = HashMap::new();
+                let mut kept: HashMap<(Onward, Option<CallIdx>), Chain> = HashMap::new();
+                let mut direct: HashMap<Onward, HashSet<CallIdx>> = HashMap::new();
                 for (key, (board, walk), c) in copies {
                     if walk.is_none() {
                         direct.entry(key.clone()).or_default().insert(board);
@@ -196,7 +196,7 @@ impl<'n> Fallbacks<'n> {
                 let changes = back.unwrap_or_else(|| rides.len().saturating_sub(1));
                 let slack = fallback.transfers(tt)?.iter().take(changes).map(|t| t.slack).min();
                 let lands = if back.is_some() { arrival } else { fallback.arrival(tt)? };
-                let marked: HashSet<usize> =
+                let marked: HashSet<TripIdx> =
                     back.and_then(|i| rides.get(i)).map(|ride| ride.trip).into_iter().collect();
                 // A first train from where the missed one left is named with its station.
                 let line = text::route_from(tt, fallback, Some(transfer.station), min_transfer, &marked, self.zone)?;
@@ -214,16 +214,16 @@ impl<'n> Fallbacks<'n> {
 }
 
 /// Where a train arrived, when, and when one is ready there for the next train.
-type Arrived = (usize, DateTime<Utc>, DateTime<Utc>);
+type Arrived = (StationIdx, DateTime<Utc>, DateTime<Utc>);
 
 fn walks_first(chain: &Chain) -> bool {
     matches!(chain.steps.first(), Some(Step::Walk { .. }))
 }
 
 /// The first train of a chain, where it is left, and all steps after it.
-type Onward = (usize, usize, Vec<Step>);
+type Onward = (TripIdx, CallIdx, Vec<Step>);
 /// Where the first train is boarded, and the walk there if any.
-type Boarding = (usize, Option<usize>);
+type Boarding = (CallIdx, Option<FootpathIdx>);
 
 /// `chain` from its first train on, without where that train is boarded; and that boarding.
 fn onward(chain: &Chain) -> Option<(Onward, Boarding)> {
@@ -239,14 +239,15 @@ fn onward(chain: &Chain) -> Option<(Onward, Boarding)> {
 /// Whether `chain` gets to `station` (by train or on foot, or riding through
 /// it after a change) and goes on from there as one of the `listed` chains does.
 /// Riding through on the first train is that chain boarded elsewhere (`onward`).
-fn rides_back(tt: &Timetable, chain: &Chain, station: usize, listed: &HashSet<&[Step]>) -> Result<bool> {
+fn rides_back(tt: &Timetable, chain: &Chain, station: StationIdx, listed: &HashSet<&[Step]>) -> Result<bool> {
     let mut changed = false;
     for (i, step) in chain.steps.iter().enumerate() {
         let rest = chain.steps.get(i.saturating_add(1)..).unwrap_or_default();
         let reached = match *step {
             Step::Ride { trip, board, alight } => {
                 if changed {
-                    for k in board.saturating_add(1)..alight {
+                    for k in board.0.saturating_add(1)..alight.0 {
+                        let k = CallIdx(k);
                         if tt.call(trip, k)?.station == station {
                             let mut on = vec![Step::Ride { trip, board: k, alight }];
                             on.extend_from_slice(rest);

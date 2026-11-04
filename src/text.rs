@@ -7,7 +7,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use chrono_tz::Tz;
 
 use crate::enumerate::{Chain, Ride, Step};
-use crate::timetable::{Time, Timetable};
+use crate::timetable::{FootpathIdx, StationIdx, Time, Timetable, TripIdx};
 
 /// "HH:MM" in `zone`, with the zone's abbreviation: "06:39 CEST".
 pub fn clock(t: DateTime<Utc>, zone: Tz) -> String {
@@ -72,7 +72,7 @@ pub fn route(
     tt: &Timetable,
     chain: &Chain,
     min_transfer: TimeDelta,
-    rejoin: &HashSet<usize>,
+    rejoin: &HashSet<TripIdx>,
     zone: Tz,
 ) -> Result<String> {
     route_from(tt, chain, None, min_transfer, rejoin, zone)
@@ -83,14 +83,14 @@ pub fn route(
 pub fn route_from(
     tt: &Timetable,
     chain: &Chain,
-    start: Option<usize>,
+    start: Option<StationIdx>,
     min_transfer: TimeDelta,
-    rejoin: &HashSet<usize>,
+    rejoin: &HashSet<TripIdx>,
     zone: Tz,
 ) -> Result<String> {
     let transfers = chain.transfers(tt)?;
     let mut parts = Vec::new();
-    let walk = |parts: &mut Vec<String>, footpath: usize| -> Result<()> {
+    let walk = |parts: &mut Vec<String>, footpath: FootpathIdx| -> Result<()> {
         let fp = tt.footpath(footpath)?;
         parts.push(format!("walk {} to {}", duration(fp.duration), tt.station(fp.to)?.name));
         Ok(())

@@ -411,7 +411,7 @@ async fn complete_stops(
                         tracing::debug!(train = label, before, after, "stops from Transitous");
                     }
                 } else {
-                    tracing::debug!(trip, "Transitous' copy adds no stops or disagrees");
+                    tracing::debug!(trip = trip.0, "Transitous' copy adds no stops or disagrees");
                 }
             }
             Ok(None) => {}
