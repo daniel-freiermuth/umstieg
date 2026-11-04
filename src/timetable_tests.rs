@@ -3094,12 +3094,10 @@ async fn polish_trains_sharing_a_digit_of_their_numbers_stay_apart() {
     assert!(merged.is_empty(), "{merged:#?}");
 }
 
-#[tokio::test]
-async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
-    // A number doesn't always name one run: SL's pendeltåg carry their line
-    // as route name ("40", no trip name), and GB's split portions share one.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+/// Runs sharing a number: (what, one run, another). A number doesn't always
+/// name one run: SL's pendeltåg carry their line as route name ("40", no trip
+/// name), and GB's split portions share one.
+fn runs_sharing_a_number() -> [(&'static str, Leg, Leg); 3] {
     let line_40 = |id, stops: &[(&str, &str, &str)]| {
         let mut leg = service(id, Mode::RegionalRail, "40", None, stops);
         (leg.route_short_name, leg.trip_short_name) = (Some("40".to_owned()), Some(String::new()));
@@ -3113,8 +3111,7 @@ async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
     let (victoria, clapham) = (("London Victoria", "", "08:05"), ("Clapham Junction", "08:11", "08:12"));
     let bognor = [victoria, clapham, ("Horsham", "08:50", "08:52"), ("Bognor Regis", "09:40", "")];
     let portsmouth = [victoria, clapham, ("Horsham", "08:50", "08:53"), ("Portsmouth Harbour", "10:05", "")];
-    // (what, one run, another)
-    let cases = [
+    [
         (
             "a line's runs leaving a station in opposite directions",
             line_40("20261102_06:15_se-Trafiklab_1", &north),
@@ -3130,14 +3127,35 @@ async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
             sn_2301("20261102_08:05_gb-rail_1", &bognor),
             sn_2301("20261102_08:05_gb-rail_2", &portsmouth),
         ),
-    ];
+    ]
+}
+
+#[tokio::test]
+async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
-    for (what, a, b) in cases {
+    for (what, a, b) in runs_sharing_a_number() {
         let (from, to) = (end(&a.from.name), end(&b.to.name));
         let itineraries = [Itinerary { legs: vec![a] }, Itinerary { legs: vec![b] }];
         let built = super::build(&motis, None, None, &itineraries, &from, &to, false).await;
         if built.timetable.trips.len() != 2 {
             merged.push(format!("{what}: {:?}", labels(&built.timetable.trips)));
+        }
+    }
+    assert!(merged.is_empty(), "{merged:#?}");
+}
+
+#[test]
+fn with_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
+    // DB or Trafikverket asked, but no board train: the planners' trips alone.
+    let mut merged = Vec::new();
+    for (what, a, b) in runs_sharing_a_number() {
+        let itineraries = [Itinerary { legs: vec![a] }, Itinerary { legs: vec![b] }];
+        let (stations, rough) = rough(&itineraries, false);
+        let trips = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+        if trips.len() != 2 {
+            merged.push(format!("{what}: {:?}", labels(&trips)));
         }
     }
     assert!(merged.is_empty(), "{merged:#?}");
@@ -3365,11 +3383,6 @@ fn with_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
     for numbered in [false, true] {
         for (what, a, b) in &services_sharing_times() {
             let number = |s: &Service| if numbered { s.2.or(Some("40004")) } else { s.2 };
-            // Trains sharing a number join by it (`same_run`), a line's runs
-            // numbered by the line too: a follow-up, as for SL's pendeltåg.
-            if a.0.class().is_some() && b.0.class().is_some() && number(a).is_some() && number(a) == number(b) {
-                continue;
-            }
             for (id_a, id_b) in SERVICE_IDS {
                 let itineraries = [
                     Itinerary { legs: vec![service(id_a, a.0, a.1, number(a), &a.3)] },
