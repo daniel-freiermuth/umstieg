@@ -1416,142 +1416,125 @@ type Span = (DateTime<Utc>, DateTime<Utc>);
 /// any). Its origin cancelled, it ends before anything.
 type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<String>);
 
-/// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
-/// merged into them by number. The boards win where they have data: a MOTIS
-/// stop is dropped if the board train's route omits the station, or the
-/// station's board lists other trains of that class for the hour. Without
-/// boards, copies of one train from several feeds become one, EFA's times
-/// winning: by number, and unless `planners_only` also by the same times at
-/// two stations. With `planners_only` (no DB or Trafikverket asked) a copy is
-/// merged only if none of its stops, nor either half of one, is lost.
-#[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
-fn merge(
-    stations: &[Station],
-    boards: &Boards,
-    raw: HashMap<String, Trip>,
-    fed: Vec<Fed>,
-    planners_only: bool,
-) -> Vec<Trip> {
+/// DB trains from the boards, one per trip in trip id order.
+fn db_trips(stations: &[Station], boards: &Boards) -> Vec<Fed> {
     let mut runs: HashMap<&str, Vec<(StationIdx, &Visit)>> = HashMap::new();
     for (&idx, (visits, _)) in boards {
         for v in visits {
             runs.entry(v.trip.as_str()).or_default().push((idx, v));
         }
     }
-    // Per DB trip: every station name its route mentions.
-    let mut routes: Vec<HashSet<String>> = Vec::new();
-    // Per DB trip: the stretches it doesn't run.
-    let mut gaps: Vec<Vec<Gap>> = Vec::new();
-    let mut trips: Vec<Trip> = Vec::new();
     let mut runs: Vec<_> = runs.into_iter().collect();
     runs.sort_by_key(|(id, _)| *id);
-    for (_, mut calls) in runs {
-        calls.sort_by_key(|(_, v)| v.seq);
-        let mut route = HashSet::new();
-        for &(idx, v) in &calls {
-            route.extend(stations.get(idx.0).and_then(|s| s.board_name.clone()));
-            for e in [&v.arrival, &v.departure].into_iter().flatten() {
-                route.extend(e.path().iter().cloned());
-            }
+    runs.into_iter().map(|(_, calls)| board_trip(stations, calls)).collect()
+}
+
+/// A DB train from its visits on the boards, with every station name its
+/// route mentions and the stretches it doesn't run.
+fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed {
+    calls.sort_by_key(|(_, v)| v.seq);
+    let mut route = HashSet::new();
+    for &(idx, v) in &calls {
+        route.extend(stations.get(idx.0).and_then(|s| s.board_name.clone()));
+        for e in [&v.arrival, &v.departure].into_iter().flatten() {
+            route.extend(e.path().iter().cloned());
         }
-        let mut labels: HashMap<String, usize> = HashMap::new();
-        for (_, v) in calls.iter().filter(|(_, v)| v.category.is_some()) {
-            let count = labels.entry(v.label()).or_default();
-            *count = count.saturating_add(1);
-        }
-        let label = labels
-            .into_iter()
-            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-            .map_or_else(|| calls.first().map(|(_, v)| v.label()).unwrap_or_default(), |(l, _)| l);
-        let mut numbers: Vec<u32> = calls.iter().filter_map(|(_, v)| v.number).collect();
-        numbers.sort_unstable();
-        numbers.dedup();
-        // As in `fed_trip`: IRIS cancels a short turn's events one by one, so
-        // only a stop cancelled both ways isn't called at.
-        let board_calls: Vec<Call> = calls
-            .iter()
-            .map(|&(station, v)| {
-                let events = || [&v.arrival, &v.departure].into_iter().flatten();
-                let cancelled = events().next().is_some() && events().all(|e| e.cancelled);
-                let running = |e: Option<&Event>| e.filter(|e| cancelled || !e.cancelled).and_then(Time::from_event);
-                Call {
-                    station,
-                    arrival: running(v.arrival.as_ref()),
-                    departure: running(v.departure.as_ref()),
-                    platform: v
-                        .departure
-                        .as_ref()
-                        .and_then(Event::platform)
-                        .or_else(|| v.arrival.as_ref().and_then(Event::platform))
-                        .map(str::to_owned),
-                    cancelled,
-                    from_board: true,
-                    trafikverket: false,
-                }
-            })
-            .collect();
-        // A train turned short and started again further on doesn't run the
-        // stretch between. Where it ends is known if it has a board there: the
-        // last call that runs has its departure alone cancelled. A train whose
-        // origin (a board without arrival) is cancelled runs nowhere before its
-        // new start; without boards before, it may have run anywhere.
-        let mut gap = Vec::new();
-        let mut end = None;
-        // Where no board says where it ends: the end of the last running
-        // departure's changed route (IRIS's cpth), which is cut short.
-        let mut ends_at: Option<String> = None;
-        // A known new end with no boarded new start yet: the train starts
-        // again at the latest at the next call that runs, if any.
-        let mut open = false;
-        for (call, (_, v)) in board_calls.iter().zip(&calls) {
-            let new_start = v.arrival.as_ref().is_some_and(|e| e.cancelled) && !call.cancelled;
-            if new_start && let Some(start) = call.departure.map(|t| t.planned) {
-                gap.push((end, start, end.is_none().then(|| ends_at.clone()).flatten()));
-            } else if open
-                && !call.cancelled
-                && let Some(start) = call.planned()
-            {
-                gap.push((end, start, None));
-            }
-            if !call.cancelled {
-                let ends = v.departure.as_ref().is_some_and(|e| e.cancelled);
-                end = call.arrival.filter(|_| ends).map(|t| t.planned);
-                open = end.is_some();
-                ends_at = v
+    }
+    let mut labels: HashMap<String, usize> = HashMap::new();
+    for (_, v) in calls.iter().filter(|(_, v)| v.category.is_some()) {
+        let count = labels.entry(v.label()).or_default();
+        *count = count.saturating_add(1);
+    }
+    let label = labels
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map_or_else(|| calls.first().map(|(_, v)| v.label()).unwrap_or_default(), |(l, _)| l);
+    let mut numbers: Vec<u32> = calls.iter().filter_map(|(_, v)| v.number).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    // As in `fed_trip`: IRIS cancels a short turn's events one by one, so
+    // only a stop cancelled both ways isn't called at.
+    let board_calls: Vec<Call> = calls
+        .iter()
+        .map(|&(station, v)| {
+            let events = || [&v.arrival, &v.departure].into_iter().flatten();
+            let cancelled = events().next().is_some() && events().all(|e| e.cancelled);
+            let running = |e: Option<&Event>| e.filter(|e| cancelled || !e.cancelled).and_then(Time::from_event);
+            Call {
+                station,
+                arrival: running(v.arrival.as_ref()),
+                departure: running(v.departure.as_ref()),
+                platform: v
                     .departure
                     .as_ref()
-                    .filter(|e| !e.cancelled)
-                    .and_then(|e| e.changed_path.as_ref()?.last().cloned());
-            } else if v.arrival.is_none() {
-                end = Some(DateTime::<Utc>::MIN_UTC);
+                    .and_then(Event::platform)
+                    .or_else(|| v.arrival.as_ref().and_then(Event::platform))
+                    .map(str::to_owned),
+                cancelled,
+                from_board: true,
+                trafikverket: false,
             }
+        })
+        .collect();
+    // A train turned short and started again further on doesn't run the
+    // stretch between. Where it ends is known if it has a board there: the
+    // last call that runs has its departure alone cancelled. A train whose
+    // origin (a board without arrival) is cancelled runs nowhere before its
+    // new start; without boards before, it may have run anywhere.
+    let mut gap = Vec::new();
+    let mut end = None;
+    // Where no board says where it ends: the end of the last running
+    // departure's changed route (IRIS's cpth), which is cut short.
+    let mut ends_at: Option<String> = None;
+    // A known new end with no boarded new start yet: the train starts
+    // again at the latest at the next call that runs, if any.
+    let mut open = false;
+    for (call, (_, v)) in board_calls.iter().zip(&calls) {
+        let new_start = v.arrival.as_ref().is_some_and(|e| e.cancelled) && !call.cancelled;
+        if new_start && let Some(start) = call.departure.map(|t| t.planned) {
+            gap.push((end, start, end.is_none().then(|| ends_at.clone()).flatten()));
+        } else if open
+            && !call.cancelled
+            && let Some(start) = call.planned()
+        {
+            gap.push((end, start, None));
         }
-        if open && let Some(end) = end {
-            gap.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
+        if !call.cancelled {
+            let ends = v.departure.as_ref().is_some_and(|e| e.cancelled);
+            end = call.arrival.filter(|_| ends).map(|t| t.planned);
+            open = end.is_some();
+            ends_at =
+                v.departure.as_ref().filter(|e| !e.cancelled).and_then(|e| e.changed_path.as_ref()?.last().cloned());
+        } else if v.arrival.is_none() {
+            end = Some(DateTime::<Utc>::MIN_UTC);
         }
-        trips.push(Trip {
+    }
+    if open && let Some(end) = end {
+        gap.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
+    }
+    (
+        Trip {
             label,
             numbers,
             class: calls.iter().find_map(|(_, v)| v.class),
             headsign: calls.iter().rev().find_map(|(_, v)| v.departure.as_ref()?.path().last().cloned()),
             calls: board_calls,
             transitous: false,
-        });
-        routes.push(route);
-        gaps.push(gap);
-    }
-    for (trip, route, gap) in fed {
-        trips.push(trip);
-        routes.push(route);
-        gaps.push(gap);
-    }
-    // Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
-    // same timetable; while they run together they are one train for us.
+        },
+        route,
+        gap,
+    )
+}
+
+/// Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
+/// same timetable; while they run together they are one train for us. The
+/// trains kept, in order, with their routes and the stretches they don't run.
+fn join_coupled(trips: impl IntoIterator<Item = Fed>) -> (Vec<Trip>, Vec<HashSet<String>>, Vec<Vec<Gap>>) {
     let mut seen: HashMap<Signature, usize> = HashMap::new();
     let mut kept: Vec<Trip> = Vec::new();
     let mut kept_routes: Vec<HashSet<String>> = Vec::new();
     let mut kept_gaps = Vec::new();
-    for ((trip, route), gap) in trips.into_iter().zip(routes).zip(gaps) {
+    for (trip, route, gap) in trips {
         let signature: Signature = trip
             .calls
             .iter()
@@ -1570,7 +1553,26 @@ fn merge(
             kept_gaps.push(gap);
         }
     }
-    let (mut trips, mut routes, gaps) = (kept, kept_routes, kept_gaps);
+    (kept, kept_routes, kept_gaps)
+}
+
+/// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
+/// merged into them by number. The boards win where they have data: a MOTIS
+/// stop is dropped if the board train's route omits the station, or the
+/// station's board lists other trains of that class for the hour. Without
+/// boards, copies of one train from several feeds become one, EFA's times
+/// winning: by number, and unless `planners_only` also by the same times at
+/// two stations. With `planners_only` (no DB or Trafikverket asked) a copy is
+/// merged only if none of its stops, nor either half of one, is lost.
+#[expect(clippy::too_many_lines, reason = "the merge rules read best in one place, in order")]
+fn merge(
+    stations: &[Station],
+    boards: &Boards,
+    raw: HashMap<String, Trip>,
+    fed: Vec<Fed>,
+    planners_only: bool,
+) -> Vec<Trip> {
+    let (mut trips, mut routes, gaps) = join_coupled(db_trips(stations, boards).into_iter().chain(fed));
 
     let mut by_number: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, t) in trips.iter().enumerate() {
