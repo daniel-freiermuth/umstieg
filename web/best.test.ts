@@ -51,6 +51,7 @@ const limits = (over: Partial<Limits> = {}): Limits => ({
   missedBy: 5 * M,
   minTransfer: 3 * M,
   keepDetours: false,
+  lowerBound: null,
   ...over,
 });
 /** A connection as "trip:from>to@dep … walk a>b", for comparing. */
@@ -134,6 +135,16 @@ describe("the best connections", () => {
     expect(search(net, [], { maxDuration: 49 * M })).toEqual([]);
     expect(search(net, [], { maxDuration: 50 * M })).toEqual(["3:0>2@20 2:2>9@50"]);
     expect(search(net, [], { maxChanges: 0 })).toEqual([]);
+  });
+
+  test("forward only: a train is left only where the least remaining time is less than where it was boarded", () => {
+    const onTrain1: Need = { kind: "ride", trip: 1, from: 0, at: 10 * M, to: 1, until: 30 * M };
+    // Station 1 is further from 9 than 0 is: train 1 leads away.
+    const lowerBound = [36, 40, 20, 0, 0, 0, 0, 0, 0, 0];
+    expect(search(net, [onTrain1], { lowerBound })).toEqual([]);
+    expect(search(net, [], { lowerBound })).toEqual(["3:0>2@20 2:2>9@50"]);
+    // A station missing from the server's bounds is never left at.
+    expect(search(net, [], { lowerBound: [36, 30, 20] })).toEqual([]);
   });
 
   test("latest departure first, then earliest arrival; changes counted", () => {
