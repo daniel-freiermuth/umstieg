@@ -236,7 +236,7 @@ export interface Network {
   reach: (src: Source) => Segment[];
   /**
    * Names what `reach({ at: [[station, t]] })` reaches: two moments at a
-   * station alike reach the same, up to where reached waits start and end.
+   * station alike reach the same.
    */
   moment: (station: number, t: number) => string;
 }
@@ -455,9 +455,11 @@ export function network(
   // which of these are from (by) when one can be at their station on foot
   // from (to) there: what leaves (rides, walks, ends of waits) and what
   // arrives (rides, walks, starts of waits). Each count changes exactly when
-  // one of them does.
+  // one of them does. Only a wait reached in part, from when one can be there
+  // (up to when one has to leave) on foot, starts (ends) with the moment.
   const leaving = new Map<number, number[]>(),
     arriving = new Map<number, number[]>();
+  const waitsAt = new Map<number, Interval[]>();
   const mark = (m: Map<number, number[]>, s: number, t: number): void => {
     entry(m, s, () => []).push(t);
   };
@@ -475,6 +477,7 @@ export function network(
     const wait = p.kind === "wait";
     mark(leaving, a[2], wait ? b[0] : a[0]);
     mark(arriving, b[2], wait ? a[0] : b[0]);
+    if (wait) entry(waitsAt, a[2], () => []).push([a[0], b[0]]);
   }
   const moment = (station: number, t: number): string => {
     const ea = new Map<number, number>(),
@@ -487,7 +490,16 @@ export function network(
     for (const [x, there] of ea) ahead += (leaving.get(x) ?? []).filter((v) => v >= there).length;
     // Stryker disable next-line AssignmentOperator,EqualityOperator: -n, or all there minus n, tells the same moments apart (where one walks from does not depend on t).
     for (const [x, by] of ld) behind += (arriving.get(x) ?? []).filter((v) => v <= by).length;
-    return `${String(station)}:${String(ahead)}:${String(behind)}`;
+    // Cut where the other way does not reach the rest of it.
+    const cut =
+      [...ea].some(([x, there]) =>
+        (waitsAt.get(x) ?? []).some(([from, to]) => from < there && there <= to && !atLeast(ld.get(x), there)),
+      ) ||
+      [...ld].some(([x, by]) =>
+        (waitsAt.get(x) ?? []).some(([from, to]) => from <= by && by < to && !atMost(ea.get(x), by)),
+      );
+    // Stryker disable next-line StringLiteral: any suffix without "@" tells the same moments apart.
+    return `${String(station)}:${String(ahead)}:${String(behind)}${cut ? `@${String(t)}` : ""}`;
   };
   return { rides: all, stays, waits, walks, chainsAt, touching, reach, moment };
 }
