@@ -1171,6 +1171,7 @@ function network(pieces, base, chains, visible) {
     return out;
   };
   const leaving = new Map, arriving = new Map;
+  const waitsAt = new Map;
   const mark = (m, s, t) => {
     entry(m, s, () => []).push(t);
   };
@@ -1188,6 +1189,8 @@ function network(pieces, base, chains, visible) {
     const wait = p.kind === "wait";
     mark(leaving, a[2], wait ? b[0] : a[0]);
     mark(arriving, b[2], wait ? a[0] : b[0]);
+    if (wait)
+      entry(waitsAt, a[2], () => []).push([a[0], b[0]]);
   }
   const moment = (station, t) => {
     const ea = new Map, ld = new Map;
@@ -1198,7 +1201,8 @@ function network(pieces, base, chains, visible) {
       ahead += (leaving.get(x) ?? []).filter((v) => v >= there).length;
     for (const [x, by] of ld)
       behind += (arriving.get(x) ?? []).filter((v) => v <= by).length;
-    return `${String(station)}:${String(ahead)}:${String(behind)}`;
+    const cut = [...ea].some(([x, there]) => (waitsAt.get(x) ?? []).some(([from, to]) => from < there && there <= to && !atLeast(ld.get(x), there))) || [...ld].some(([x, by]) => (waitsAt.get(x) ?? []).some(([from, to]) => from <= by && by < to && !atMost(ea.get(x), by)));
+    return `${String(station)}:${String(ahead)}:${String(behind)}${cut ? `@${String(t)}` : ""}`;
   };
   return { rides: all, stays, waits, walks, chainsAt, touching, reach, moment };
 }
