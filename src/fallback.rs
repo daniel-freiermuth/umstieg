@@ -160,30 +160,7 @@ impl<'n> Fallbacks<'n> {
                         from_boarding.push(c.clone());
                     }
                 }
-                // The same chain from its first train on, boarded without a walk,
-                // is one fallback: boarded where it calls first. Walked to, it is
-                // one of its own, unless also boarded at that call without a walk.
-                // Earliest boarding first: of the copies in a slot, the first stays.
-                // Copies tying on boarding and walk are the same chain.
-                let mut copies: Vec<(Onward, Boarding, Chain)> = candidates
-                    .into_iter()
-                    .chain(from_boarding)
-                    // Every fallback has a ride.
-                    .filter_map(|c| onward(&c).map(|(key, rank)| (key, rank, c)))
-                    .collect();
-                copies.sort_by_key(|&(_, rank, _)| rank);
-                let mut kept: HashMap<(Onward, Option<CallIdx>), Chain> = HashMap::new();
-                let mut direct: HashMap<Onward, HashSet<CallIdx>> = HashMap::new();
-                for (key, (board, walk), c) in copies {
-                    if walk.is_none() {
-                        direct.entry(key.clone()).or_default().insert(board);
-                    }
-                    kept.entry((key, walk.map(|_| board))).or_insert(c);
-                }
-                kept.retain(|(key, walked_to), _| {
-                    walked_to.is_none_or(|board| !direct.get(key).is_some_and(|boards| boards.contains(&board)))
-                });
-                candidates = kept.into_values().collect();
+                candidates = merge_boarded_elsewhere(candidates, from_boarding);
             }
         }
         let mut ranked = candidates
@@ -234,6 +211,34 @@ fn onward(chain: &Chain) -> Option<(Onward, Boarding)> {
         _ => None,
     };
     Some(((trip, alight, chain.steps.get(first.saturating_add(1)..)?.to_vec()), (board, walk)))
+}
+
+/// The fallbacks listed from where the train arrived and `from_boarding`, as one list.
+/// The same chain from its first train on, boarded without a walk,
+/// is one fallback: boarded where it calls first. Walked to, it is
+/// one of its own, unless also boarded at that call without a walk.
+fn merge_boarded_elsewhere(listed: Vec<Chain>, from_boarding: Vec<Chain>) -> Vec<Chain> {
+    // Earliest boarding first: of the copies in a slot, the first stays.
+    // Copies tying on boarding and walk are the same chain.
+    let mut copies: Vec<(Onward, Boarding, Chain)> = listed
+        .into_iter()
+        .chain(from_boarding)
+        // Every fallback has a ride.
+        .filter_map(|c| onward(&c).map(|(key, rank)| (key, rank, c)))
+        .collect();
+    copies.sort_by_key(|&(_, rank, _)| rank);
+    let mut kept: HashMap<(Onward, Option<CallIdx>), Chain> = HashMap::new();
+    let mut direct: HashMap<Onward, HashSet<CallIdx>> = HashMap::new();
+    for (key, (board, walk), c) in copies {
+        if walk.is_none() {
+            direct.entry(key.clone()).or_default().insert(board);
+        }
+        kept.entry((key, walk.map(|_| board))).or_insert(c);
+    }
+    kept.retain(|(key, walked_to), _| {
+        walked_to.is_none_or(|board| !direct.get(key).is_some_and(|boards| boards.contains(&board)))
+    });
+    kept.into_values().collect()
 }
 
 /// Whether `chain` gets to `station` (by train or on foot, or riding through
