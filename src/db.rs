@@ -28,6 +28,8 @@ const MAX_CONCURRENT_REQUESTS: usize = 4;
 const MAX_ATTEMPTS: u32 = 3;
 /// First retry delay, doubled per attempt; tests don't wait seconds.
 const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
+/// A request still unanswered after this is given up on.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Station lookups, `name\teva\tdb name` per line (empty eva: DB doesn't know it).
 const STATION_CACHE: &str = "stations.tsv";
 
@@ -166,7 +168,7 @@ impl Db {
             .map(|text| parse_station_cache(&text))
             .unwrap_or_default();
         Ok(Self {
-            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(30)).build()?,
+            http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             base: base.trim_end_matches('/').to_owned(),
             credentials,
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),

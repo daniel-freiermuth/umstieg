@@ -20,6 +20,8 @@ const CACHE_TTL: Duration = Duration::from_mins(10);
 const ATTEMPTS: u32 = 3;
 /// First retry delay, doubled per attempt; tests don't wait seconds.
 const BACKOFF: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
+/// A request still unanswered after this is given up on.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Trip ids of EFA runs start with this; the timetable prefers their times.
 pub const TRIP_PREFIX: &str = "efa:";
 
@@ -112,7 +114,7 @@ pub fn dhid(stop_id: &str) -> Option<String> {
 impl Efa {
     pub fn new(base: &str, user_agent: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(60)).build()?,
+            http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             base: base.trim_end_matches('/').to_owned(),
             disk: DiskCache::new("efa", CACHE_TTL),
             requests: AtomicUsize::new(0),

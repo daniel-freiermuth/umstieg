@@ -25,6 +25,8 @@ const PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(10);
 /// First retry delay, doubled per attempt; tests don't wait seconds.
 const BACKOFF: std::time::Duration =
     if cfg!(test) { std::time::Duration::from_millis(1) } else { std::time::Duration::from_secs(1) };
+/// A request still unanswered after this is given up on.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -329,10 +331,8 @@ pub struct Motis {
 
 impl Motis {
     pub fn new(base: &str, user_agent: &str) -> Result<Self> {
-        let http =
-            reqwest::Client::builder().user_agent(user_agent).timeout(std::time::Duration::from_secs(60)).build()?;
         Ok(Self {
-            http,
+            http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             base: base.trim_end_matches('/').to_owned(),
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             cache: Mutex::new(HashMap::new()),

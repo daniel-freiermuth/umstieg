@@ -25,6 +25,8 @@ pub const API: &str = "https://prod-api.adp.sj.se/public/sales/booking/v3";
 const KEY: &str = "d6625619def348d38be070027fd24ff6";
 /// A search answers a whole day; repeating or tweaking it reuses that.
 const CACHE_TTL: Duration = Duration::from_mins(10);
+/// A request still unanswered after this is given up on.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Time zone of SJ's dates.
 const SWEDISH_TIME_ZONE: &str = "Europe/Stockholm";
 /// Days asked for at most: SJ answers a day per search.
@@ -104,7 +106,7 @@ pub struct Sj {
 impl Sj {
     pub fn new(base: &str, user_agent: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder().user_agent(user_agent).timeout(Duration::from_secs(30)).build()?,
+            http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             base: base.trim_end_matches('/').to_owned(),
             cache: DiskCache::new("sj", CACHE_TTL),
             requests: AtomicUsize::new(0),
