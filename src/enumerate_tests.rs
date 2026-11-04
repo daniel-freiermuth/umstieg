@@ -7,6 +7,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::testkit::{Builder, Spec, at, ride, show, spec, timetable};
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, TripIdx};
 
 const fn min(m: i64) -> TimeDelta {
     TimeDelta::minutes(m)
@@ -28,13 +29,13 @@ fn limits(tt: &Timetable, from: &str, until: &str) -> Limits {
     }
 }
 
-fn station(tt: &Timetable, name: &str) -> usize {
-    tt.stations.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no station {name}"))
+fn station(tt: &Timetable, name: &str) -> StationIdx {
+    StationIdx(tt.stations.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no station {name}")))
 }
 
 fn walk(tt: &Timetable, from: &str, to: &str) -> Step {
     let (from, to) = (station(tt, from), station(tt, to));
-    Step::Walk { footpath: tt.footpaths.iter().position(|f| f.from == from && f.to == to).unwrap() }
+    Step::Walk { footpath: FootpathIdx(tt.footpaths.iter().position(|f| f.from == from && f.to == to).unwrap()) }
 }
 
 /// The connections found, sorted; each must be listed once.
@@ -154,9 +155,9 @@ fn a_stop_without_departure_time_is_ridden_through() {
     assert_eq!(listed(&tt, &limits(&tt, "08:00", "08:00")), ["RE 1 A-D"]);
     let net = Network::new(&tt).unwrap();
     let (a, bb) = (station(&tt, "A"), station(&tt, "B"));
-    assert_eq!((net.lower_bound[a], net.bound[a]), (Some(min(60)), Some(min(60))));
+    assert_eq!((net.lower_bound[a.0], net.bound[a.0]), (Some(min(60)), Some(min(60))));
     let fastest = fastest_journeys(&tt).unwrap();
-    assert_eq!((fastest[a], fastest[bb]), (Some(min(60)), None));
+    assert_eq!((fastest[a.0], fastest[bb.0]), (Some(min(60)), None));
 }
 
 fn three_ways() -> Timetable {
@@ -238,7 +239,7 @@ fn changes_missed_by_up_to_missed_by_are_listed_with_negative_buffer() {
             .iter()
             .map(|c| {
                 let second = c.rides().nth(1).unwrap().trip;
-                (tt.trips[second].label.clone(), c.min_slack(&tt).unwrap().unwrap().num_minutes())
+                (tt.trips[second.0].label.clone(), c.min_slack(&tt).unwrap().unwrap().num_minutes())
             })
             .collect();
         found.sort();
@@ -322,7 +323,7 @@ fn a_walk_too_long_to_end_is_never_taken() {
     }
     assert_eq!(listed(&tt, &limits(&tt, "08:00", "08:00")), ["RE 1 A-D"]);
     // Walking all the way: as long as the walk.
-    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C")], Some(TimeDelta::MAX));
+    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C").0], Some(TimeDelta::MAX));
     let chain = Chain { steps: vec![ride(&tt, "RE 2", "A", "C"), walk(&tt, "C", "D")] };
     let err = chain.arrival(&tt).unwrap_err().to_string();
     assert!(err.contains("arrival after the last walk") && err.contains("out of range"), "{err}");
@@ -333,9 +334,9 @@ fn a_timetable_referring_to_a_missing_station_is_an_error() {
     let mut b = Builder::new();
     b.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
     let mut tt = b.build("A", "D");
-    tt.trips[0].calls[0].station = 99;
+    tt.trips[0].calls[0].station = StationIdx(99);
     assert_eq!(Network::new(&tt).err().map(|e| e.to_string()), Some("no station 99 in the timetable".to_owned()));
-    let chain = Chain { steps: vec![Step::Ride { trip: 7, board: 0, alight: 1 }] };
+    let chain = Chain { steps: vec![Step::Ride { trip: TripIdx(7), board: CallIdx(0), alight: CallIdx(1) }] };
     assert!(chain.departure(&tt).is_err() && chain.arrival(&tt).is_err() && chain.transfers(&tt).is_err());
 }
 
@@ -543,7 +544,7 @@ fn groups_by_first_and_last_train_feasible_first_then_arrival_changes_buffer() {
     ];
     assert_eq!(got, expected);
     for g in &groups {
-        let trips: Vec<usize> = g.chains[0].rides().map(|ride| ride.trip).collect();
+        let trips: Vec<TripIdx> = g.chains[0].rides().map(|ride| ride.trip).collect();
         assert_eq!((g.first, g.last), (trips[0], trips[trips.len() - 1]));
     }
 }
@@ -572,7 +573,7 @@ fn chain_times_transfers_and_buffers() {
         .transfers(&tt)
         .unwrap()
         .iter()
-        .map(|t| (tt.stations[t.station].name.as_str(), t.departure, t.walk, t.slack))
+        .map(|t| (tt.stations[t.station.0].name.as_str(), t.departure, t.walk, t.slack))
         .collect();
     // At B: arrives 08:34, walks 5 min, RE 2 leaves 08:40.
     assert_eq!(transfers, [("B", at("08:40"), min(5), min(1)), ("C", at("09:05"), min(0), min(5))]);
@@ -618,11 +619,11 @@ fn earliest_arrival_by_train_from_a_start_time() {
         ("W", None),
     ];
     for (name, expected) in cases {
-        assert_eq!(ea[station(&tt, name)], expected.map(at), "{name}");
+        assert_eq!(ea[station(&tt, name).0], expected.map(at), "{name}");
     }
     // RB 8 is missed by 4 min.
     let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:45"), min(4)).unwrap();
-    assert_eq!(ea[station(&tt, "M")], Some(at("08:50")));
+    assert_eq!(ea[station(&tt, "M").0], Some(at("08:50")));
 }
 
 /// A pass can improve trains but no walks; only a pass improving nothing
@@ -636,7 +637,7 @@ fn earliest_arrival_scans_until_nothing_improves() {
     b.walk("B", "C", 5);
     let tt = b.build("A", "E");
     let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:00"), TimeDelta::zero()).unwrap();
-    assert_eq!(ea[station(&tt, "E")], Some(at("09:30")));
+    assert_eq!(ea[station(&tt, "E").0], Some(at("09:30")));
 }
 
 /// Missed connections are listed even when nothing else gets there.
@@ -682,7 +683,7 @@ fn lower_bounds_take_the_fastest_ride_per_stretch() {
     ];
     for (name, planned, live) in cases {
         let s = station(&tt, name);
-        assert_eq!((net.lower_bound[s], net.bound[s]), (planned.map(min), live.map(min)), "{name}");
+        assert_eq!((net.lower_bound[s.0], net.bound[s.0]), (planned.map(min), live.map(min)), "{name}");
     }
 }
 
@@ -723,7 +724,7 @@ fn fastest_journeys_wait_for_a_later_faster_train() {
     b.trip("RE 5", &[("V", "", "08:20"), ("Q", "08:50", "")]);
     let tt = b.build("V", "D");
     let fastest = fastest_journeys(&tt).unwrap();
-    assert_eq!((fastest[station(&tt, "V")], fastest[station(&tt, "Q")]), (Some(min(80)), Some(min(30))));
+    assert_eq!((fastest[station(&tt, "V").0], fastest[station(&tt, "Q").0]), (Some(min(80)), Some(min(30))));
 }
 
 /// Rides taking no time at 09:00, scanned in an order where ICE 1 passing P
@@ -737,7 +738,7 @@ fn fastest_journeys_settle_rides_taking_no_time() {
     b.trip("RB 3", &[("Q", "", "09:10"), ("D", "09:40", "")]);
     let tt = b.build("V", "D");
     let fastest = fastest_journeys(&tt).unwrap();
-    let at_station = |name| fastest[station(&tt, name)];
+    let at_station = |name| fastest[station(&tt, name).0];
     assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
 }
 
@@ -795,14 +796,14 @@ impl Oracle<'_> {
             steps: Vec::new(),
             found: HashSet::new(),
         };
-        o.visited[limits.origin] = true;
+        o.visited[limits.origin.0] = true;
         o.go(limits.origin, limits.depart_from, None, 0, false, TimeDelta::zero());
         o.found
     }
 
     fn go(
         &mut self,
-        station: usize,
+        station: StationIdx,
         ready: DateTime<Utc>,
         deadline: Option<DateTime<Utc>>,
         rides: usize,
@@ -817,26 +818,26 @@ impl Oracle<'_> {
         }
         if deadline.is_none() && !walked {
             for (i, fp) in tt.footpaths.iter().enumerate().filter(|(_, fp)| fp.from == station) {
-                if self.visited[fp.to] || fp.to == tt.destination {
+                if self.visited[fp.to.0] || fp.to == tt.destination {
                     continue;
                 }
-                self.visited[fp.to] = true;
-                self.steps.push(Step::Walk { footpath: i });
+                self.visited[fp.to.0] = true;
+                self.steps.push(Step::Walk { footpath: FootpathIdx(i) });
                 self.go(fp.to, ready + fp.duration, None, rides, true, fp.duration);
                 self.steps.pop();
-                self.visited[fp.to] = false;
+                self.visited[fp.to.0] = false;
             }
         }
         if let Some(deadline) = deadline.filter(|_| !walked) {
             for (i, fp) in tt.footpaths.iter().enumerate().filter(|(_, fp)| fp.from == station) {
-                if self.visited[fp.to] || ready + fp.duration > deadline {
+                if self.visited[fp.to.0] || ready + fp.duration > deadline {
                     continue;
                 }
-                self.visited[fp.to] = true;
-                self.steps.push(Step::Walk { footpath: i });
+                self.visited[fp.to.0] = true;
+                self.steps.push(Step::Walk { footpath: FootpathIdx(i) });
                 self.go(fp.to, ready + fp.duration, Some(deadline), rides, true, lead);
                 self.steps.pop();
-                self.visited[fp.to] = false;
+                self.visited[fp.to.0] = false;
             }
         }
         if rides > self.limits.max_changes {
@@ -862,20 +863,25 @@ impl Oracle<'_> {
                 let mut passed = Vec::new();
                 for (alight, c) in t.calls.iter().enumerate().skip(board + 1) {
                     let Some(arrival) = c.arrival_time() else { break };
-                    if self.visited[c.station] || arrival < departure || arrival > deadline {
+                    if self.visited[c.station.0] || arrival < departure || arrival > deadline {
                         break;
                     }
-                    self.visited[c.station] = true;
+                    self.visited[c.station.0] = true;
                     passed.push(c.station);
-                    let progress = !self.limits.forward_only || self.lower_bound[c.station] < self.lower_bound[station];
+                    let progress =
+                        !self.limits.forward_only || self.lower_bound[c.station.0] < self.lower_bound[station.0];
                     if !c.cancelled && progress {
-                        self.steps.push(Step::Ride { trip, board, alight });
+                        self.steps.push(Step::Ride {
+                            trip: TripIdx(trip),
+                            board: CallIdx(board),
+                            alight: CallIdx(alight),
+                        });
                         self.go(c.station, arrival, Some(deadline), rides + 1, false, lead);
                         self.steps.pop();
                     }
                 }
                 for s in passed {
-                    self.visited[s] = false;
+                    self.visited[s.0] = false;
                 }
                 self.used[trip] = false;
             }
@@ -887,9 +893,9 @@ impl Oracle<'_> {
 /// walks (one before the first train, never two in a row), revisits allowed.
 /// Returns (duration, planned ride and walk time, live ride and walk time),
 /// each minimised on its own.
-fn journeys(tt: &Timetable, from: usize) -> [Option<TimeDelta>; 3] {
+fn journeys(tt: &Timetable, from: StationIdx) -> [Option<TimeDelta>; 3] {
     struct Best {
-        tt_destination: usize,
+        tt_destination: StationIdx,
         best: [Option<TimeDelta>; 3],
     }
     impl Best {
@@ -906,7 +912,7 @@ fn journeys(tt: &Timetable, from: usize) -> [Option<TimeDelta>; 3] {
         tt: &Timetable,
         b: &mut Best,
         used: &mut [bool],
-        station: usize,
+        station: StationIdx,
         ready: Option<DateTime<Utc>>,
         start: Option<DateTime<Utc>>,
         lead: TimeDelta,
@@ -1066,7 +1072,7 @@ proptest! {
         let net = Network::new(&tt).unwrap();
         let fastest = fastest_journeys(&tt).unwrap();
         for (s, &fastest) in fastest.iter().enumerate() {
-            let [duration, planned, live] = journeys(&tt, s);
+            let [duration, planned, live] = journeys(&tt, StationIdx(s));
             prop_assert_eq!(fastest, duration, "fastest from S{}", s);
             if let Some(planned) = planned {
                 prop_assert!(net.lower_bound[s].is_some_and(|lb| lb <= planned), "planned bound at S{}", s);
@@ -1142,12 +1148,15 @@ fn best_keeps_the_connections_no_other_beats() {
     let tt = b.build("A", "C");
     let chain = |steps: Vec<Step>| Chain { steps };
     let two = |first| {
-        chain(vec![Step::Ride { trip: first, board: 0, alight: 1 }, Step::Ride { trip: on, board: 0, alight: 1 }])
+        chain(vec![
+            Step::Ride { trip: first, board: CallIdx(0), alight: CallIdx(1) },
+            Step::Ride { trip: on, board: CallIdx(0), alight: CallIdx(1) },
+        ])
     };
-    let one = |trip| chain(vec![Step::Ride { trip, board: 0, alight: 1 }]);
+    let one = |trip| chain(vec![Step::Ride { trip, board: CallIdx(0), alight: CallIdx(1) }]);
     let all = vec![two(ice), two(re), two(slow), two(early), one(direct), one(late)];
     let kept: Vec<String> =
-        best(&tt, all).unwrap().iter().map(|c| tt.trips[c.rides().next().unwrap().trip].label.clone()).collect();
+        best(&tt, all).unwrap().iter().map(|c| tt.trips[c.rides().next().unwrap().trip.0].label.clone()).collect();
     // ICE 6: latest, direct (enough buffer), beats ICE 7. ICE 1 arrives first;
     // RE 2 leaves earlier for a bigger buffer; RB 3 and RB 4 both have enough
     // (above 90 minutes), so the later RB 3 beats RB 4.

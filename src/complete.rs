@@ -11,7 +11,7 @@ use chrono::TimeDelta;
 
 use crate::enumerate::{Chain, Step};
 use crate::motis::{Leg, Motis};
-use crate::timetable::Timetable;
+use crate::timetable::{CallIdx, Timetable, TripIdx};
 
 /// Trains looked up per search: two requests each, Transitous is volunteer-run.
 pub const MAX_TRAINS: usize = 20;
@@ -24,8 +24,8 @@ const SAME_TIME: TimeDelta = TimeDelta::minutes(2);
 
 /// Trains ridden in `chains` known only from DB boards, with known calls at
 /// least `GAP` apart: the widest gaps first, at most `MAX_TRAINS`.
-pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<usize> {
-    let mut trips: Vec<usize> = chains
+pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<TripIdx> {
+    let mut trips: Vec<TripIdx> = chains
         .iter()
         .flat_map(|c| &c.steps)
         .filter_map(|s| match *s {
@@ -35,10 +35,10 @@ pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<usize> {
         .collect();
     trips.sort_unstable();
     trips.dedup();
-    let mut gapped: Vec<(TimeDelta, usize)> = trips
+    let mut gapped: Vec<(TimeDelta, TripIdx)> = trips
         .into_iter()
         .filter_map(|i| {
-            let trip = tt.trips.get(i)?;
+            let trip = tt.trip(i).ok()?;
             if trip.transitous {
                 return None;
             }
@@ -56,11 +56,11 @@ pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<usize> {
 /// call with a departure at a station Transitous has an id for: same time,
 /// and the train number in its name or trip id (`FlixTrain` has it only there).
 /// `None` if Transitous doesn't know the train there.
-pub async fn lookup(motis: &Motis, tt: &Timetable, trip: usize) -> Result<Option<Leg>> {
+pub async fn lookup(motis: &Motis, tt: &Timetable, trip: TripIdx) -> Result<Option<Leg>> {
     let t = tt.trip(trip)?;
     let anchor = t.calls.iter().find_map(|c| {
         let departure = c.departure?.planned;
-        let id = tt.stations.get(c.station)?.motis_id.clone()?;
+        let id = tt.stations.get(c.station.0)?.motis_id.clone()?;
         Some((id, departure))
     });
     let Some((stop, departure)) = anchor else {
@@ -89,13 +89,13 @@ fn mentions(text: &str, number: u32) -> bool {
 
 /// Points `chains`' rides of `trip` at its calls' new places after stops
 /// were added (`remap[old] = new`).
-pub fn remap(chains: &mut [Chain], trip: usize, remap: &[usize]) {
+pub fn remap(chains: &mut [Chain], trip: TripIdx, remap: &[CallIdx]) {
     for step in chains.iter_mut().flat_map(|c| &mut c.steps) {
         if let Step::Ride { trip: t, board, alight } = step
             && *t == trip
         {
-            *board = remap.get(*board).copied().unwrap_or(*board);
-            *alight = remap.get(*alight).copied().unwrap_or(*alight);
+            *board = remap.get(board.0).copied().unwrap_or(*board);
+            *alight = remap.get(alight.0).copied().unwrap_or(*alight);
         }
     }
 }

@@ -8,11 +8,12 @@ use chrono_tz::UTC;
 use super::{buffer, clock, duration, header, route, timed, window};
 use crate::enumerate::{Chain, Step};
 use crate::testkit::{Builder, time};
+use crate::timetable::{CallIdx, FootpathIdx, StationIdx, TripIdx};
 
 const MIN: TimeDelta = TimeDelta::minutes(5);
 
-fn ride(trip: usize, board: usize, alight: usize) -> Step {
-    Step::Ride { trip, board, alight }
+fn ride(trip: TripIdx, board: usize, alight: usize) -> Step {
+    Step::Ride { trip, board: CallIdx(board), alight: CallIdx(alight) }
 }
 
 #[test]
@@ -108,7 +109,7 @@ fn header_shows_times_in_the_given_zone_and_the_smallest_buffer() {
     // Buffers 7m and 4m: the smaller, flagged. 06:39 and 21:06 UTC are 08:39 and 23:06 in Berlin.
     assert_eq!(header(&tt, &two, MIN, Berlin).unwrap(), "08:39 CEST → 23:06 CEST  14h27  2×  min 4m⚠");
 
-    tt.destination = tt.stations.iter().position(|s| s.name == "B").unwrap();
+    tt.destination = StationIdx(tt.stations.iter().position(|s| s.name == "B").unwrap());
     let direct = Chain { steps: vec![ride(ice, 0, 1)] };
     assert_eq!(header(&tt, &direct, MIN, UTC).unwrap(), "06:39 UTC → 08:03 UTC  1h24  0×  direct");
 
@@ -126,7 +127,7 @@ fn header_arrival_includes_a_final_walk() {
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
     b.walk("B", "C", 10);
     let tt = b.build("A", "C");
-    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }] };
+    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: FootpathIdx(0) }] };
     assert_eq!(header(&tt, &chain, MIN, UTC).unwrap(), "08:00 UTC → 09:10 UTC  1h10  0×  direct");
 }
 
@@ -143,7 +144,8 @@ fn route_lists_trains_changes_and_buffers() {
     let direct = Chain { steps: vec![ride(ice, 0, 2)] };
     assert_eq!(route(&tt, &direct, MIN, &none, UTC).unwrap(), "08:00 UTC ICE 1 → 10:02 UTC (+2) C");
 
-    let chain = Chain { steps: vec![ride(ice, 0, 2), ride(re, 0, 1), Step::Walk { footpath: 0 }, ride(s, 0, 1)] };
+    let chain =
+        Chain { steps: vec![ride(ice, 0, 2), ride(re, 0, 1), Step::Walk { footpath: FootpathIdx(0) }, ride(s, 0, 1)] };
     assert_eq!(
         route(&tt, &chain, MIN, &none, UTC).unwrap(),
         // Same station: not repeated; another station after a walk: named.
@@ -158,7 +160,7 @@ fn a_walk_to_the_first_train_comes_first_and_the_connection_leaves_before_it() {
     b.walk("Göteborg Central", "Nils Ericsonterminalen", 5);
     let bus = b.trip("Vy Bus4You 654", &[("Nils Ericsonterminalen", "", "07:00"), ("Malmö", "10:25", "")]);
     let tt = b.build("Göteborg Central", "Malmö");
-    let chain = Chain { steps: vec![Step::Walk { footpath: 0 }, ride(bus, 0, 1)] };
+    let chain = Chain { steps: vec![Step::Walk { footpath: FootpathIdx(0) }, ride(bus, 0, 1)] };
     assert_eq!(
         route(&tt, &chain, MIN, &HashSet::new(), UTC).unwrap(),
         "walk 5m to Nils Ericsonterminalen 07:00 UTC Vy Bus4You 654 → 10:25 UTC Malmö"
@@ -173,7 +175,7 @@ fn route_names_the_change_station_only_when_its_name_differs() {
     let re = b.trip("RE 2", &[("B'", "", "09:10"), ("C", "10:00", "")]);
     b.walk("B", "B'", 2);
     let mut tt = b.build("A", "C");
-    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }, ride(re, 0, 1)] };
+    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: FootpathIdx(0) }, ride(re, 0, 1)] };
     assert_eq!(
         route(&tt, &chain, MIN, &HashSet::new(), UTC).unwrap(),
         "08:00 UTC ICE 1 → 09:00 UTC B ‖8m walk 2m‖ 09:10 UTC B' RE 2 → 10:00 UTC C"
@@ -213,6 +215,6 @@ fn route_ends_with_a_walk_to_the_destination() {
     let ice = b.trip("ICE 1", &[("A", "", "08:00"), ("B", "09:00", "")]);
     b.walk("B", "C", 10);
     let tt = b.build("A", "C");
-    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: 0 }] };
+    let chain = Chain { steps: vec![ride(ice, 0, 1), Step::Walk { footpath: FootpathIdx(0) }] };
     assert_eq!(route(&tt, &chain, MIN, &HashSet::new(), UTC).unwrap(), "08:00 UTC ICE 1 → 09:00 UTC B walk 10m to C");
 }

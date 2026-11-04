@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::testkit::{Builder, at, ride};
-use crate::timetable::add_stops;
+use crate::timetable::{CallIdx, StationIdx, TripIdx, add_stops};
 
 /// FLX 1236 as DB boards know it: Frankfurt Süd and Hamburg Hbf only.
 fn flx() -> Timetable {
@@ -34,19 +34,20 @@ fn wanted_are_db_only_trains_of_the_connections_widest_gap_first() {
     b.trip("IC 4", &[("A", "", "08:00"), ("B", "10:00", "")]); // not ridden
     let merged = b.trip("EC 5", &[("A", "", "08:00"), ("B", "10:00", "")]);
     let mut tt = b.build("A", "B");
-    tt.trips[merged].transitous = true; // its stops are known already
+    tt.trips[merged.0].transitous = true; // its stops are known already
     let chains: Vec<Chain> =
         ["RE 1", "ICE 2", "S 3", "EC 5", "RE 1"].iter().map(|&train| chain(vec![ride(&tt, train, "A", "B")])).collect();
-    assert_eq!(wanted(&tt, &chains), [1, 0]);
+    assert_eq!(wanted(&tt, &chains), [TripIdx(1), TripIdx(0)]);
 }
 
 #[test]
 fn wanted_are_capped() {
     let mut b = Builder::new();
-    let trips: Vec<usize> =
+    let trips: Vec<TripIdx> =
         (0..MAX_TRAINS + 5).map(|i| b.trip(&format!("RE {i}"), &[("A", "", "08:00"), ("B", "09:00", "")])).collect();
     let tt = b.build("A", "B");
-    let chains: Vec<Chain> = trips.iter().map(|&trip| chain(vec![Step::Ride { trip, board: 0, alight: 1 }])).collect();
+    let chains: Vec<Chain> =
+        trips.iter().map(|&trip| chain(vec![Step::Ride { trip, board: CallIdx(0), alight: CallIdx(1) }])).collect();
     assert_eq!(wanted(&tt, &chains).len(), MAX_TRAINS);
 }
 
@@ -120,7 +121,7 @@ async fn lookup_finds_the_train_by_time_and_number_in_its_trip_id() {
     let fake = Arc::new(Fake::default());
     let motis = transitous(&fake, "complete-found").await;
     let tt = flx();
-    let leg = lookup(&motis, &tt, 0).await.unwrap().unwrap();
+    let leg = lookup(&motis, &tt, TripIdx(0)).await.unwrap().unwrap();
     assert_eq!(leg.trip_id.as_deref(), Some("20261024_eu-flixbus_FLX10-1236-0515"));
     let asked = fake.asked.lock().unwrap();
     assert_eq!(asked[0]["stopId"], "de-DELFI_de:06412:912_G");
@@ -134,14 +135,14 @@ async fn lookup_needs_a_station_transitous_knows_and_the_train_there() {
     // No Transitous id at the only station the train departs from.
     let mut tt = flx();
     tt.stations[0].motis_id = None;
-    assert!(lookup(&motis, &tt, 0).await.unwrap().is_none());
+    assert!(lookup(&motis, &tt, TripIdx(0)).await.unwrap().is_none());
     assert_eq!(fake.stoptimes.load(Ordering::SeqCst), 0, "nothing asked");
     // Known there, but Transitous has no such train at that time.
     let mut b = Builder::new();
     b.trip("FLX 1236", &[("Frankfurt Süd", "", "07:30"), ("Hamburg Hbf", "13:21", "")]);
     let mut tt = b.build("Frankfurt Süd", "Hamburg Hbf");
     tt.stations[0].motis_id = Some("x".to_owned());
-    assert!(lookup(&motis, &tt, 0).await.unwrap().is_none());
+    assert!(lookup(&motis, &tt, TripIdx(0)).await.unwrap().is_none());
     assert!(fake.trips.lock().unwrap().is_empty(), "no trip asked for");
 }
 
@@ -151,19 +152,22 @@ async fn found_stops_fill_the_gap_and_connections_keep_their_rides() {
     let motis = transitous(&fake, "complete-fill").await;
     let mut tt = flx();
     let mut chains = vec![chain(vec![ride(&tt, "FLX 1236", "Frankfurt Süd", "Hamburg Hbf")])];
-    let leg = lookup(&motis, &tt, 0).await.unwrap().unwrap();
-    let moved = add_stops(&mut tt, 0, &leg).unwrap();
-    remap(&mut chains, 0, &moved);
-    let names: Vec<&str> = tt.trips[0].calls.iter().map(|c| tt.stations[c.station].name.as_str()).collect();
+    let leg = lookup(&motis, &tt, TripIdx(0)).await.unwrap().unwrap();
+    let moved = add_stops(&mut tt, TripIdx(0), &leg).unwrap();
+    remap(&mut chains, TripIdx(0), &moved);
+    let names: Vec<&str> = tt.trips[0].calls.iter().map(|c| tt.stations[c.station.0].name.as_str()).collect();
     // Only between the known calls; Stuttgart is before Frankfurt Süd.
     assert_eq!(names, ["Frankfurt Süd", "Fulda (FlixTrain)", "Berlin Hbf (FlixTrain)", "Hamburg Hbf"]);
-    assert_eq!(moved, [0, 3]);
+    assert_eq!(moved, [CallIdx(0), CallIdx(3)]);
     let Step::Ride { board, alight, .. } = chains[0].steps[0] else { panic!("a ride") };
-    assert_eq!((tt.trips[0].calls[board].station, tt.trips[0].calls[alight].station), (0, 1));
+    assert_eq!(
+        (tt.trips[0].calls[board.0].station, tt.trips[0].calls[alight.0].station),
+        (StationIdx(0), StationIdx(1))
+    );
     // Other trains' rides are untouched.
-    let mut other = vec![chain(vec![Step::Ride { trip: 1, board: 0, alight: 1 }])];
-    remap(&mut other, 0, &moved);
-    assert!(matches!(other[0].steps[0], Step::Ride { trip: 1, board: 0, alight: 1 }));
+    let mut other = vec![chain(vec![Step::Ride { trip: TripIdx(1), board: CallIdx(0), alight: CallIdx(1) }])];
+    remap(&mut other, TripIdx(0), &moved);
+    assert!(matches!(other[0].steps[0], Step::Ride { trip: TripIdx(1), board: CallIdx(0), alight: CallIdx(1) }));
 }
 
 #[test]
@@ -183,12 +187,12 @@ fn a_copy_disagreeing_where_both_stop_adds_nothing() {
     };
     // Twelve minutes off at Frankfurt Süd: another train, or one of the feeds is wrong.
     let mut tt = flx();
-    assert!(add_stops(&mut tt, 0, &leg("2026-10-24T07:10:00Z")).is_none());
+    assert!(add_stops(&mut tt, TripIdx(0), &leg("2026-10-24T07:10:00Z")).is_none());
     assert_eq!(tt.trips[0].calls.len(), 2);
     // Within two minutes: the same train.
-    assert_eq!(add_stops(&mut tt, 0, &leg("2026-10-24T07:00:00Z")), Some(vec![0, 2]));
+    assert_eq!(add_stops(&mut tt, TripIdx(0), &leg("2026-10-24T07:00:00Z")), Some(vec![CallIdx(0), CallIdx(2)]));
     // Nothing new the second time.
-    assert!(add_stops(&mut tt, 0, &leg("2026-10-24T07:00:00Z")).is_none());
+    assert!(add_stops(&mut tt, TripIdx(0), &leg("2026-10-24T07:00:00Z")).is_none());
 }
 
 #[test]
@@ -209,9 +213,9 @@ fn added_stops_take_on_the_trains_delay() {
         "to": { "name": "Flensburg", "scheduledArrival": "2026-10-24T16:41:00Z" },
     }))
     .unwrap();
-    add_stops(&mut tt, 0, &leg).unwrap();
+    add_stops(&mut tt, TripIdx(0), &leg).unwrap();
     let jubek = &tt.trips[0].calls[1];
-    assert_eq!(tt.stations[jubek.station].name, "Jübek");
+    assert_eq!(tt.stations[jubek.station.0].name, "Jübek");
     let actual = |t: Option<crate::timetable::Time>| t.map(|t| t.actual);
     assert_eq!((actual(jubek.arrival), actual(jubek.departure)), (Some(at("16:28")), Some(at("16:29"))));
 }
@@ -233,7 +237,7 @@ fn with_delays_ignored_added_stops_keep_planned_times() {
         "to": { "name": "Hamburg Hbf", "scheduledArrival": "2026-10-24T13:21:00Z" },
     }))
     .unwrap();
-    add_stops(&mut tt, 0, &leg).unwrap();
+    add_stops(&mut tt, TripIdx(0), &leg).unwrap();
     let actual: Vec<_> =
         tt.trips[0].calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().map(|t| t.actual).collect();
     let planned: Vec<_> = ["06:55", "06:58", "11:01", "11:18", "13:21"].into_iter().map(at).collect();
@@ -259,7 +263,7 @@ fn added_stops_leave_the_known_calls_times_alone() {
         "to": { "name": "Hamburg Hbf", "scheduledArrival": "2026-10-24T13:21:00Z" },
     }))
     .unwrap();
-    add_stops(&mut tt, 0, &leg).unwrap();
+    add_stops(&mut tt, TripIdx(0), &leg).unwrap();
     let actual: Vec<_> =
         tt.trips[0].calls.iter().flat_map(|c| [c.arrival, c.departure]).flatten().map(|t| t.actual).collect();
     let expected: Vec<_> = ["07:35", "07:38", "11:41", "11:58", "13:21"].into_iter().map(at).collect();

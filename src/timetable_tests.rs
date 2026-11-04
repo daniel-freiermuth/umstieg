@@ -14,6 +14,7 @@ use super::{
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Mode, Place, Stop};
 use crate::testkit::{Builder, at, time};
+use crate::timetable::StationIdx;
 
 // ---------------------------------------------------------------- helpers
 
@@ -84,18 +85,18 @@ fn path_after(mut visits: Vec<(usize, Visit)>, station: usize, path: &[&str]) ->
 fn boards(visits: impl IntoIterator<Item = (usize, Visit)>) -> Boards {
     let mut out = Boards::new();
     for (station, v) in visits {
-        out.entry(station).or_default().0.push(v);
+        out.entry(StationIdx(station)).or_default().0.push(v);
     }
     out
 }
 
 fn cover(boards: &mut Boards, station: usize, entries: &[(DateTime<Utc>, ProductClass)]) {
-    boards.entry(station).or_default().1 = Coverage::of(entries);
+    boards.entry(StationIdx(station)).or_default().1 = Coverage::of(entries);
 }
 
 fn call(station: usize, from_board: bool, arrival: &str, departure: &str) -> Call {
     Call {
-        station,
+        station: StationIdx(station),
         arrival: time(arrival),
         departure: time(departure),
         platform: None,
@@ -124,7 +125,7 @@ fn raw(trips: Vec<(&str, Trip)>) -> HashMap<String, Trip> {
 
 /// (station, from DB) per call.
 fn calls_of(trip: &Trip) -> Vec<(usize, bool)> {
-    trip.calls.iter().map(|c| (c.station, c.from_board)).collect()
+    trip.calls.iter().map(|c| (c.station.0, c.from_board)).collect()
 }
 
 fn labels(trips: &[Trip]) -> Vec<&str> {
@@ -208,8 +209,8 @@ fn rough(itineraries: &[Itinerary], all_stops: bool) -> (Stations, super::Rough)
     (stations, rough)
 }
 
-fn index_of(stations: &Stations, name: &str) -> usize {
-    stations.list.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no station {name}"))
+fn index_of(stations: &Stations, name: &str) -> StationIdx {
+    StationIdx(stations.list.iter().position(|s| s.name == name).unwrap_or_else(|| panic!("no station {name}")))
 }
 
 // ---------------------------------------------------------------- times
@@ -252,7 +253,7 @@ fn ignore_delays_restores_planned_times_but_keeps_cancellations() {
     b.cancel(ice, "B");
     let mut tt = b.build("A", "C");
     tt.ignore_delays();
-    let calls = &tt.trips[ice].calls;
+    let calls = &tt.trips[ice.0].calls;
     assert_eq!(calls.len(), 3);
     for c in calls {
         for t in [c.arrival, c.departure].into_iter().flatten() {
@@ -353,7 +354,7 @@ fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
     let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
     let mut calls = vec![
         Call {
-            station: 0,
+            station: StationIdx(0),
             arrival: None,
             departure: Some(Time { planned: min, actual: max }),
             platform: None,
@@ -402,7 +403,15 @@ proptest! {
             t += minutes(dwell);
             let departure =
                 has_departure.then(|| Time { planned: t, actual: t + minutes(departure_delay.unwrap_or(0)) });
-            calls.push(Call { station: 0, arrival, departure, platform: None, cancelled: false, from_board, trafikverket: false });
+            calls.push(Call {
+                station: StationIdx(0),
+                arrival,
+                departure,
+                platform: None,
+                cancelled: false,
+                from_board,
+                trafikverket: false,
+            });
         }
         let before: Vec<(bool, Time)> = calls
             .iter()
@@ -463,7 +472,7 @@ fn finish_drops_single_calls_and_orders_calls_by_planned_time() {
     let trips = finish(vec![lonely, merged]);
     assert_eq!(labels(&trips), ["ICE 378"]);
     let calls = &trips[0].calls;
-    assert_eq!(calls.iter().map(|c| c.station).collect::<Vec<_>>(), [0, 1, 3, 2]);
+    assert_eq!(calls.iter().map(|c| c.station.0).collect::<Vec<_>>(), [0, 1, 3, 2]);
     // Hanau, from MOTIS, now lies between the delayed DB stops.
     assert_eq!(calls[2].arrival_time(), Some(at("07:50")));
 }
@@ -482,7 +491,7 @@ fn stations_unify_by_folded_name() {
         let a = stations.intern(Sighting { name: first, ..Sighting::default() });
         let b = stations.intern(Sighting { name: second, ..Sighting::default() });
         assert_eq!(a == b, same, "{first} / {second}");
-        assert_eq!(stations.list[a].name, first, "the first name stays");
+        assert_eq!(stations.list[a.0].name, first, "the first name stays");
     }
 }
 
@@ -505,12 +514,12 @@ fn a_station_named_after_a_bus_stop_takes_the_first_train_stops_name() {
         ..Sighting::default()
     };
     assert_eq!(stations.intern(bus), idx);
-    assert_eq!(stations.list[idx].name, "Malmö central train station FlixBus stop");
+    assert_eq!(stations.list[idx.0].name, "Malmö central train station FlixBus stop");
     let train = Sighting { name: "Malmö Centralstation", position: Some(north(malmo, 50.0)), ..Sighting::default() };
     assert_eq!(stations.intern(train), idx);
     let other = Sighting { name: "Malmö Central", position: Some(malmo), ..Sighting::default() };
     assert_eq!(stations.intern(other), idx);
-    assert_eq!(stations.list[idx].name, "Malmö Centralstation");
+    assert_eq!(stations.list[idx.0].name, "Malmö Centralstation");
     assert_eq!(stations.list.len(), 1);
 }
 
@@ -560,7 +569,7 @@ fn stations_named_without_their_place_go_by_dbs_name() {
     let destination = stations.intern(db("Hbf", "8000013", "Augsburg Hbf"));
     stations.name_by_db((origin, destination));
     let names: Vec<&str> =
-        [origin, stuttgart, mannheim, unknown, destination].iter().map(|&i| stations.list[i].name.as_str()).collect();
+        [origin, stuttgart, mannheim, unknown, destination].iter().map(|&i| stations.list[i.0].name.as_str()).collect();
     assert_eq!(names, ["Hauptbahnhof", "Stuttgart Hbf", "Mannheim, Hauptbahnhof", "Bahnhof", "Hbf"]);
     assert_eq!(stations.intern(Sighting { name: "Stuttgart Hbf", ..Sighting::default() }), stuttgart);
 }
@@ -600,7 +609,7 @@ fn train_stations_go_by_trafikverkets_names_but_not_the_ends_or_bus_stops() {
     stations.name_by_trafikverket(&list, (origin, destination));
     let names: Vec<&str> = [origin, destination, lund_idx, landskrona_idx, near_lund, bus]
         .iter()
-        .map(|&i| stations.list[i].name.as_str())
+        .map(|&i| stations.list[i.0].name.as_str())
         .collect();
     assert_eq!(
         names,
@@ -687,7 +696,7 @@ fn stations_fill_unknown_fields_from_later_sightings_first_wins() {
     // The same name with another EVA number is another station.
     let other = stations.intern(Sighting { name: "Fulda", eva: Some("1234567"), ..Sighting::default() });
     assert_ne!(other, a);
-    let s = &stations.list[a];
+    let s = &stations.list[a.0];
     assert_eq!(stations.list.len(), 2);
     assert_eq!(
         (s.eva.as_deref(), s.board_name.as_deref(), s.position, s.motis_id.as_deref()),
@@ -711,9 +720,11 @@ fn nearby_stations_kept_apart_get_minimum_walks_both_ways() {
         station("Somewhere", None),
     ];
     // MOTIS knows a quicker way from the S-Bahn station up to the main hall.
-    let motis = HashMap::from([((1, 0), minutes(2))]);
-    let got: Vec<(usize, usize, TimeDelta)> =
-        footpaths(&stations, motis).into_iter().map(|Footpath { from, to, duration }| (from, to, duration)).collect();
+    let motis = HashMap::from([((StationIdx(1), StationIdx(0)), minutes(2))]);
+    let got: Vec<(usize, usize, TimeDelta)> = footpaths(&stations, motis)
+        .into_iter()
+        .map(|Footpath { from, to, duration }| (from.0, to.0, duration))
+        .collect();
     // 299 m at 1 m/s is just under the 5 minute minimum.
     let expected = [
         (0, 1, minutes(5)),
@@ -777,7 +788,7 @@ fn motis_itinerary_becomes_trips_keyed_by_trip_id() {
     let ice = &rough.trips["20261024_07:23_de-DELFI_3448677552"];
     assert_eq!((ice.label.as_str(), ice.numbers.as_slice(), ice.class), ("ICE 774", &[774][..], Some(LongDistance)));
     assert_eq!(ice.headsign.as_deref(), Some("Kiel Hbf"));
-    let names: Vec<&str> = ice.calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
+    let names: Vec<&str> = ice.calls.iter().map(|c| stations.list[c.station.0].name.as_str()).collect();
     assert_eq!(
         names,
         [
@@ -803,7 +814,7 @@ fn motis_itinerary_becomes_trips_keyed_by_trip_id() {
     // the walk to the nearby Danish stop id of Altona need no footpath; the
     // only one is from the queried start coordinate to the first station.
     let duerkheim = index_of(&stations, "Bad Dürkheim, Bahnhof");
-    assert_eq!(rough.footpaths, HashMap::from([((0, duerkheim), minutes(1))]));
+    assert_eq!(rough.footpaths, HashMap::from([((StationIdx(0), duerkheim), minutes(1))]));
     assert!(stations.list.iter().all(|s| s.name != "Hamburg-Altona"));
     assert_eq!(stations.list.iter().filter(|s| s.name == "Neustadt, Böbig").count(), 1);
 }
@@ -813,9 +824,12 @@ fn corridor_is_ride_ends_or_all_non_s_bahn_stops() {
     let itinerary = fixture_itinerary();
     let names = |all_stops| {
         let (stations, rough) = rough(std::slice::from_ref(&itinerary), all_stops);
-        let mut names: Vec<String> = rough.corridor.keys().map(|&i| stations.list[i].name.clone()).collect();
+        let mut names: Vec<String> = rough.corridor.keys().map(|&i| stations.list[i.0].name.clone()).collect();
         names.sort();
-        (names, rough.corridor.into_iter().map(|(i, r)| (stations.list[i].name.clone(), r)).collect::<HashMap<_, _>>())
+        (
+            names,
+            rough.corridor.into_iter().map(|(i, r)| (stations.list[i.0].name.clone(), r)).collect::<HashMap<_, _>>(),
+        )
     };
     let (ends, ranges) = names(false);
     assert_eq!(ends, ["Altona", "Bad Dürkheim, Bahnhof", "Hamburg Hbf", "Mannheim, Hauptbahnhof", "Neustadt, Böbig"]);
@@ -868,7 +882,7 @@ fn boarding_after_a_stop_without_times_needs_no_walk() {
     let places = vec![stop("X", "", ""), stop("A", "", "08:00"), stop("B", "08:30", "")];
     let legs = vec![leg(Mode::RegionalRail, Some("t"), places, "08:00", "08:30")];
     let (stations, rough) = rough(&[Itinerary { legs }], false);
-    let names: Vec<&str> = rough.trips["t"].calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
+    let names: Vec<&str> = rough.trips["t"].calls.iter().map(|c| stations.list[c.station.0].name.as_str()).collect();
     assert_eq!(names, ["A", "B"]);
     assert_eq!(rough.footpaths, HashMap::new(), "no walk from X: the itinerary starts with the ride");
 }
@@ -914,14 +928,14 @@ fn walks_become_footpaths_between_their_stations() {
     let s = |name| index_of(&stations, name);
     let expected = HashMap::from([
         ((s("B"), s("C")), minutes(1)),
-        ((s("D"), 1), minutes(4)),
-        ((0, s("A")), minutes(6)),
+        ((s("D"), StationIdx(1)), minutes(4)),
+        ((StationIdx(0), s("A")), minutes(6)),
         ((s("Hub"), s("A")), minutes(2)),
         ((s("B"), s("Hub2")), minutes(7)),
     ]);
     assert_eq!(rough.footpaths, expected);
     // Buses don't make corridor stations.
-    let corridor: HashSet<usize> = rough.corridor.keys().copied().collect();
+    let corridor: HashSet<StationIdx> = rough.corridor.keys().copied().collect();
     assert_eq!(corridor, HashSet::from([s("A"), s("B"), s("C"), s("D")]));
     assert_eq!(rough.corridor[&s("C")], (at("09:40"), at("09:40")));
 }
@@ -937,7 +951,7 @@ fn legs_of_one_trip_from_different_itineraries_unite() {
     let (stations, rough) = rough(&itineraries, false);
     assert_eq!(rough.trips.len(), 1);
     let rj = &rough.trips["rj"];
-    let names: Vec<&str> = rj.calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
+    let names: Vec<&str> = rj.calls.iter().map(|c| stations.list[c.station.0].name.as_str()).collect();
     assert_eq!(names, ["A", "B", "C"]);
     let b = &rj.calls[1];
     assert_eq!((b.arrival, b.departure, b.platform.as_deref()), (time("09:00"), time("09:05"), Some("2")));
@@ -1006,7 +1020,7 @@ fn a_db_train_turned_short_can_be_left_at_its_new_end_and_boarded_at_its_new_sta
     let trips = merge(&stations, &boards(visits), HashMap::new(), Vec::new(), false);
     let calls: Vec<Vec<_>> = trips
         .iter()
-        .map(|t| t.calls.iter().map(|c| (c.station, c.cancelled, c.arrival, c.departure)).collect())
+        .map(|t| t.calls.iter().map(|c| (c.station.0, c.cancelled, c.arrival, c.departure)).collect())
         .collect();
     assert_eq!(
         calls,
@@ -1065,7 +1079,7 @@ fn a_db_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
         max_nodes: 1_000_000,
     };
     let mut listed = |destination: usize| {
-        tt.destination = destination;
+        tt.destination = StationIdx(destination);
         let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         let mut shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
         shown.sort();
@@ -1108,7 +1122,7 @@ fn motis_stops_of_a_db_train_turned_short_go_where_it_runs() {
     );
     let trips = finish(merge(&stations, &b, raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(
         calls,
         [
@@ -1136,7 +1150,7 @@ fn a_db_train_turned_short_where_no_board_says_so_runs_up_to_its_new_start() {
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(
         calls,
         [
@@ -1167,7 +1181,7 @@ fn a_db_train_turned_short_where_no_board_says_so_ends_where_its_changed_route_d
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(
         calls,
         [
@@ -1196,12 +1210,12 @@ fn a_db_train_turned_short_without_a_boarded_new_start_isnt_ridden_past_its_new_
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     assert_eq!(
-        trips.first().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect::<Vec<_>>()),
+        trips.first().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect::<Vec<_>>()),
         Some(vec![(0, None, time("08:00")), (1, time("08:10"), None)]),
         "A to B still runs"
     );
     assert!(
-        trips.iter().all(|t| !t.calls.iter().any(|c| c.station == 0) || t.calls.iter().all(|c| c.station <= 1)),
+        trips.iter().all(|t| !t.calls.iter().any(|c| c.station.0 == 0) || t.calls.iter().all(|c| c.station.0 <= 1)),
         "the train from A doesn't reach G, C or D: {trips:?}"
     );
 }
@@ -1229,7 +1243,7 @@ fn a_db_train_turned_short_without_a_boarded_new_start_runs_again_from_its_next_
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(
         calls,
         [
@@ -1254,7 +1268,7 @@ fn a_db_train_only_cut_short_ends_at_its_new_end() {
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(calls, [vec![(0, None, time("08:00")), (1, time("08:10"), None)]], "nothing runs after B");
 }
 
@@ -1276,7 +1290,7 @@ fn a_db_train_starting_late_doesnt_run_before_its_new_start() {
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station, c.arrival, c.departure)).collect()).collect();
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
     assert_eq!(
         calls,
         [vec![(2, None, time("08:21")), (3, time("08:30"), None)]],
@@ -1297,7 +1311,7 @@ fn a_db_train_whose_origin_has_no_board_may_run_before_its_new_start() {
     };
     let stations_of = |visits: Vec<(usize, Visit)>| {
         let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis())]), Vec::new(), false));
-        trips.iter().map(|t| t.calls.iter().map(|c| c.station).collect()).collect::<Vec<Vec<_>>>()
+        trips.iter().map(|t| t.calls.iter().map(|c| c.station.0).collect()).collect::<Vec<Vec<_>>>()
     };
     let cancel = |e: &mut Option<Event>| e.as_mut().expect("event").cancelled = true;
 
@@ -1658,7 +1672,7 @@ fn copies_of_a_train_from_two_feeds_become_one_with_efa_times() {
                 false,
             );
             assert_eq!(trips.len(), 1, "{what}, {efa_id}");
-            let mut times: Vec<_> = trips[0].calls.iter().map(|c| (c.station, c.planned())).collect();
+            let mut times: Vec<_> = trips[0].calls.iter().map(|c| (c.station.0, c.planned())).collect();
             times.sort_unstable();
             let expected: Vec<_> = expected.iter().map(|&(s, t)| (s, Some(at(t)))).collect();
             assert_eq!(times, expected, "{what}, {efa_id}");
@@ -1863,7 +1877,7 @@ async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
     assert_eq!(discovered, ["Mittelberg"]);
     let mittelberg = index_of(&stations, "Mittelberg");
     assert!(boards.contains_key(&mittelberg));
-    assert_eq!(stations.list[mittelberg].position, None);
+    assert_eq!(stations.list[mittelberg.0].position, None);
 }
 
 // ---------------------------------------------------------------- Trafikverket
@@ -1962,13 +1976,13 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     assert_eq!(log[8], "runs 7200");
     assert_eq!(log.len(), 9);
 
-    let tv_of = |i: usize| stations.list[i].tv.clone();
+    let tv_of = |i: StationIdx| stations.list[i.0].tv.clone();
     assert_eq!((tv_of(origin), tv_of(destination)), (Some("G".to_owned()), Some("Kh".to_owned())));
     let mut labels: Vec<&str> = found.trips.iter().map(|(t, ..)| t.label.as_str()).collect();
     labels.sort_unstable();
     assert_eq!(labels, ["Krösatågen 7100", "Krösatågen 7200", "SJ Regional 319", "Öresundståg 1060"]);
     let trip = |label: &str| &found.trips.iter().find(|(t, ..)| t.label == label).unwrap().0;
-    let names = |t: &Trip| t.calls.iter().map(|c| stations.list[c.station].name.clone()).collect::<Vec<_>>();
+    let names = |t: &Trip| t.calls.iter().map(|c| stations.list[c.station.0].name.clone()).collect::<Vec<_>>();
     assert_eq!(
         names(trip("Öresundståg 1060")),
         ["Karlskrona C", "Karlshamns resecentrum", "Köpenhamn H"],
@@ -1985,7 +1999,7 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     assert_eq!(route, &HashSet::from(["Göteborg C", "Lessebo", "Emmaboda", "Nybro"].map(str::to_owned)));
     // The boards' stations cover every class in the hours they list trains.
     let emmaboda = index_of(&stations, "Emmaboda");
-    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
+    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[i.0].name.as_str()).collect();
     covered.sort_unstable();
     let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamns resecentrum", "Karlskrona C", "Nybro"];
     assert_eq!(covered, boarded);
@@ -2007,11 +2021,16 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let motis = motis_trip(
         "SJ Regional 319",
         Some(LongDistance),
-        &[(origin, "", "06:04"), (emmaboda, "09:27", "09:30"), (karlskrona, "10:30", "10:31"), (kalmar, "10:20", "")],
+        &[
+            (origin.0, "", "06:04"),
+            (emmaboda.0, "09:27", "09:30"),
+            (karlskrona.0, "10:30", "10:31"),
+            (kalmar.0, "10:20", ""),
+        ],
     );
     let trips = merge(&stations.list, &Boards::new(), raw(vec![("m", motis)]), found.trips, false);
     let sj = trips.iter().find(|t| t.label == "SJ Regional 319").unwrap();
-    let names: Vec<&str> = sj.calls.iter().map(|c| stations.list[c.station].name.as_str()).collect();
+    let names: Vec<&str> = sj.calls.iter().map(|c| stations.list[c.station.0].name.as_str()).collect();
     assert_eq!(names, ["Göteborg Centralstation", "Lessebo", "Emmaboda", "Nybro", "Kalmar C"]);
 }
 
@@ -2053,13 +2072,14 @@ async fn junction_boards_cover_nothing_when_their_runs_fail() {
     let mut labels: Vec<&str> = found.trips.iter().map(|(t, ..)| t.label.as_str()).collect();
     labels.sort_unstable();
     assert_eq!(labels, ["Krösatågen 7100", "SJ Regional 319", "Öresundståg 1060"]);
-    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[*i].name.as_str()).collect();
+    let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[i.0].name.as_str()).collect();
     covered.sort_unstable();
     assert_eq!(covered, ["Göteborg Centralstation", "Karlshamns resecentrum"]);
 
     // So Transitous's Krösatågen 7200 keeps its stops at the junction boards.
     let (emmaboda, karlskrona) = (index_of(&stations, "Emmaboda"), index_of(&stations, "Karlskrona C"));
-    let motis = motis_trip("Krösatågen 7200", Some(Regional), &[(emmaboda, "", "09:40"), (karlskrona, "10:15", "")]);
+    let motis =
+        motis_trip("Krösatågen 7200", Some(Regional), &[(emmaboda.0, "", "09:40"), (karlskrona.0, "10:15", "")]);
     let boards: Boards = found.coverage.into_iter().map(|(idx, coverage)| (idx, (Vec::new(), coverage))).collect();
     let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips, false);
     let kt = trips.iter().find(|t| t.label == "Krösatågen 7200").expect("the Transitous train");
@@ -2156,7 +2176,7 @@ fn stations_with_different_trafikverket_signatures_stay_apart() {
     });
     let d = stations.intern(Sighting { name: "Cst", tv: Some("Cst"), ..Sighting::default() });
     assert_eq!((a == b, c, d), (false, a, a));
-    assert_eq!(stations.list[a].tv.as_deref(), Some("Cst"));
+    assert_eq!(stations.list[a.0].tv.as_deref(), Some("Cst"));
 }
 
 fn tv_run(ident: &str, class: ProductClass, stops: &[&str]) -> crate::trafikverket::Run {
@@ -2304,7 +2324,7 @@ fn tv_journeys(run: &crate::trafikverket::Run) -> [Vec<String>; 3] {
         max_nodes: 1_000_000,
     };
     [1, 3, 4].map(|destination| {
-        tt.destination = destination;
+        tt.destination = StationIdx(destination);
         let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         let mut shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
         shown.sort();
@@ -2616,7 +2636,7 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
         .trips
         .iter()
         .map(|t| {
-            let names = t.calls.iter().map(|c| built.timetable.stations[c.station].name.as_str()).collect();
+            let names = t.calls.iter().map(|c| built.timetable.stations[c.station.0].name.as_str()).collect();
             (t.label.as_str(), names)
         })
         .collect();
@@ -2822,7 +2842,7 @@ async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_o
             for &(name, arrival, departure) in stops {
                 let (arrival, departure) = (time(arrival).map(|t| t.planned), time(departure).map(|t| t.planned));
                 let kept = tt.trips.iter().flat_map(|t| &t.calls).any(|c| {
-                    tt.stations[c.station].name == name
+                    tt.stations[c.station.0].name == name
                         && (arrival.is_none() || c.arrival.map(|t| t.planned) == arrival)
                         && (departure.is_none() || c.departure.map(|t| t.planned) == departure)
                 });
@@ -3169,12 +3189,12 @@ async fn efa_trains_named_by_category_match_by_that_number_only_without_db_or_tr
         trips
             .iter()
             .flat_map(|t| &t.calls)
-            .any(|c| c.station == at && (!arrives || c.arrival.is_some()) && (!departs || c.departure.is_some()))
+            .any(|c| c.station.0 == at && (!arrives || c.arrival.is_some()) && (!departs || c.departure.is_some()))
     };
     if !(kept("H", true, true) && kept("D", true, false)) {
         let calls: Vec<Vec<(usize, bool, bool)>> = trips
             .iter()
-            .map(|t| t.calls.iter().map(|c| (c.station, c.arrival.is_some(), c.departure.is_some())).collect())
+            .map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival.is_some(), c.departure.is_some())).collect())
             .collect();
         wrong.push(format!("with credentials, disagreeing at the hub: {calls:?}"));
     }
