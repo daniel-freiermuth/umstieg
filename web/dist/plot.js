@@ -1543,6 +1543,13 @@ function render() {
     t.addEventListener("mousemove", (e) => {
       if (drag)
         return;
+      if (!liveStation(s.i)) {
+        if (hoverTarget !== null) {
+          hoverTarget = null;
+          refresh();
+        }
+        return;
+      }
       hoverTarget = md.stationTarget(s.i);
       refresh();
       moveTip(e);
@@ -1553,7 +1560,7 @@ function render() {
     });
     t.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!dragged)
+      if (!dragged && liveStation(s.i))
         choose(md.stationTarget(s.i));
     });
   });
@@ -1818,6 +1825,21 @@ function live(t) {
     return true;
   return covers(segments, D.pieces, t.spot);
 }
+function liveStation(s) {
+  const segments = candidates?.reach?.segments;
+  if (segments === undefined || picks.some((p) => p.id === `station:${String(s)}`))
+    return true;
+  return touchedBy(segments).has(s);
+}
+var touchedCache = new WeakMap;
+function touchedBy(segments) {
+  let found = touchedCache.get(segments);
+  if (found === undefined) {
+    found = stationsOf(segments, D.pieces);
+    touchedCache.set(segments, found);
+  }
+  return found;
+}
 var hoverPick = null;
 function previewOf(h) {
   if (h === null || !("id" in h) || typeof h.id !== "string" || picks.length === 0)
@@ -1894,11 +1916,13 @@ function refresh() {
     }
     for (const pi of mine)
       draw(pi, "strong");
-    const touched = reach ? stationsOf(reach.segments, D.pieces) : null;
+    const touched = reach ? touchedBy(reach.segments) : null;
     for (const [s, els] of view.names)
       for (const e of els)
         e.classList.toggle("out", touched?.has(s) === false);
   }
+  for (const [s, [name]] of view.names)
+    name?.classList.toggle("blocked", !liveStation(s));
   hoverLayer.replaceChildren();
   for (const p of picks)
     el("polyline", { points: pts(p), class: "picked-piece" }, hoverLayer);

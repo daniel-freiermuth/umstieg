@@ -170,10 +170,10 @@
         fill: none;
         stroke-width: 1;
       }
-      .station .station-name {
+      .station .station-name:not(.blocked) {
         cursor: pointer;
       }
-      .station .station-name:hover {
+      .station .station-name:not(.blocked):hover {
         fill: var(--fg);
       }
       /* Stations a highlight (picks, a hovered line) doesn't touch. */

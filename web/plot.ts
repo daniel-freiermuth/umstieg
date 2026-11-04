@@ -31,7 +31,18 @@ import { type Connection, type Need, bestThrough } from "./best";
 import { type Drawn, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
 import { Fallbacks, arrive } from "./fallback";
 import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
-import { type Reach, type Ride, type Spot, covers, network, onStretch, runsOf, stationsOf, stayAt } from "./reach";
+import {
+  type Reach,
+  type Ride,
+  type Segment,
+  type Spot,
+  covers,
+  network,
+  onStretch,
+  runsOf,
+  stationsOf,
+  stayAt,
+} from "./reach";
 import { entry, item } from "./util";
 
 // What the mouse is over: a line, a station, a fallback.
@@ -474,6 +485,14 @@ function render(): void {
     // station at any time, clicking lists the connections touching it.
     t.addEventListener("mousemove", (e) => {
       if (drag) return;
+      // Outside the picks' highlight a name is as dead as a grey line.
+      if (!liveStation(s.i)) {
+        if (hoverTarget !== null) {
+          hoverTarget = null;
+          refresh();
+        }
+        return;
+      }
       hoverTarget = md.stationTarget(s.i);
       refresh();
       moveTip(e);
@@ -483,8 +502,9 @@ function render(): void {
       refresh();
     });
     t.addEventListener("click", (e) => {
+      // Not through to the plot either: that would clear the picks.
       e.stopPropagation();
-      if (!dragged) choose(md.stationTarget(s.i));
+      if (!dragged && liveStation(s.i)) choose(md.stationTarget(s.i));
     });
   });
 
@@ -784,6 +804,24 @@ function live(t: Target): boolean {
   return covers(segments, D.pieces, t.spot);
 }
 
+/** Whether station `s`'s name can be hovered and picked: with picks, only if their highlight touches it (or it is picked). */
+function liveStation(s: number): boolean {
+  const segments = candidates?.reach?.segments;
+  if (segments === undefined || picks.some((p) => p.id === `station:${String(s)}`)) return true;
+  return touchedBy(segments).has(s);
+}
+
+// The stations a highlight touches, once per highlight.
+const touchedCache = new WeakMap<readonly Segment[], Set<number>>();
+function touchedBy(segments: readonly Segment[]): Set<number> {
+  let found = touchedCache.get(segments);
+  if (found === undefined) {
+    found = stationsOf(segments, D.pieces);
+    touchedCache.set(segments, found);
+  }
+  return found;
+}
+
 /**
  * With picks, what clicking the hovered line or station would leave: the
  * connections passing all picks and it, and their shared highlight (without
@@ -863,9 +901,10 @@ function refresh(): void {
     if (reach && !reachFaded) for (const [pi, ...cut] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", ...cut);
     for (const pi of mine) draw(pi, "strong");
     // Stations the highlight doesn't touch recede with its grey parts.
-    const touched = reach ? stationsOf(reach.segments, D.pieces) : null;
+    const touched = reach ? touchedBy(reach.segments) : null;
     for (const [s, els] of view.names) for (const e of els) e.classList.toggle("out", touched?.has(s) === false);
   }
+  for (const [s, [name]] of view.names) name?.classList.toggle("blocked", !liveStation(s));
 
   hoverLayer.replaceChildren();
   // The picks stay marked, under what is hovered.

@@ -92,7 +92,7 @@ with an orange band. With picks, hovering previews the click: the highlight
 through the picks and the hovered line together, the best connections passing
 both ("1 best connection passes your picks and this"), the others faded; on a
 pick, what removing it leaves. What the picks' highlight leaves grey can be
-neither hovered nor picked; station names it doesn't touch fade too.
+neither hovered nor picked; station names it doesn't touch fade and are blocked alike.
 `↑`/`↓` step through the list, `Esc` or clicking the background clears. The selection gets its changes
 labelled and its fallbacks drawn dashed in train colours, starting with a
 dotted wait from the missed departure; hovering a fallback stretch names it and
