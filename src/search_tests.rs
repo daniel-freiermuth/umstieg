@@ -174,6 +174,7 @@ fn report_with(tt: crate::timetable::Timetable, planner_first: Option<(DateTime<
     let enumeration = enumerate::enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
     let report = Report {
         args,
+        lower_bound: None,
         built: crate::timetable::Build {
             timetable: tt,
             discovered: Vec::new(),

@@ -86,6 +86,7 @@ export class Fallbacks {
       // What to do once the change is missed: only what still works.
       missedBy: 0,
       keepDetours: false,
+      lowerBound: null,
     };
     const all = everyConnection(g.pieces, g.network, g.stations, limits);
     const fastest = Math.min(...all.map((c) => c.arrival - c.departure));

@@ -2,7 +2,7 @@
 // browser over the drawn network. Every connection within the limits lies on
 // that network, and searching it by the same rules as the server (window,
 // travel time, changes, changes missed by a little, walks, no station twice,
-// no detours) finds exactly those connections. The detour rule needs a
+// no detours, forward only) finds exactly those connections. The detour rule needs a
 // train's earlier stops, known here only where the network has them.
 
 import { item } from "./util";
@@ -40,6 +40,13 @@ export interface Limits {
   minTransfer: number;
   /** Keep connections boarding a train they could have boarded at an earlier stop. */
   keepDetours: boolean;
+  /**
+   * With forward only, the least remaining travel time from each station in ms
+   * (-Infinity where the destination is out of reach, as the server orders it):
+   * a ride is left only where this is less than where it was boarded. The
+   * server's bounds, so stations added after its search are missing.
+   */
+  lowerBound: readonly number[] | null;
 }
 
 /** What a connection must pass: a picked stretch, stay, walk or station. */
@@ -432,6 +439,9 @@ function search(
           through.push(j - k);
           continue;
         }
+        // A station the server's search didn't know (stops completed after it) is never left at.
+        const lb = limits.lowerBound;
+        if (lb && !((lb[c.station] ?? Infinity) < (lb[station] ?? -Infinity))) continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
         presence.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);

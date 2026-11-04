@@ -279,14 +279,17 @@ pub async fn run(
         forward_only: args.forward_only,
         max_nodes: args.max_nodes,
     };
-    let (mut built, mut enumeration, limits) = blocking(events, move |updates| {
+    let (mut built, mut enumeration, limits, lower_bound) = blocking(events, move |updates| {
         let report = |p: enumerate::Progress| {
             let found = format!("{} connections found", p.found);
             let line = format!("up to {} changes: {} states explored, {found}", p.changes, p.nodes);
             updates.send(Update::Progress(line)).ok();
         };
-        let enumeration = enumerate::enumerate_reporting(&Network::new(&built.timetable)?, &limits, &report)?;
-        Ok((built, enumeration, limits))
+        let net = Network::new(&built.timetable)?;
+        let enumeration = enumerate::enumerate_reporting(&net, &limits, &report)?;
+        // The bounds forward-only kept to: completing stops below can lower them.
+        let lower_bound = limits.forward_only.then(|| net.lower_bound.clone());
+        Ok((built, enumeration, limits, lower_bound))
     })
     .await?;
     ticking(complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events), events, asked).await;
@@ -306,6 +309,7 @@ pub async fn run(
         built,
         enumeration,
         limits,
+        lower_bound,
         hubs: rough.hubs,
         planner_first: rough.first,
         requests,
@@ -334,7 +338,7 @@ fn drawn(
 }
 
 /// What the search kept to, for the page's own search through picks.
-fn bounds(limits: &Limits, fastest: TimeDelta) -> plot::Bounds {
+fn bounds(limits: &Limits, fastest: TimeDelta, lower_bound: Option<Vec<Option<TimeDelta>>>) -> plot::Bounds {
     plot::Bounds {
         depart_from: limits.depart_from,
         depart_until: limits.depart_until,
@@ -342,6 +346,7 @@ fn bounds(limits: &Limits, fastest: TimeDelta) -> plot::Bounds {
         max_changes: limits.max_changes,
         missed_by: limits.missed_by,
         keep_detours: limits.keep_detours,
+        lower_bound,
     }
 }
 
@@ -576,6 +581,8 @@ struct Report {
     built: timetable::Build,
     enumeration: enumerate::Enumeration,
     limits: Limits,
+    /// With `--forward-only`, the lower bounds the enumeration kept to.
+    lower_bound: Option<Vec<Option<TimeDelta>>>,
     hubs: Vec<String>,
     /// When the planner's earliest answer leaves and arrives.
     planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -601,6 +608,7 @@ impl Report {
             built,
             enumeration: result,
             limits,
+            lower_bound,
             hubs,
             planner_first,
             requests,
@@ -683,7 +691,7 @@ impl Report {
                 };
                 let plot = plot::Plot {
                     title,
-                    bounds: bounds(&limits, fastest),
+                    bounds: bounds(&limits, fastest, lower_bound),
                     usable: &network.unwrap_or_default(),
                     subtitle: format!("{departing} · {summary}{completeness}"),
                     groups: &groups,

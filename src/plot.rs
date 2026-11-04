@@ -177,6 +177,10 @@ struct LimitsOut {
     missed_by: i64,
     min_transfer: i64,
     keep_detours: bool,
+    /// With `--forward-only`, the least remaining travel time from each station
+    /// in seconds (`null` where the destination is out of reach): rides are only
+    /// left where it is less than where they were boarded.
+    lower_bound: Option<Vec<Option<i64>>>,
 }
 
 #[derive(Serialize)]
@@ -392,7 +396,7 @@ impl Builder<'_> {
 }
 
 /// What the search kept to, for the page's own search through picks.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Bounds {
     pub depart_from: DateTime<Utc>,
     pub depart_until: DateTime<Utc>,
@@ -400,6 +404,9 @@ pub struct Bounds {
     pub max_changes: usize,
     pub missed_by: TimeDelta,
     pub keep_detours: bool,
+    /// With `--forward-only`, each station's least remaining time as the
+    /// enumeration saw it (before stops were completed on the found trains).
+    pub lower_bound: Option<Vec<Option<TimeDelta>>>,
 }
 
 pub struct Plot<'a> {
@@ -643,6 +650,11 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             missed_by: plot.bounds.missed_by.num_minutes(),
             min_transfer: plot.min_transfer.num_minutes(),
             keep_detours: plot.bounds.keep_detours,
+            lower_bound: plot
+                .bounds
+                .lower_bound
+                .as_ref()
+                .map(|lb| lb.iter().map(|b| b.map(|d| d.num_seconds())).collect()),
         },
     };
     // Without a link back the page is a file (`umstieg --html`), like plot.ts's #new-search.

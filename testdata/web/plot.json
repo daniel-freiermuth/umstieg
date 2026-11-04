@@ -440,6 +440,7 @@
   "max_changes": 15,
   "missed_by": 5,
   "min_transfer": 5,
-  "keep_detours": false
+  "keep_detours": false,
+  "lower_bound": null
  }
 }

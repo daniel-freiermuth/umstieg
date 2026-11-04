@@ -38,6 +38,7 @@ interface LimitsData {
   missed_by: number;
   min_transfer: number;
   keep_detours: boolean;
+  lower_bound: (number | null)[] | null;
 }
 /** What a connection's selection shows: its route and fallbacks (index, arrival). */
 export interface DetailData {
@@ -160,6 +161,7 @@ export const decodeData: Decoder<Data> = (v, path) => {
           missed_by: n("missed_by"),
           min_transfer: n("min_transfer"),
           keep_detours: field(ol, "keep_detours", boolean, p),
+          lower_bound: field(ol, "lower_bound", nullable(array(nullable(number))), p),
         };
       },
       path,
@@ -221,6 +223,7 @@ export function load(data: Data): Plot {
     missedBy: l.missed_by * 60e3,
     minTransfer: l.min_transfer * 60e3,
     keepDetours: l.keep_detours,
+    lowerBound: l.lower_bound?.map((s) => (s === null ? -Infinity : s * 1e3)) ?? null,
   };
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }): Piece => ({
     kind,

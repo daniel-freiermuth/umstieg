@@ -140,7 +140,8 @@ var decodeData = (v, path) => {
         max_changes: n("max_changes"),
         missed_by: n("missed_by"),
         min_transfer: n("min_transfer"),
-        keep_detours: field(ol, "keep_detours", boolean, p)
+        keep_detours: field(ol, "keep_detours", boolean, p),
+        lower_bound: field(ol, "lower_bound", nullable(array(nullable(number))), p)
       };
     }, path)
   };
@@ -156,7 +157,8 @@ function load(data) {
     maxChanges: l.max_changes,
     missedBy: l.missed_by * 60000,
     minTransfer: l.min_transfer * 60000,
-    keepDetours: l.keep_detours
+    keepDetours: l.keep_detours,
+    lowerBound: l.lower_bound?.map((s) => s === null ? -Infinity : s * 1000) ?? null
   };
   const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }) => ({
     kind,
@@ -599,6 +601,9 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
           through.push(j - k);
           continue;
         }
+        const lb = limits.lowerBound;
+        if (lb && !((lb[c.station] ?? Infinity) < (lb[station] ?? -Infinity)))
+          continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
         presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
         explore(c.station, c.arr, limit, false, 0);
@@ -799,7 +804,8 @@ class Fallbacks {
       maxDuration: Infinity,
       maxChanges: CHANGES,
       missedBy: 0,
-      keepDetours: false
+      keepDetours: false,
+      lowerBound: null
     };
     const all = everyConnection(g.pieces, g.network, g.stations, limits);
     const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
