@@ -771,7 +771,7 @@ function transfers(c) {
     }
     const board = item(s.calls, 0), alight = item(s.calls, s.calls.length - 1);
     if (arrived !== null && board.dep !== null)
-      out.push({ station: arrived[0], departure: board.dep, ready: arrived[1] + walked });
+      out.push({ station: arrived[0], arrival: arrived[1], departure: board.dep, ready: arrived[1] + walked });
     arrived = alight.arr === null ? null : [alight.station, alight.arr];
     walked = 0;
   }
@@ -811,7 +811,7 @@ class Fallbacks {
     const g = this.ground;
     const t = item(transfers(plan), change);
     const rejoin = rejoins(plan);
-    let candidates = this.candidates(t.station, t.departure, t.ready);
+    let candidates = this.candidates(t.station, t.departure, t.arrival);
     const rides = plan.steps.filter((s) => s.kind === "ride");
     const boardsAt = item(item(rides, change + 1).calls, 0).station;
     if (boardsAt !== t.station) {
@@ -827,16 +827,20 @@ class Fallbacks {
     ranked.sort((a, b) => a.lands - b.lands || a.changes - b.changes || b.slack - a.slack || byText(a.line, b.line));
     const seen = new Set;
     const shown = ranked.filter((r) => !seen.has(r.line) && seen.add(r.line)).slice(0, SHOWN);
-    const since = Math.max(t.departure, t.ready);
-    return shown.map((r) => ({
-      station: t.station,
-      line: r.line,
-      lands: r.lands,
-      pieces: piecesOf(r.c, g.names, g.trips, g.limits.minTransfer, g.clock, {
-        start: [t.station, since],
-        until: r.back
-      })
-    }));
+    return shown.map((r) => {
+      const first = r.c.steps[0];
+      const there = first?.kind === "ride" && item(first.calls, 0).station !== t.station ? t.ready : t.arrival;
+      const since = Math.max(t.departure, there);
+      return {
+        station: t.station,
+        line: r.line,
+        lands: r.lands,
+        pieces: piecesOf(r.c, g.names, g.trips, g.limits.minTransfer, g.clock, {
+          start: [t.station, since],
+          until: r.back
+        })
+      };
+    });
   }
 }
 var way = (steps) => signature(steps.map((s) => ({ ...s, start: 0, end: 0 })));
