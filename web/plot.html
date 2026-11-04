@@ -176,6 +176,10 @@
       .station .station-name:hover {
         fill: var(--fg);
       }
+      /* Stations a highlight (picks, a hovered line) doesn't touch. */
+      .station .out {
+        opacity: 0.3;
+      }
       /* Base: every stretch drawn once, rides coloured by train. */
       .base .ride,
       .overlay .ride {

@@ -31,7 +31,7 @@ import { type Connection, type Need, bestThrough } from "./best";
 import { type Drawn, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
 import { Fallbacks, arrive } from "./fallback";
 import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
-import { type Reach, type Ride, type Spot, covers, network, onStretch, runsOf, stayAt } from "./reach";
+import { type Reach, type Ride, type Spot, covers, network, onStretch, runsOf, stationsOf, stayAt } from "./reach";
 import { entry, item } from "./util";
 
 // What the mouse is over: a line, a station, a fallback.
@@ -76,6 +76,8 @@ interface View {
   hoverLayer: SVGGElement;
   fbLayer: SVGGElement;
   labels: SVGGElement;
+  /** Each station's name and leader, by station. */
+  names: [station: number, els: SVGElement[]][];
   overlayKey: string | null;
   fbKey: number | null | undefined;
   fbTargets: FbTarget[];
@@ -183,7 +185,7 @@ const HINT =
   "connections. Hover a line " +
   "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " +
   "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " +
-  "it; grey parts lead past your picks), a pick again to remove it.";
+  "it; grey parts and faded station names lead past your picks), a pick again to remove it.";
 
 // Interaction state. Selection only changes on click; hovering only previews.
 const hidden = new Set<number>(); // hidden groups
@@ -448,10 +450,11 @@ function render(): void {
     H - m.b,
   );
   const stations = el("g", { class: "station" }, svg);
+  const names: [number, SVGElement[]][] = [];
   st.forEach((s, k) => {
     const ak = item(at, k);
     el("line", { x1: m.l, x2: W - m.r, y1: s.py, y2: s.py }, stations);
-    el(
+    const leader = el(
       "polyline",
       {
         points: `${String(m.l - 26)},${String(ak)} ${String(m.l - 8)},${String(s.py)} ${String(m.l)},${String(s.py)}`,
@@ -466,6 +469,7 @@ function render(): void {
       stations,
     );
     fitText(t, s.name, m.l - 34);
+    names.push([s.i, [t, leader]]);
     // Like a line in the plot: hovering previews what passes through the
     // station at any time, clicking lists the connections touching it.
     t.addEventListener("mousemove", (e) => {
@@ -575,7 +579,20 @@ function render(): void {
     refresh();
   });
 
-  view = { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels, overlayKey: null, fbKey: undefined, fbTargets: [] };
+  view = {
+    svg,
+    x,
+    y,
+    pts,
+    overlay,
+    hoverLayer,
+    fbLayer,
+    labels,
+    names,
+    overlayKey: null,
+    fbKey: undefined,
+    fbTargets: [],
+  };
   refresh();
 }
 
@@ -845,6 +862,9 @@ function refresh(): void {
     for (const pi of bright) draw(pi, "soft");
     if (reach && !reachFaded) for (const [pi, ...cut] of reach.segments) if (!shown.has(pi)) draw(pi, "soft", ...cut);
     for (const pi of mine) draw(pi, "strong");
+    // Stations the highlight doesn't touch recede with its grey parts.
+    const touched = reach ? stationsOf(reach.segments, D.pieces) : null;
+    for (const [s, els] of view.names) for (const e of els) e.classList.toggle("out", touched?.has(s) === false);
   }
 
   hoverLayer.replaceChildren();

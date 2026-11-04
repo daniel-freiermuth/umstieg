@@ -929,6 +929,19 @@ function covers(segments, lines, spot) {
     });
   });
 }
+function stationsOf(segments, lines) {
+  const out = new Set;
+  for (const [pi, a, b] of segments) {
+    const line = item(lines, pi), calls = callsAt(line);
+    line.pts.forEach((q, k) => {
+      const p = line.pts[k - 1];
+      const near = a <= q[0] && q[0] <= b || p?.[2] === q[2] && p[0] <= b && a <= q[0];
+      if (near && calls(q))
+        out.add(q[2]);
+    });
+  }
+  return out;
+}
 function runsOf(spans) {
   return mergeIntervals(spans.map((w) => [w.from, w.to]));
 }
@@ -1297,7 +1310,7 @@ var timeFmt = new Intl.DateTimeFormat(undefined, {
   timeZoneName: "short"
 });
 var trainColor = (t) => `hsl(${String(t * 137.508 % 360)}, 70%, 45%)`;
-var HINT = "Drawn is everything on some connection within the limits, or on its fallbacks; listed are the best " + "connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " + "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " + "it; grey parts lead past your picks), a pick again to remove it.";
+var HINT = "Drawn is everything on some connection within the limits, or on its fallbacks; listed are the best " + "connections. Hover a line " + "or station name to see what is reachable through it. Click it to pick it: the best connections passing it " + "are shown, also ones beaten overall (one alone is selected). Click more to narrow down (hovering previews " + "it; grey parts and faded station names lead past your picks), a pick again to remove it.";
 var hidden = new Set;
 var pinned = null;
 var picks = [];
@@ -1515,16 +1528,18 @@ function render() {
   const gap = Math.min(12, (H - m.t - m.b) / Math.max(1, st.length));
   const at = spreadLabels(st.map((s) => s.py), gap, H - m.b);
   const stations = el("g", { class: "station" }, svg);
+  const names = [];
   st.forEach((s, k) => {
     const ak = item(at, k);
     el("line", { x1: m.l, x2: W - m.r, y1: s.py, y2: s.py }, stations);
-    el("polyline", {
+    const leader = el("polyline", {
       points: `${String(m.l - 26)},${String(ak)} ${String(m.l - 8)},${String(s.py)} ${String(m.l)},${String(s.py)}`,
       class: "leader",
       stroke: `hsl(${String(hue(s.i))}, 60%, 50%)`
     }, stations);
     const t = el("text", { x: m.l - 30, y: ak + gap / 3, "text-anchor": "end", "font-size": Math.min(11, gap), class: "station-name" }, stations);
     fitText(t, s.name, m.l - 34);
+    names.push([s.i, [t, leader]]);
     t.addEventListener("mousemove", (e) => {
       if (drag)
         return;
@@ -1628,7 +1643,20 @@ function render() {
     clearPicks();
     refresh();
   });
-  view = { svg, x, y, pts, overlay, hoverLayer, fbLayer, labels, overlayKey: null, fbKey: undefined, fbTargets: [] };
+  view = {
+    svg,
+    x,
+    y,
+    pts,
+    overlay,
+    hoverLayer,
+    fbLayer,
+    labels,
+    names,
+    overlayKey: null,
+    fbKey: undefined,
+    fbTargets: []
+  };
   refresh();
 }
 var frame = null;
@@ -1866,6 +1894,10 @@ function refresh() {
     }
     for (const pi of mine)
       draw(pi, "strong");
+    const touched = reach ? stationsOf(reach.segments, D.pieces) : null;
+    for (const [s, els] of view.names)
+      for (const e of els)
+        e.classList.toggle("out", touched?.has(s) === false);
   }
   hoverLayer.replaceChildren();
   for (const p of picks)

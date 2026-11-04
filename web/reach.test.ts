@@ -12,6 +12,7 @@ import {
   network,
   onStretch,
   runsOf,
+  stationsOf,
   stayAt,
 } from "./reach";
 
@@ -1107,5 +1108,40 @@ describe("covers", () => {
       covers(on, [ride(1, calls, [1])], { station: 1, t: 23 }),
       covers(on, [ride(1, calls)], { station: 1, t: 23 }),
     ]).toEqual([false, true]);
+  });
+  test("stationsOf: calls inside a segment and stays sharing time with it", () => {
+    const of = (seg: Segment[]): number[] => [...stationsOf(seg, lines)].sort((a, b) => a - b);
+    expect([
+      of([[0, 10, 40]]),
+      // A call at an end of the segment counts.
+      of([[0, 0, 10]]),
+      of([[0, 40, 50]]),
+      // Standing at 1 (20–25) only.
+      of([[0, 21, 24]]),
+      // Riding from 1 to 2, between the calls: neither.
+      of([[0, 26, 39]]),
+      // Waiting at 1 from 20 to 30, a moment of it.
+      of([[1, 29, 29]]),
+      of([[1, 31, 35]]),
+      of([]),
+      of([
+        [0, 5, 12],
+        [1, 30, 31],
+      ]),
+    ]).toEqual([[0, 1, 2], [0], [2], [1], [], [1], [], [], [0, 1]]);
+    // Only passing 1 (cancelled there), standing or not: not touched.
+    const passing = [
+      ride(
+        1,
+        [
+          [0, 10],
+          [1, 20, 25],
+          [2, 40],
+        ],
+        [1],
+      ),
+    ];
+    expect([...stationsOf([[0, 10, 40]], passing)]).toEqual([0, 2]);
+    expect([...stationsOf([[0, 21, 24]], passing)]).toEqual([]);
   });
 });
