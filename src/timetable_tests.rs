@@ -2367,6 +2367,25 @@ fn a_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
 }
 
 #[test]
+fn a_train_only_cut_short_runs_nowhere_past_its_new_end() {
+    let stations = tv_stations(&[("A", (57.0, 15.0)), ("B", (56.8, 15.0)), ("C", (56.6, 15.0))]);
+    let by_sig = stations.iter().map(|s| (s.signature.as_str(), s)).collect();
+    let cancel = |m: &mut Option<crate::trafikverket::Moment>| m.as_mut().unwrap().cancelled = true;
+    // Turned at B, C cancelled both ways: no new start, it ends at B.
+    let mut run = tv_run("1", Regional, &["A", "B", "C"]);
+    cancel(&mut run.stops[1].departure);
+    cancel(&mut run.stops[2].arrival);
+    cancel(&mut run.stops[2].departure);
+    let (.., gaps) = fed_trip(&run, &by_sig, &mut Stations::default());
+    assert_eq!(gaps, [(Some(at("08:10")), DateTime::<Utc>::MAX_UTC, None)], "nothing after B");
+    // Turned at B, C's arrival announced and running: it starts again at C.
+    let mut run = tv_run("1", Regional, &["A", "B", "C"]);
+    cancel(&mut run.stops[1].departure);
+    let (.., gaps) = fed_trip(&run, &by_sig, &mut Stations::default());
+    assert_eq!(gaps, [(Some(at("08:10")), at("08:20"), None)], "not B to C");
+}
+
+#[test]
 fn a_train_skipping_a_stop_is_ridden_through_it() {
     // X cancelled both ways, B's departure and C's arrival not: the train
     // runs on through X, whether or not C has an arrival announced.
