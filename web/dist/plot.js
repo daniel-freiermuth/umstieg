@@ -893,8 +893,6 @@ var arrive = (lands, planned, clock) => `${clock(lands)} (+${duration(Math.max(0
 
 // reach.ts
 function callsAt(p) {
-  if (p.skips.length === 0)
-    return () => true;
   const passed = new Set;
   let skipped = false;
   p.raw.forEach(([t, s], i) => {
