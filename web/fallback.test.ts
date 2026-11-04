@@ -330,6 +330,52 @@ describe("fallbacks, as the server finds them", () => {
     ]);
   });
 
+  test("a missed change with a walk: fallbacks leave where the train arrived from the arrival, where the walk leads after it", () => {
+    const w = new World("Ziel");
+    w.trip("STR 4", [
+      ["Dorf", "", "08:00"],
+      ["Zentrum", "09:05", ""],
+    ]);
+    w.walk("Zentrum", "Hbf", 8);
+    w.trip("ICE 1", [
+      ["Hbf", "", "09:00"],
+      ["Ziel", "10:00", ""],
+    ]);
+    w.trip("RE 5", [
+      ["Zentrum", "", "09:07"],
+      ["Ziel", "10:20", ""],
+    ]);
+    w.trip("ICE 3", [
+      ["Hbf", "", "09:15"],
+      ["Ziel", "10:15", ""],
+    ]);
+    w.trip("ICE 9", [
+      ["Hbf", "", "09:40"],
+      ["Ziel", "10:40", ""],
+    ]);
+    const plan = w.plan([
+      ["STR 4", "Dorf", "Zentrum"],
+      ["walk", "Zentrum", "Hbf"],
+      ["ICE 1", "Hbf", "Ziel"],
+    ]);
+    const found = w.fallbacks().forChange(plan, 0);
+    expect(found.map((a) => [a.line, clock(a.lands)])).toEqual([
+      ["09:15 Hbf ICE 3 → 10:15 Ziel", "10:15"],
+      ["09:07 RE 5 → 10:20 Ziel", "10:20"],
+      ["09:40 Hbf ICE 9 → 10:40 Ziel", "10:40"],
+    ]);
+    // RE 5 is drawn from the arrival at Zentrum: a 2m wait, not from after the walk.
+    expect(found[1]?.pieces.map((p) => [p.kind, p.raw.map(([t]) => clock(t))])).toEqual([
+      ["wait", ["09:05", "09:07"]],
+      ["ride", ["09:07", "10:20"]],
+    ]);
+    // ICE 3 boards at Hbf: drawn from when the walk gets there, not from the arrival at Zentrum.
+    expect(found[0]?.pieces.map((p) => [p.kind, p.raw.map(([t]) => clock(t))])).toEqual([
+      ["wait", ["09:13", "09:15"]],
+      ["ride", ["09:15", "10:15"]],
+    ]);
+  });
+
   test("after a change with a walk, a fallback walked to at the window's end stays", () => {
     // The window from Hbf ends at 11:01, but walking from Zentrum at 10:57 still catches ICE 5.
     const { w, plan } = walkedChange(
