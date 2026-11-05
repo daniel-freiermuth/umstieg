@@ -2708,7 +2708,8 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
         Some(LongDistance),
         &[(0, "", "09:41"), (3, "10:14", "10:16"), (2, "11:21", "11:22"), (4, "11:48", "")],
     );
-    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route, Vec::new())], false);
+    let fed = vec![(tv, route, Vec::new(), Vec::new())];
+    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), fed, false);
     assert_eq!(labels(&trips), ["Öresundståg 1036"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
     assert!(trips[0].transitous);
