@@ -953,9 +953,10 @@ async fn fetch_boards(
     boards
 }
 
-/// A train known in full from a board feed, with its route's station names
-/// and the stretches it doesn't run.
-type Fed = (Trip, HashSet<String>, Vec<Gap>);
+/// A train known in full from a board feed, with its route's station names,
+/// its planned timetable (cancelled events too) and the stretches it doesn't
+/// run.
+type Fed = (Trip, HashSet<String>, Signature, Vec<Gap>);
 
 /// What Trafikverket contributes: its trains, and per boarded station which
 /// classes its board lists by the hour.
@@ -1331,6 +1332,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
     let time =
         |m: Option<trafikverket::Moment>| m.map(|m| Time { planned: m.planned, actual: m.live.unwrap_or(m.planned) });
     let mut calls = Vec::new();
+    let mut planned = Signature::new();
     let mut route = HashSet::new();
     // As for DB's trains in `merge`: where it ends and starts again.
     let mut gaps = Vec::new();
@@ -1374,6 +1376,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         } else if calls.is_empty() && stop.arrival.is_none() {
             end = Some(DateTime::<Utc>::MIN_UTC);
         }
+        planned.push((idx, stop.arrival.map(|m| m.planned), stop.departure.map(|m| m.planned)));
         calls.push(Call {
             station: idx,
             arrival: time(running(stop.arrival)),
@@ -1396,7 +1399,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         calls,
         transitous: false,
     };
-    (trip, route, gaps)
+    (trip, route, planned, gaps)
 }
 
 /// Whole seconds of a float, rounded and clamped to what a timetable needs.
@@ -1405,7 +1408,7 @@ pub const fn whole_seconds(s: f64) -> i64 {
     s.round().clamp(-1e12, 1e12) as i64
 }
 
-/// A DB train's calls as (station, planned arrival, planned departure).
+/// A train's calls as (station, planned arrival, planned departure).
 type Signature = Vec<(StationIdx, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
 /// A train seen at a station: (trip, planned arrival, planned departure).
 type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
@@ -1415,6 +1418,11 @@ type Span = (DateTime<Utc>, DateTime<Utc>);
 /// says so; its new start; else the station its changed route ends at, if
 /// any). Its origin cancelled, it ends before anything.
 type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<String>);
+/// The trains a copy matched to a train goes into: its coupled portions that
+/// run. Empty for a train not coupled: the copy goes into it alone.
+type Copies = Vec<usize>;
+/// The trains `join_coupled` keeps, with their routes, gaps and copies.
+type Joined = (Vec<Trip>, Vec<HashSet<String>>, Vec<Vec<Gap>>, Vec<Copies>);
 
 /// DB trains from the boards, one per trip in trip id order.
 fn db_trips(stations: &[Station], boards: &Boards) -> Vec<Fed> {
@@ -1518,6 +1526,9 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
         // aren't called at, so it ends where its changed route does.
         gap.push((None, DateTime::<Utc>::MAX_UTC, Some(ends_at)));
     }
+    let planned_time = |e: &Option<Event>| e.as_ref().and_then(Time::from_event).map(|t| t.planned);
+    let planned =
+        calls.iter().map(|&(station, v)| (station, planned_time(&v.arrival), planned_time(&v.departure))).collect();
     (
         Trip {
             label,
@@ -1528,38 +1539,61 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
             transitous: false,
         },
         route,
+        planned,
         gap,
     )
 }
 
 /// Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
-/// same timetable; while they run together they are one train for us. The
-/// trains kept, in order, with their routes and the stretches they don't run.
-fn join_coupled(trips: impl IntoIterator<Item = Fed>) -> (Vec<Trip>, Vec<HashSet<String>>, Vec<Vec<Gap>>) {
-    let mut seen: HashMap<Signature, usize> = HashMap::new();
+/// same timetable; while they run together they are one train for us. A run
+/// cancelled where the other isn't, or not running a stretch the other does
+/// (a portion that doesn't run, or is cut short), is a train of its own. The
+/// trains kept, in order, with their routes, the stretches they don't run,
+/// and the trains a copy of each goes into (`Copies`).
+fn join_coupled(trips: impl IntoIterator<Item = Fed>) -> Joined {
+    // A departure cancelled alone is dropped like one never planned, so
+    // the calls don't tell a run cut short from one ending there: its gaps do.
+    let mut seen: HashMap<(Signature, Vec<bool>, Vec<Gap>), usize> = HashMap::new();
+    // Portions kept apart, by their planned timetable. It keeps the events
+    // cancelled alone: one ending at C isn't one cut short there.
+    let mut portions: HashMap<Signature, Vec<usize>> = HashMap::new();
     let mut kept: Vec<Trip> = Vec::new();
     let mut kept_routes: Vec<HashSet<String>> = Vec::new();
     let mut kept_gaps = Vec::new();
-    for (trip, route, gap) in trips {
+    for (trip, route, planned, gap) in trips {
         let signature: Signature = trip
             .calls
             .iter()
             .map(|c| (c.station, c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned)))
             .collect();
-        if let Some((other, other_route)) =
-            seen.get(&signature).and_then(|&i| kept.get_mut(i).zip(kept_routes.get_mut(i)))
-        {
+        let key = (signature, trip.calls.iter().map(|c| c.cancelled).collect(), gap);
+        if let Some((other, other_route)) = seen.get(&key).and_then(|&i| kept.get_mut(i).zip(kept_routes.get_mut(i))) {
             other.label = format!("{} + {}", other.label, trip.label);
             other.numbers.extend(trip.numbers);
             other_route.extend(route);
         } else {
-            seen.insert(signature, kept.len());
+            portions.entry(planned).or_default().push(kept.len());
+            kept_gaps.push(key.2.clone());
+            seen.insert(key, kept.len());
             kept.push(trip);
             kept_routes.push(route);
-            kept_gaps.push(gap);
         }
     }
-    (kept, kept_routes, kept_gaps)
+    // Portions kept apart with one timetable are still coupled: a copy of the
+    // train, whichever portion's number it names, goes into each portion that
+    // runs anywhere. Past the boards they may part (`merge`).
+    let mut copies = vec![Copies::new(); kept.len()];
+    for group in portions.into_values().filter(|g| g.len() > 1) {
+        let runs = |&i: &usize| kept.get(i).is_some_and(|t| t.calls.iter().any(|c| !c.cancelled));
+        let running: Copies = group.iter().copied().filter(runs).collect();
+        let into = if running.is_empty() { group.clone() } else { running };
+        for &i in &group {
+            if let Some(c) = copies.get_mut(i) {
+                c.clone_from(&into);
+            }
+        }
+    }
+    (kept, kept_routes, kept_gaps, copies)
 }
 
 /// DB trains from the boards and `fed` trains (Trafikverket's), MOTIS trains
@@ -1578,7 +1612,7 @@ fn merge(
     fed: Vec<Fed>,
     planners_only: bool,
 ) -> Vec<Trip> {
-    let (mut trips, mut routes, gaps) = join_coupled(db_trips(stations, boards).into_iter().chain(fed));
+    let (mut trips, mut routes, gaps, copies) = join_coupled(db_trips(stations, boards).into_iter().chain(fed));
 
     let mut by_number: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, t) in trips.iter().enumerate() {
@@ -1712,51 +1746,60 @@ fn merge(
                 .max_by_key(|&(i, n)| (n, Reverse(i)))
                 .map(|(i, _)| i)
         });
-        let target = twin.and_then(|i| Some((i, trips.get_mut(i)?, routes.get(i)?)));
-        if let Some((i, trip, route)) = target {
-            trip.transitous = true;
-            // Entur's copy of an Öresundståg has no number; Trafiklab's has.
-            if trip.numbers.is_empty() && !motis.numbers.is_empty() {
-                trip.label.clone_from(&motis.label);
-                trip.numbers.clone_from(&motis.numbers);
-            }
-            // DB's route lists every stop; a stop unknown to DB between its
-            // first and last call is the same station under another name
-            // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
-            // So is one at the very time of the first or last call: a train
-            // can't be at two stations at once.
-            let db_times = trip.calls.iter().filter(|c| c.from_board).filter_map(Call::planned);
-            let span = db_times.clone().min().zip(db_times.max());
-            // Into another feed's copy, a stop is only taken where the copies
-            // agree on the stops around it: Transitous' ICE 273 is 10 minutes
-            // off at Karlsruhe, so its Mannheim time would be too.
-            let from_feed = !trip.calls.iter().any(|c| c.from_board);
-            let anchors = anchors_of(trip, &motis.calls);
-            let mut added = Vec::new();
-            for call in motis.calls {
-                let name = stations.get(call.station.0).and_then(|s| s.board_name.as_ref());
-                let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
-                let unknown_inside = name.is_none()
-                    && !route.is_empty()
-                    && span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
-                let unanchored = from_feed && !anchored(&anchors, call.planned());
-                // Where the base's ride ends or starts, the copy passing
-                // through gives the half it lacks (`absorbs` checked they agree).
-                if planners_only && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station) {
-                    base.arrival = base.arrival.or(call.arrival);
-                    base.departure = base.departure.or(call.departure);
+        if let Some(twin) = twin {
+            // A coupled train's portions kept apart each take the copy. Past
+            // their boards they may part, each to its own end: there only a
+            // portion the copy names takes its stops.
+            let coupled = copies.get(twin).filter(|c| !c.is_empty());
+            let into = coupled.map_or_else(|| std::slice::from_ref(&twin), Vec::as_slice);
+            for &i in into {
+                let Some((trip, route)) = trips.get_mut(i).zip(routes.get(i)) else { continue };
+                let whole = coupled.is_none() || trip.numbers.iter().any(|n| motis.numbers.contains(n));
+                trip.transitous = true;
+                // Entur's copy of an Öresundståg has no number; Trafiklab's has.
+                if trip.numbers.is_empty() && !motis.numbers.is_empty() {
+                    trip.label.clone_from(&motis.label);
+                    trip.numbers.clone_from(&motis.numbers);
                 }
-                if trip.call_at(call.station).is_none()
-                    && !off_route
-                    && !unknown_inside
-                    && !unanchored
-                    && !covered(&call, motis.class)
-                {
-                    added.push(call.clone());
-                    trip.calls.push(call);
+                // DB's route lists every stop; a stop unknown to DB between its
+                // first and last call is the same station under another name
+                // ("Frankfurt (Main) Flughafen Fernbahnhof") or not a stop at all.
+                // So is one at the very time of the first or last call: a train
+                // can't be at two stations at once.
+                let db_times = trip.calls.iter().filter(|c| c.from_board).filter_map(Call::planned);
+                let span = db_times.clone().min().zip(db_times.max());
+                // Into another feed's copy, a stop is only taken where the copies
+                // agree on the stops around it: Transitous' ICE 273 is 10 minutes
+                // off at Karlsruhe, so its Mannheim time would be too.
+                let from_feed = !trip.calls.iter().any(|c| c.from_board);
+                let anchors = anchors_of(trip, &motis.calls);
+                let mut added = Vec::new();
+                for call in &motis.calls {
+                    let name = stations.get(call.station.0).and_then(|s| s.board_name.as_ref());
+                    let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
+                    let inside = span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
+                    let unknown_inside = name.is_none() && !route.is_empty() && inside;
+                    let parted = !whole && !inside;
+                    let unanchored = from_feed && !anchored(&anchors, call.planned());
+                    // Where the base's ride ends or starts, the copy passing
+                    // through gives the half it lacks (`absorbs` checked they agree).
+                    if planners_only && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station) {
+                        base.arrival = base.arrival.or(call.arrival);
+                        base.departure = base.departure.or(call.departure);
+                    }
+                    if trip.call_at(call.station).is_none()
+                        && !off_route
+                        && !unknown_inside
+                        && !unanchored
+                        && !parted
+                        && !covered(call, motis.class)
+                    {
+                        added.push(call.clone());
+                        trip.calls.push(call.clone());
+                    }
                 }
+                index(&mut at_station, i, &added);
             }
-            index(&mut at_station, i, &added);
         } else {
             let class = motis.class;
             let calls: Vec<Call> = motis.calls.into_iter().filter(|c| !covered(c, class)).collect();

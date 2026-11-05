@@ -1415,6 +1415,210 @@ fn coupled_runs_share_their_routes_and_numbers() {
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, false)]);
 }
 
+/// (station, cancelled) per call of each trip numbered `number`.
+fn calls_numbered(trips: &[Trip], number: u32) -> Vec<Vec<(usize, bool)>> {
+    trips
+        .iter()
+        .filter(|t| t.numbers.contains(&number))
+        .map(|t| t.calls.iter().map(|c| (c.station.0, c.cancelled)).collect())
+        .collect()
+}
+
+#[test]
+fn a_coupled_db_run_cancelled_throughout_doesnt_cancel_the_portion_that_runs() {
+    // Boards at A, B and C; G and H: no board, from MOTIS if it knows the
+    // train, under either portion's number or one of neither (by shared
+    // times). The portions may part past C, each to its own end.
+    let stations: Vec<Station> = ["A", "B", "G", "H", "C"].iter().map(|&n| station(n, Some(n))).collect();
+    let motis_stops: &Stops<'_> =
+        &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "09:20", "09:21"), (3, "09:40", "09:41"), (4, "10:00", "")];
+    let all = [(0, false), (1, false), (2, false), (3, false), (4, false)];
+    let cases: [(Option<&str>, &[_]); 4] = [
+        (None, &[(0, false), (1, false), (4, false)]),
+        (Some("ICE 2808"), &all),
+        (Some("ICE 774"), &all),
+        (Some("ICE 9999"), &all),
+    ];
+    for split in [false, true] {
+        let portion = |id, label, end: &str| {
+            let c = if split { "10:05" } else { "" };
+            let visits =
+                run(id, label, Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02"), (4, "10:00", c)]);
+            let to = ["B", "G", "H", "C", end];
+            let visits = path_after(visits, 0, if split { &to } else { &to[..4] });
+            if split { path_after(visits, 4, &[end]) } else { visits }
+        };
+        // Either run's trip id may sort first.
+        for (cancelled_id, running_id) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+            for (motis, expected) in cases {
+                let mut cancelled = portion(cancelled_id, "ICE 774", "X");
+                for (_, v) in &mut cancelled {
+                    for e in [&mut v.arrival, &mut v.departure].into_iter().flatten() {
+                        e.cancelled = true;
+                    }
+                }
+                let visits = cancelled.into_iter().chain(portion(running_id, "ICE 2808", "Y"));
+                let raw = raw(motis
+                    .map(|label| ("m", motis_trip(label, Some(LongDistance), motis_stops)))
+                    .into_iter()
+                    .collect());
+                let trips = finish(merge(&stations, &boards(visits), raw, Vec::new(), false));
+                let case = format!("{cancelled_id} cancelled, MOTIS {motis:?}, parting past C: {split}");
+                assert_eq!(calls_numbered(&trips, 2808), [expected], "{case}");
+                // The cancelled portion isn't ridden anywhere.
+                let ridden =
+                    trips.iter().filter(|t| !t.numbers.contains(&2808)).flat_map(|t| &t.calls).any(|c| !c.cancelled);
+                assert!(!ridden, "{case}: {trips:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_coupled_db_run_cut_short_doesnt_cut_short_the_portion_that_runs() {
+    // Boards at A and D only: ICE 774's changed route at A ends at B, it
+    // doesn't reach D; ICE 2808 runs on. B, G and C: no board, from MOTIS,
+    // under either portion's number or one of neither (by shared times).
+    // The portions may part past D, each to its own end.
+    let stations: Vec<Station> = ["A", "B", "G", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    for split in [false, true] {
+        let portion = |id, label, end: &str| {
+            let d = if split { "08:31" } else { "" };
+            let visits = run(id, label, Some(LongDistance), &[(0, "", "08:00"), (4, "08:30", d)]);
+            let to = ["B", "G", "C", "D", end];
+            let visits = path_after(visits, 0, if split { &to } else { &to[..4] });
+            if split { path_after(visits, 4, &[end]) } else { visits }
+        };
+        // Either run's trip id may sort first.
+        for (short_id, running_id) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+            for label in ["ICE 2808", "ICE 774", "ICE 9999"] {
+                let mut short = portion(short_id, "ICE 774", "X");
+                short[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+                let d = &mut short[1].1;
+                for e in [&mut d.arrival, &mut d.departure].into_iter().flatten() {
+                    e.cancelled = true;
+                }
+                let motis = motis_trip(
+                    label,
+                    Some(LongDistance),
+                    &[
+                        (0, "", "08:00"),
+                        (1, "08:10", "08:11"),
+                        (2, "08:15", "08:16"),
+                        (3, "08:20", "08:21"),
+                        (4, "08:30", ""),
+                    ],
+                );
+                let visits = short.into_iter().chain(portion(running_id, "ICE 2808", "Y"));
+                let trips = finish(merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+                assert_eq!(
+                    calls_numbered(&trips, 2808),
+                    [vec![(0, false), (1, false), (2, false), (3, false), (4, false)]],
+                    "{short_id} cut short, MOTIS {label}, parting past D: {split}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_coupled_db_run_cut_short_at_its_partners_end_isnt_ridden_past_it() {
+    // ICE 774 ends at C. ICE 2808 would go on to E and F, but its departure
+    // at C is cancelled. E and F: no board, from MOTIS; DB may not know
+    // their names (abroad).
+    for named in [true, false] {
+        let stations: Vec<Station> = ["A", "B", "C", "E", "F"]
+            .iter()
+            .map(|&n| station(n, (named || !["E", "F"].contains(&n)).then_some(n)))
+            .collect();
+        // Either run's trip id may sort first.
+        for (ends_id, short_id) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+            let ends = run(
+                ends_id,
+                "ICE 774",
+                Some(LongDistance),
+                &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")],
+            );
+            let mut short = path_after(
+                run(
+                    short_id,
+                    "ICE 2808",
+                    Some(LongDistance),
+                    &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "10:05")],
+                ),
+                2,
+                &["E", "F"],
+            );
+            short[2].1.departure.as_mut().expect("departs").cancelled = true;
+            let motis = motis_trip(
+                "ICE 2808",
+                Some(LongDistance),
+                &[
+                    (0, "", "08:00"),
+                    (1, "09:00", "09:02"),
+                    (2, "10:00", "10:05"),
+                    (3, "11:00", "11:01"),
+                    (4, "12:00", ""),
+                ],
+            );
+            let visits = ends.into_iter().chain(short);
+            let trips = finish(merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+            let past_c: Vec<_> =
+                trips.iter().filter(|t| t.calls.iter().any(|c| c.station.0 > 2)).map(|t| &t.label).collect();
+            assert!(past_c.is_empty(), "{short_id} cut short, E and F named: {named}: {past_c:?} runs past C");
+        }
+    }
+}
+
+#[test]
+fn coupled_db_runs_splitting_past_the_boards_dont_take_each_others_copies() {
+    // Boards at A and B, where ICE 774 and ICE 2808 run coupled. Then 774
+    // goes to C and 2808 to E, neither named by DB (abroad). One of them is
+    // cut short at B: its departure there is cancelled.
+    let stations = vec![station("A", Some("A")), station("B", Some("B")), station("C", None), station("E", None)];
+    let stops: &Stops<'_> = &[(0, "", "08:00"), (1, "09:00", "09:02")];
+    let portion = |id, label, to: &str| {
+        path_after(path_after(run(id, label, Some(LongDistance), stops), 0, &["B", to]), 1, &[to])
+    };
+    for short in [774, 2808] {
+        // Either run's trip id may sort first.
+        for (id_774, id_2808) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+            let mut visits = portion(id_774, "ICE 774", "C")
+                .into_iter()
+                .chain(portion(id_2808, "ICE 2808", "E"))
+                .collect::<Vec<_>>();
+            let cut = if short == 774 { id_774 } else { id_2808 };
+            for (_, v) in visits.iter_mut().filter(|(s, v)| *s == 1 && v.trip == cut) {
+                v.departure.as_mut().expect("departs").cancelled = true;
+            }
+            let motis = raw(vec![
+                (
+                    "m774",
+                    motis_trip(
+                        "ICE 774",
+                        Some(LongDistance),
+                        &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")],
+                    ),
+                ),
+                (
+                    "m2808",
+                    motis_trip(
+                        "ICE 2808",
+                        Some(LongDistance),
+                        &[(0, "", "08:00"), (1, "09:00", "09:02"), (3, "10:00", "")],
+                    ),
+                ),
+            ]);
+            let trips = finish(merge(&stations, &boards(visits), motis, Vec::new(), false));
+            let (runs_on, ends) = if short == 774 { (2808, 774) } else { (774, 2808) };
+            let to = if short == 774 { 3 } else { 2 };
+            let case = format!("{cut} cut short");
+            assert_eq!(calls_numbered(&trips, runs_on), [vec![(0, false), (1, false), (to, false)]], "{case}");
+            assert_eq!(calls_numbered(&trips, ends), [vec![(0, false), (1, false)]], "{case}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------- merge: MOTIS into DB
 
 /// DB's ICE 616 at A and B; MOTIS has it at A and at E (unknown to DB, after
@@ -2504,7 +2708,8 @@ fn transitous_copies_merge_into_trafikverket_runs_whatever_their_class() {
         Some(LongDistance),
         &[(0, "", "09:41"), (3, "10:14", "10:16"), (2, "11:21", "11:22"), (4, "11:48", "")],
     );
-    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), vec![(tv, route, Vec::new())], false);
+    let fed = vec![(tv, route, Vec::new(), Vec::new())];
+    let trips = merge(&stations, &Boards::new(), raw(vec![("m", motis)]), fed, false);
     assert_eq!(labels(&trips), ["Öresundståg 1036"]);
     assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, true), (4, false)]);
     assert!(trips[0].transitous);
