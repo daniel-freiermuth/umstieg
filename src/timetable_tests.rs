@@ -1316,6 +1316,29 @@ fn a_db_train_only_cut_short_where_its_changed_route_ends_at_none_of_the_station
 }
 
 #[test]
+fn a_db_train_only_cut_short_where_its_changed_route_ends_back_where_it_started_runs_to_its_last_departure() {
+    // Boards at B, A and D only: from A the train goes back to B, its changed
+    // route ends there; B's board shows only its start, D isn't called at.
+    let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("r1", "RE 70", Some(Regional), &[(1, "", "08:00"), (0, "08:10", "08:11"), (3, "08:30", "")]),
+        0,
+        &["B", "D"],
+    );
+    visits[1].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+    visits[2].1.arrival.as_mut().expect("arrives").cancelled = true;
+    visits[2].1.arrival.as_mut().expect("arrives").planned_path = ["B", "A", "B"].map(str::to_owned).to_vec();
+    let trips = finish(merge(&stations, &boards(visits), raw(Vec::new()), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    assert_eq!(
+        calls,
+        [vec![(1, None, time("08:00")), (0, time("08:10"), time("08:11"))]],
+        "B to A runs: its start at B isn't where it ends"
+    );
+}
+
+#[test]
 fn a_db_train_starting_late_doesnt_run_before_its_new_start() {
     // The train doesn't leave A; it starts at C. B: no board, from MOTIS.
     let stations: Vec<Station> = ["A", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
