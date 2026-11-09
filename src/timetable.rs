@@ -1415,9 +1415,10 @@ type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 /// Two times: (one copy's, the other's) planned time at a station, or (earliest, latest).
 type Span = (DateTime<Utc>, DateTime<Utc>);
 /// A stretch a DB train turned short doesn't run: (where it ends, if a board
-/// says so; its new start; else the station its changed route ends at, if
-/// any). Its origin cancelled, it ends before anything.
-type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<String>);
+/// says so; its new start; else the planned departure of its last running
+/// call and that departure's changed route, if any). Its origin cancelled, it
+/// ends before anything.
+type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<(DateTime<Utc>, Vec<String>)>);
 /// The trains a copy matched to a train goes into: its coupled portions that
 /// run. Empty for a train not coupled: the copy goes into it alone.
 type Copies = Vec<usize>;
@@ -1493,7 +1494,7 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
     let mut end = None;
     // Where no board says where it ends: the end of the last running
     // departure's changed route (IRIS's cpth), which is cut short.
-    let mut ends_at: Option<String> = None;
+    let mut ends_at: Option<(DateTime<Utc>, Vec<String>)> = None;
     // A known new end with no boarded new start yet: the train starts
     // again at the latest at the next call that runs, if any.
     let mut open = false;
@@ -1511,8 +1512,11 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
             let ends = v.departure.as_ref().is_some_and(|e| e.cancelled);
             end = call.arrival.filter(|_| ends).map(|t| t.planned);
             open = end.is_some();
-            ends_at =
-                v.departure.as_ref().filter(|e| !e.cancelled).and_then(|e| e.changed_path.as_ref()?.last().cloned());
+            ends_at = v
+                .departure
+                .as_ref()
+                .filter(|e| !e.cancelled)
+                .and_then(|e| Some((call.departure?.planned, e.changed_path.clone().filter(|p| !p.is_empty())?)));
         } else if v.arrival.is_none() {
             end = Some(DateTime::<Utc>::MIN_UTC);
         }
@@ -1819,8 +1823,9 @@ fn merge(
     // Only now, with every feed's stops in, a train turned short becomes one
     // train up to where it ends and one from its new start; the stops between
     // are dropped. Where no board says where it ends, it ends at the last stop
-    // before the new start its changed route ends at; failing that, the first
-    // train keeps every stop before the new start; starting late, there is none.
+    // before the new start on its changed route, else at the departure whose
+    // changed route that is; failing that, the first train keeps every stop
+    // before the new start; starting late, there is none.
     let mut split = Vec::with_capacity(trips.len());
     for (i, mut trip) in trips.into_iter().enumerate() {
         let gaps = gaps.get(i).map_or(&[][..], Vec::as_slice);
@@ -1829,7 +1834,10 @@ fn merge(
         }
         for (end, start, ends_at) in gaps {
             let start = *start;
-            let end = end.or_else(|| last_call_before(&trip.calls, stations, ends_at.as_deref()?, start));
+            let end = end.or_else(|| {
+                let (departed, path) = ends_at.as_ref()?;
+                Some(last_call_on(&trip.calls, stations, *departed, path, start))
+            });
             let ran = |c: &Call| end.map_or_else(|| c.planned() < Some(start), |end| c.planned() <= Some(end));
             // `unrun` keeps the stops between, which go.
             let mut unrun = trip.calls.split_off(trip.calls.partition_point(ran));
@@ -1851,15 +1859,24 @@ fn merge(
     split
 }
 
-/// When `calls`, sorted by planned time, last stop before `start` at the
-/// station boarded as `name`.
-fn last_call_before(calls: &[Call], stations: &[Station], name: &str, start: DateTime<Utc>) -> Option<DateTime<Utc>> {
+/// When `calls`, sorted by planned time, last stop before `start` at a
+/// station boarded as one on `path`, the changed route of the departure
+/// planned at `departed`; failing that, `departed`: the train ends before the
+/// next of `calls`.
+fn last_call_on(
+    calls: &[Call],
+    stations: &[Station],
+    departed: DateTime<Utc>,
+    path: &[String],
+    start: DateTime<Utc>,
+) -> DateTime<Utc> {
     calls
         .iter()
-        .filter(|c| c.planned() < Some(start))
-        .filter(|c| stations.get(c.station.0).and_then(|s| s.board_name.as_deref()) == Some(name))
+        .filter(|c| c.planned() > Some(departed) && c.planned() < Some(start))
+        .filter(|c| stations.get(c.station.0).and_then(|s| s.board_name.as_ref()).is_some_and(|n| path.contains(n)))
         .filter_map(Call::planned)
         .next_back()
+        .unwrap_or(departed)
 }
 
 /// Whether two copies' calls at a station agree: the same planned arrival or
