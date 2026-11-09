@@ -17,18 +17,27 @@ const M = 60e3;
 /**
  * A train: [station, minute] boards or alights, [station, arrival, departure] stops between;
  * `cancelled`: positions in `calls` of stops it passes without stopping; `from`: the
- * position of its first call in the train's calls.
+ * position of its first call in the train's calls; `setdowns`: positions in `calls` of
+ * stops it has no departure at, given as [station, arrival, arrival] (drawn so).
  */
 function ride(
   trip: number,
   calls: ([number, number] | [number, number, number])[],
   cancelled: number[] = [],
   from = 0,
+  setdowns: number[] = [],
 ): Stretch {
   const raw = calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t * M, s]));
   // As the data names them: by the index of their first point.
   const first = (k: number): number => calls.slice(0, k).reduce((n, c) => n + c.length - 1, 0);
-  return { kind: "ride", trip, raw, skips: cancelled.map(first), span: [from, from + calls.length - 1] };
+  return {
+    kind: "ride",
+    trip,
+    raw,
+    skips: cancelled.map(first),
+    setdowns: setdowns.map(first),
+    span: [from, from + calls.length - 1],
+  };
 }
 /** A walk as the network has it: walked at some time (`at`), `minutes` long. */
 const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
@@ -39,6 +48,7 @@ const walk = (a: number, b: number, minutes: number, at = 0): Stretch => ({
     [(at + minutes) * M, b],
   ],
   skips: [],
+  setdowns: [],
   span: null,
 });
 const limits = (over: Partial<Limits> = {}): Limits => ({
@@ -309,6 +319,68 @@ describe("the best connections", () => {
     expect(search(left, [{ kind: "ride", trip: 6, from: 2, at: 35 * M, to: 9, until: 45 * M }])).toEqual([
       "5:0>4@0 1:4>2@21 6:2>9@35",
     ]);
+  });
+
+  test("trains are left but not boarded where they have no departure (a set-down stop)", () => {
+    // ICE 1 only sets down at 5; S 2 reaches 5 before it.
+    const net = [
+      ride(
+        1,
+        [
+          [0, 0],
+          [5, 10, 10],
+          [9, 30],
+        ],
+        [],
+        0,
+        [1],
+      ),
+      ride(2, [
+        [0, 1],
+        [5, 4],
+      ]),
+    ];
+    expect(search(net)).toEqual(["1:0>9@0"]);
+    // RE 3 leaves 5 after it: ICE 1 is left there (riding on to 9 passes 5 as well).
+    const re = ride(3, [
+      [5, 20],
+      [9, 25],
+    ]);
+    expect(search([...net, re], [{ kind: "ride", trip: 1, from: 0, at: 0, to: 5, until: 10 * M }])).toEqual([
+      "1:0>5@0 3:5>9@20",
+      "1:0>9@0",
+    ]);
+  });
+
+  test("a train is not caught earlier where it has no departure: no detour", () => {
+    // ICE 1 only sets down at 6; boarding it at 2 after reaching 6 first is no detour.
+    const net = [
+      ride(5, [
+        [0, 0],
+        [7, 3],
+      ]),
+      ride(
+        1,
+        [
+          [7, 8],
+          [6, 12, 12],
+          [2, 30, 30],
+          [9, 40],
+        ],
+        [],
+        0,
+        [1],
+      ),
+      ride(4, [
+        [0, 1],
+        [6, 5],
+      ]),
+      ride(2, [
+        [6, 8],
+        [2, 15],
+      ]),
+    ];
+    expect(search(net)).toEqual(["4:0>6@1 2:6>2@8 1:2>9@30", "5:0>7@0 1:7>9@8"]);
   });
 
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
