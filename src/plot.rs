@@ -18,7 +18,7 @@ use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::{Fallback, Fallbacks};
 use crate::page;
 use crate::text;
-use crate::timetable::{CallIdx, StationIdx, Timetable, TripIdx, meters};
+use crate::timetable::{CallIdx, StationIdx, Timetable, Trip, TripIdx, meters};
 use crate::usable::Usable;
 
 /// How a station's height is computed; all are "remaining", goal = 0.
@@ -248,6 +248,10 @@ struct Piece {
     /// leaves the train there, as the server's. Per call, not per station: a
     /// train may stop at a station it passes at another time.
     skips: Vec<usize>,
+    /// Stops a ride has no departure at (set-down only), as the index of their
+    /// first point: the page's search leaves the train there but never boards
+    /// it, as the server's.
+    setdowns: Vec<usize>,
     /// Positions of a ride's first and last call in its train's calls: where
     /// the network splits a train into runs at a stop, the page's search
     /// counts that call once, as the server's, and tells it from a second call
@@ -266,6 +270,30 @@ struct Builder<'a> {
 
 const fn point(station: StationIdx, t: DateTime<Utc>) -> (i64, StationIdx) {
     (t.timestamp().div_euclid(60), station)
+}
+
+/// A ride's points, its skips and its setdowns, as `Piece` names them.
+type RidePoints = (Vec<(i64, StationIdx)>, Vec<usize>, Vec<usize>);
+
+/// A connection's ride from `board` to `alight` as a piece's points.
+fn ride_points(t: &Trip, board: CallIdx, alight: CallIdx) -> RidePoints {
+    let (mut pts, mut skips, mut setdowns) = (Vec::new(), Vec::new(), Vec::new());
+    for (k, call) in t.calls.iter().enumerate().take(alight.0.saturating_add(1)).skip(board.0) {
+        let k = CallIdx(k);
+        let first = pts.len();
+        if k > board {
+            pts.extend(call.arrival_time().map(|at| point(call.station, at)));
+        }
+        if k < alight {
+            pts.extend(call.departure_time().map(|at| point(call.station, at)));
+        }
+        if call.cancelled && pts.len() > first {
+            skips.push(first);
+        } else if k > board && k < alight && call.departure_time().is_none() && pts.len() > first {
+            setdowns.push(first);
+        }
+    }
+    (pts, skips, setdowns)
 }
 
 impl Builder<'_> {
@@ -311,6 +339,7 @@ impl Builder<'_> {
                         trip: None,
                         pts,
                         skips: Vec::new(),
+                        setdowns: Vec::new(),
                         span: None,
                     }));
                     self.used.insert(fp.to);
@@ -344,6 +373,7 @@ impl Builder<'_> {
                             trip: None,
                             pts,
                             skips: Vec::new(),
+                            setdowns: Vec::new(),
                             span: None,
                         }));
                     }
@@ -351,20 +381,7 @@ impl Builder<'_> {
                     if until == Some(ride) {
                         break;
                     }
-                    let (mut pts, mut skips) = (Vec::new(), Vec::new());
-                    for (k, call) in t.calls.iter().enumerate().take(alight.0.saturating_add(1)).skip(board.0) {
-                        let k = CallIdx(k);
-                        let first = pts.len();
-                        if k > board {
-                            pts.extend(call.arrival_time().map(|at| point(call.station, at)));
-                        }
-                        if k < alight {
-                            pts.extend(call.departure_time().map(|at| point(call.station, at)));
-                        }
-                        if call.cancelled && pts.len() > first {
-                            skips.push(first);
-                        }
-                    }
+                    let (pts, skips, setdowns) = ride_points(t, board, alight);
                     let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
                     let info = format!(
                         "{}{} · {} {} → {} {}",
@@ -382,6 +399,7 @@ impl Builder<'_> {
                         trip: Some(trip),
                         pts,
                         skips,
+                        setdowns,
                         span: Some((board, alight)),
                     }));
                     self.used.insert(a.station);
@@ -456,7 +474,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
     let mut out = Vec::new();
     for run in &usable.rides {
         let t = tt.trip(run.trip)?;
-        let (mut pts, mut skips) = (Vec::new(), Vec::new());
+        let (mut pts, mut skips, mut setdowns) = (Vec::new(), Vec::new(), Vec::new());
         for k in (run.from.0..=run.to.0).map(CallIdx) {
             let call = tt.call(run.trip, k)?;
             let first = pts.len();
@@ -468,6 +486,8 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             }
             if call.cancelled && pts.len() > first {
                 skips.push(first);
+            } else if k > run.from && k < run.to && call.departure_time().is_none() && pts.len() > first {
+                setdowns.push(first);
             }
         }
         // Rows for where trains are boarded or left, as for connections.
@@ -489,6 +509,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             trip: Some(run.trip),
             pts,
             skips,
+            setdowns,
             span: Some((run.from, run.to)),
         }));
     }
@@ -503,6 +524,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             trip: None,
             pts,
             skips: Vec::new(),
+            setdowns: Vec::new(),
             span: None,
         }));
     }
@@ -519,6 +541,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             trip: None,
             pts,
             skips: Vec::new(),
+            setdowns: Vec::new(),
             span: None,
         }));
     }

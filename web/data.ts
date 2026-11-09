@@ -58,6 +58,7 @@ interface PieceData {
   trip: number | null;
   pts: [number, number][];
   skips: number[];
+  setdowns: number[];
   span: [number, number] | null;
 }
 const kinds = ["ride", "wait", "walk"] as const;
@@ -81,6 +82,7 @@ const decodePiece: Decoder<PieceData> = (v, path) => {
     trip: field(o, "trip", nullable(number), path),
     pts: field(o, "pts", array(pair(number, number)), path),
     skips: field(o, "skips", array(number), path),
+    setdowns: field(o, "setdowns", array(number), path),
     span: field(o, "span", nullable(pair(number, number)), path),
   };
 };
@@ -177,6 +179,8 @@ export interface Piece {
   raw: [ms: number, s: number][];
   /** Stations the ride passes without stopping (cancelled stops). */
   skips: number[];
+  /** First points of stops the ride has no departure at (set-down only). */
+  setdowns: number[];
   /** A ride's first and last call, as positions in its train's calls. */
   span: [number, number] | null;
   pts: Pt[]; // per the chosen metric
@@ -225,13 +229,14 @@ export function load(data: Data): Plot {
     keepDetours: l.keep_detours,
     lowerBound: l.lower_bound?.map((s) => (s === null ? -Infinity : s * 1e3)) ?? null,
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }): Piece => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, setdowns, span }): Piece => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60e3, s]),
     skips,
+    setdowns,
     span,
     pts: [],
   }));
