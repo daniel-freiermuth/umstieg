@@ -126,6 +126,55 @@ fn replacement_buses_trams_and_night_connections() {
     assert_eq!((bus.label(), bus.train_number()), ("Öresundståg 6804".to_owned(), None));
 }
 
+/// From Lund C towards Göteborg C, SJ's best answer a train to Malmö C,
+/// eight minutes to Norra Vallgatan, and Vy's bus to Nils Ericsonterminalen.
+fn towards_goteborg() -> Departure {
+    let station = |code: &str, name: &str| serde_json::json!({ "uicStationCode": code, "name": name });
+    let leg = |from: &serde_json::Value, to: &serde_json::Value, times: (&str, &str), method: &str, name: &str| {
+        serde_json::json!({
+            "origin": from,
+            "destination": to,
+            "departureDateTime": format!("2026-10-30T{}:00+01:00", times.0),
+            "arrivalDateTime": format!("2026-10-30T{}:00+01:00", times.1),
+            "serviceName": name,
+            "transportMethod": method,
+        })
+    };
+    let (lund, malmo) = (station("740000120", "Lund C"), station("740000003", "Malmö C"));
+    let vallgatan = station("740072050", "Malmö C Norra Vallgatan");
+    let terminal = station("740020483", "Göteborg Nils Ericsonterminalen");
+    let goteborg = station("740000002", "Göteborg C");
+    serde_json::from_value(serde_json::json!({
+        "origin": lund,
+        "destination": goteborg,
+        "legs": [
+            leg(&lund, &malmo, ("06:00", "06:12"), "TRAIN", "1063"),
+            leg(&vallgatan, &terminal, ("06:20", "09:35"), "EXPRESSBUS", "654"),
+        ],
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_connection_ending_next_to_the_destination_walks_there() {
+    let stations = [station("Göteborg C", (57.709, 11.974))];
+    let found = itineraries_of(&[towards_goteborg()], swedish("06:00"), swedish("06:00"), &stations);
+    let got: Vec<Vec<String>> = found.iter().map(legs).collect();
+    assert_eq!(
+        got,
+        [vec![
+            "REGIONAL_RAIL 1063 #1063 740000120→740000003 06:00–06:12",
+            // Eight minutes to change, under MAX_WALK: walked whole.
+            "WALK - # 740000003→740072050 06:12–06:20",
+            "COACH 654 # 740072050→740020483 06:20–09:35",
+            // From the bus terminal to the station asked about: END_WALK.
+            "WALK - # 740020483→740000002 09:35–09:40",
+        ]]
+    );
+    let walk = &found[0].legs[3].to;
+    assert_eq!((walk.name.as_str(), walk.lat, walk.lon), ("Göteborg C", Some(57.709), Some(11.974)));
+}
+
 #[test]
 fn dates_cover_the_span_in_swedish_time() {
     let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
