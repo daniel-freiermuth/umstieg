@@ -281,7 +281,8 @@ fn ride_points(t: &Trip, board: CallIdx, alight: CallIdx) -> RidePoints {
     for (k, call) in t.calls.iter().enumerate().take(alight.0.saturating_add(1)).skip(board.0) {
         let k = CallIdx(k);
         let first = pts.len();
-        if k > board {
+        let past_board = k > board;
+        if past_board {
             pts.extend(call.arrival_time().map(|at| point(call.station, at)));
         }
         if k < alight {
@@ -289,7 +290,7 @@ fn ride_points(t: &Trip, board: CallIdx, alight: CallIdx) -> RidePoints {
         }
         if call.cancelled && pts.len() > first {
             skips.push(first);
-        } else if k > board && k < alight && call.departure_time().is_none() && pts.len() > first {
+        } else if past_board && k < alight && call.departure_time().is_none() && pts.len() > first {
             setdowns.push(first);
         }
     }
@@ -478,7 +479,8 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
         for k in (run.from.0..=run.to.0).map(CallIdx) {
             let call = tt.call(run.trip, k)?;
             let first = pts.len();
-            if k > run.from {
+            let past_board = k > run.from;
+            if past_board {
                 pts.extend(call.arrival_time().map(|at| point(call.station, at)));
             }
             if k < run.to {
@@ -486,7 +488,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
             }
             if call.cancelled && pts.len() > first {
                 skips.push(first);
-            } else if k > run.from && k < run.to && call.departure_time().is_none() && pts.len() > first {
+            } else if past_board && k < run.to && call.departure_time().is_none() && pts.len() > first {
                 setdowns.push(first);
             }
         }
