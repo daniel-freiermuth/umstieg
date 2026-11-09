@@ -170,18 +170,22 @@ fn rides_name_the_cancelled_calls_they_only_pass() {
 
 #[test]
 fn rides_name_the_calls_they_have_no_departure_at() {
-    // ICE 1 only sets down at B; A's arrival and departure are equal, as a stop's may be.
+    // ICE 1 only sets down at B; A's arrival and departure are equal, as a stop's
+    // may be; D has no time, so no point to name.
     let mut b = testkit::Builder::new();
-    let ice = b.trip("ICE 1", &[("X", "", "08:00"), ("A", "08:10", "08:10"), ("B", "08:30", ""), ("C", "09:20", "")]);
+    let ice = b.trip(
+        "ICE 1",
+        &[("X", "", "08:00"), ("A", "08:10", "08:10"), ("B", "08:30", ""), ("D", "", ""), ("C", "09:20", "")],
+    );
     let tt = b.build("X", "C");
     let mut network = builder(&tt);
     let usable = crate::usable::Usable {
-        rides: vec![crate::usable::RideRun { trip: ice, from: CallIdx(0), to: CallIdx(3) }],
+        rides: vec![crate::usable::RideRun { trip: ice, from: CallIdx(0), to: CallIdx(4) }],
         ..Default::default()
     };
     let pieces = super::network_pieces(&mut network, &usable).unwrap();
     let mut chain = builder(&tt);
-    let ridden = chain.pieces(&Chain { steps: vec![ride(ice, 0, 3)] }, None, None).unwrap();
+    let ridden = chain.pieces(&Chain { steps: vec![ride(ice, 0, 4)] }, None, None).unwrap();
     for piece in [&network.pieces[pieces[0]], &chain.pieces[ridden[0]]] {
         // Drawn through B, but the page's search must not board there: named by its first point.
         assert_eq!(piece.pts[3], pt(&tt, "08:30", "B"));
