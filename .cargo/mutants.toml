@@ -55,5 +55,8 @@ exclude_re = [
   # A stop at the very time of the new start is the new start itself: a train
   # isn't at two stations at once, and the route it was cut short to doesn't
   # reach the station it starts again at.
-  'replace < with <= in last_call_before$',
+  'replace < with <= in last_call_on$',
+  # A stop at the very time of the departure ends the train there, as does
+  # finding none after it: the departure's time either way.
+  'replace > with >= in last_call_on$',
 ]
