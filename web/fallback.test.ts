@@ -27,7 +27,7 @@ class World {
       if (a) raw.push([ms(a), s]);
       if (d) raw.push([ms(d), s]);
     }
-    this.pieces.push({ kind: "ride", trip, raw, skips: [], span: [0, stops.length - 1] });
+    this.pieces.push({ kind: "ride", trip, raw, skips: [], setdowns: [], span: [0, stops.length - 1] });
   }
   walk(from: string, to: string, minutes: number): void {
     this.pieces.push({
@@ -38,6 +38,7 @@ class World {
         [minutes * 60e3, this.station(to)],
       ],
       skips: [],
+      setdowns: [],
       span: null,
     });
   }

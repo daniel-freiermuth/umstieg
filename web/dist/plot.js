@@ -81,6 +81,7 @@ var decodePiece = (v, path) => {
     trip: field(o, "trip", nullable(number), path),
     pts: field(o, "pts", array(pair(number, number)), path),
     skips: field(o, "skips", array(number), path),
+    setdowns: field(o, "setdowns", array(number), path),
     span: field(o, "span", nullable(pair(number, number)), path)
   };
 };
@@ -160,13 +161,14 @@ function load(data) {
     keepDetours: l.keep_detours,
     lowerBound: l.lower_bound?.map((s) => s === null ? -Infinity : s * 1000) ?? null
   };
-  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, span }) => ({
+  const pieces = rawPieces.map(({ kind, info, warn, trip, pts, skips, setdowns, span }) => ({
     kind,
     info,
     warn,
     trip,
     raw: pts.map(([m, s]) => [m * 60000, s]),
     skips,
+    setdowns,
     span,
     pts: []
   }));
@@ -451,7 +453,13 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const walks = new Map;
   for (const p of network.map((pi) => item(pieces, pi))) {
     if (p.trip !== null) {
-      runs.push({ trip: p.trip, calls: callsOf(p.raw), skips: skippedCalls(p.raw, p.skips), span: p.span });
+      runs.push({
+        trip: p.trip,
+        calls: callsOf(p.raw),
+        skips: skippedCalls(p.raw, p.skips),
+        setdowns: skippedCalls(p.raw, p.setdowns),
+        span: p.span
+      });
       continue;
     }
     if (p.kind !== "walk")
@@ -465,7 +473,8 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const tripCalls = new Map;
   for (const run of runs) {
     const split = run.span !== null && resumed.has(`${String(run.trip)}:${String(run.span[1])}`);
-    const calls = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
+    const kept = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
+    const calls = kept.map((c, k) => run.setdowns.has(k) ? { ...c, dep: null } : c);
     tripCalls.set(run.trip, [...tripCalls.get(run.trip) ?? [], ...calls]);
   }
   for (const calls of tripCalls.values())
@@ -473,7 +482,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   const departures = new Map;
   for (const run of runs)
     run.calls.forEach((c, k) => {
-      if (c.dep === null || run.skips.has(k))
+      if (c.dep === null || run.skips.has(k) || run.setdowns.has(k))
         return;
       const list = departures.get(c.station) ?? [];
       departures.set(c.station, list);
@@ -1792,7 +1801,7 @@ function chainOf(c) {
   if (listed !== undefined)
     return listed;
   const add = (p) => {
-    const piece = { ...p, skips: [], span: null, pts: [] };
+    const piece = { ...p, skips: [], setdowns: [], span: null, pts: [] };
     D.pieces.push(piece);
     return piece;
   };
