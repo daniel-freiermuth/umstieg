@@ -531,6 +531,8 @@ pub async fn build(
         }
         None => Vec::new(),
     };
+    // Every leg is in: the planners' and Transitous's departures in Sweden.
+    join_legs(&mut rough.trips);
     stations.name_by_db((origin_idx, destination_idx));
     let from_trafikverket = !swedish.is_empty() && !sweden_from_transitous;
     // Without DB or Trafikverket every train comes from the planners, and two
@@ -661,10 +663,23 @@ fn from_motis(
     rough
 }
 
-/// `leg`'s train, at `calls`, into `trips` by its trip id. Legs of one trip
-/// from different answers meet where one ends (arrival only) and another
-/// starts (departure only).
-fn add_trip(trips: &mut HashMap<String, Trip>, trip_id: &str, leg: &Leg, calls: Vec<Call>) {
+/// `leg`'s train, at `calls`, into `trips` by its trip id. A call already
+/// known is one sharing a planned time at its station: a train can call at
+/// a station twice (a loop, a reversal). See [`join_legs`]. The leg's
+/// stops one after the other at one station (stops close enough to be
+/// interned as one, "Marktplatz" and "Rathaus" 200 m on) are one call: the
+/// first's arrival, the last's departure.
+fn add_trip(trips: &mut HashMap<String, Trip>, trip_id: &str, leg: &Leg, mut calls: Vec<Call>) {
+    calls.dedup_by(|later, earlier| {
+        let one = later.station == earlier.station;
+        if one {
+            earlier.departure = later.departure;
+            if earlier.platform.is_none() {
+                earlier.platform = later.platform.take();
+            }
+        }
+        one
+    });
     let entry = trips.entry(trip_id.to_owned()).or_insert_with(|| Trip {
         label: leg.label(),
         numbers: leg.train_number().into_iter().collect(),
@@ -673,17 +688,58 @@ fn add_trip(trips: &mut HashMap<String, Trip>, trip_id: &str, leg: &Leg, calls: 
         calls: Vec::new(),
         transitous: true,
     });
-    for call in calls {
-        match entry.calls.iter_mut().find(|c| c.station == call.station) {
-            Some(known) => {
-                known.arrival = known.arrival.or(call.arrival);
-                known.departure = known.departure.or(call.departure);
-                if known.platform.is_none() {
-                    known.platform = call.platform;
-                }
-            }
+    for mut call in calls {
+        match entry.calls.iter_mut().find(|c| same_visit(c, &call)) {
+            Some(known) => absorb(known, &mut call),
             None => entry.calls.push(call),
         }
+    }
+}
+
+/// Whether `a` and `b` are one stop of a train: at one station, sharing a
+/// planned arrival or departure, or one leg ending there (arrival only) at
+/// the very minute the next starts (departure only): no dwell.
+fn same_visit(a: &Call, b: &Call) -> bool {
+    let planned = |t: Option<Time>| t.map(|t| t.planned);
+    let meet = |end: &Call, start: &Call| {
+        end.departure.is_none()
+            && start.arrival.is_none()
+            && planned(end.arrival).is_some_and(|t| planned(start.departure) == Some(t))
+    };
+    a.station == b.station
+        && (planned(a.arrival).is_some_and(|t| planned(b.arrival) == Some(t))
+            || planned(a.departure).is_some_and(|t| planned(b.departure) == Some(t))
+            || meet(a, b)
+            || meet(b, a))
+}
+
+/// `call`'s times and platform where `known`, the same stop, lacks them.
+fn absorb(known: &mut Call, call: &mut Call) {
+    known.arrival = known.arrival.or(call.arrival);
+    known.departure = known.departure.or(call.departure);
+    if known.platform.is_none() {
+        known.platform = call.platform.take();
+    }
+}
+
+/// A trip's calls from all its legs, in time order, as one stop where a leg
+/// ends (arrival only) and the next starts there (departure only), or where
+/// copies of a stop met only through a third. Once every leg is in: legs
+/// ending and starting at different visits of a station only look like
+/// meeting while the stops between them are unknown. Calls at one minute
+/// (hops taking none) go as the train does: leaving, then reaching, then
+/// ending there.
+fn join_legs(trips: &mut HashMap<String, Trip>) {
+    for trip in trips.values_mut() {
+        trip.calls.sort_by_key(|c| (c.planned(), c.arrival.is_some(), c.departure.is_none()));
+        trip.calls.dedup_by(|later, earlier| {
+            let meet = later.station == earlier.station && earlier.departure.is_none() && later.arrival.is_none();
+            let joined = meet || same_visit(earlier, later);
+            if joined {
+                absorb(earlier, later);
+            }
+            joined
+        });
     }
 }
 
