@@ -164,6 +164,34 @@ impl Trip {
     fn call_at(&self, station: StationIdx) -> Option<&Call> {
         self.calls.iter().find(|c| c.station == station)
     }
+
+    /// Another copy's `call` here, `copy` being that copy's calls: the call at
+    /// its station nearest it in planned time, if `call` is in turn the copy's
+    /// nearest there. Where a train calls at a station twice (a loop, a
+    /// reversal) and one copy lists a single visit, the other copy's other
+    /// visit is a stop that copy lacks. Times compare arrival to arrival and
+    /// departure to departure: a ride boarding after a long layover is nearer
+    /// the next visit's arrival than its own.
+    fn visit(&self, copy: &[Call], call: &Call) -> Option<&Call> {
+        self.calls.get(visit_of(&self.calls, copy, call)?)
+    }
+}
+
+/// Position in `calls` of [`Trip::visit`].
+fn visit_of(calls: &[Call], copy: &[Call], call: &Call) -> Option<usize> {
+    let nearest = |among: &[Call], to: &Call| {
+        let apart = |a: DateTime<Utc>, b: DateTime<Utc>| a.signed_duration_since(b).abs();
+        let half = |x: Option<Time>, y: Option<Time>| x.zip(y).map(|(x, y)| apart(x.planned, y.planned));
+        // Like halves where both have one; a leg's end against another's start otherwise.
+        let gap = |c: &Call| {
+            let like = half(c.arrival, to.arrival).into_iter().chain(half(c.departure, to.departure)).min();
+            like.or_else(|| c.planned().zip(to.planned()).map(|(a, b)| apart(a, b))).unwrap_or(TimeDelta::MAX)
+        };
+        among.iter().enumerate().filter(|(_, c)| c.station == to.station).min_by_key(|(_, c)| gap(c)).map(|(k, _)| k)
+    };
+    let k = nearest(calls, call)?;
+    let back = nearest(copy, calls.get(k)?)?;
+    std::ptr::eq(copy.get(back)?, call).then_some(k)
 }
 
 #[derive(Debug, Clone)]
@@ -1655,9 +1683,11 @@ fn merge(
         let by_number = motis.numbers.iter().find_map(|n| {
             by_number.get(n)?.iter().copied().find(|&i| {
                 motis.calls.iter().any(|c| {
-                    trips.get(i).and_then(|t| t.call_at(c.station)).is_some_and(|d| match (d.planned(), c.planned()) {
-                        (Some(a), Some(b)) => a.signed_duration_since(b).abs() <= MERGE_TOLERANCE,
-                        _ => false,
+                    trips.get(i).and_then(|t| t.visit(&motis.calls, c)).is_some_and(|d| {
+                        match (d.planned(), c.planned()) {
+                            (Some(a), Some(b)) => a.signed_duration_since(b).abs() <= MERGE_TOLERANCE,
+                            _ => false,
+                        }
                     })
                 })
             })
@@ -1679,7 +1709,7 @@ fn merge(
                 feed_by_number.get(n)?.iter().copied().find(|&i| {
                     let Some(base) = trips.get(i) else { return false };
                     let met = motis.calls.iter().any(|c| {
-                        base.call_at(c.station).is_some_and(|d| {
+                        base.visit(&motis.calls, c).is_some_and(|d| {
                             close(c.arrival.map(|t| t.planned), d.arrival.map(|t| t.planned))
                                 || close(c.departure.map(|t| t.planned), d.departure.map(|t| t.planned))
                         })
@@ -1773,8 +1803,10 @@ fn merge(
                 // off at Karlsruhe, so its Mannheim time would be too.
                 let from_feed = !trip.calls.iter().any(|c| c.from_board);
                 let anchors = anchors_of(trip, &motis.calls);
+                let visits: Vec<Option<usize>> =
+                    motis.calls.iter().map(|c| visit_of(&trip.calls, &motis.calls, c)).collect();
                 let mut added = Vec::new();
-                for call in &motis.calls {
+                for (call, visit) in motis.calls.iter().zip(visits) {
                     let name = stations.get(call.station.0).and_then(|s| s.board_name.as_ref());
                     let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
                     let inside = span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
@@ -1783,11 +1815,11 @@ fn merge(
                     let unanchored = from_feed && !anchored(&anchors, call.planned());
                     // Where the base's ride ends or starts, the copy passing
                     // through gives the half it lacks (`absorbs` checked they agree).
-                    if planners_only && let Some(base) = trip.calls.iter_mut().find(|b| b.station == call.station) {
+                    if planners_only && let Some(base) = visit.and_then(|k| trip.calls.get_mut(k)) {
                         base.arrival = base.arrival.or(call.arrival);
                         base.departure = base.departure.or(call.departure);
                     }
-                    if trip.call_at(call.station).is_none()
+                    if visit.is_none()
                         && !off_route
                         && !unknown_inside
                         && !unanchored
@@ -1872,7 +1904,7 @@ fn agree(a: &Call, b: &Call) -> bool {
 /// `calls` of another copy at stations `base` calls at too: (planned time,
 /// whether the copies agree there).
 fn anchors_of(base: &Trip, calls: &[Call]) -> Vec<(DateTime<Utc>, bool)> {
-    calls.iter().filter_map(|c| Some((c.planned()?, agree(c, base.call_at(c.station)?)))).collect()
+    calls.iter().filter_map(|c| Some((c.planned()?, agree(c, base.visit(calls, c)?)))).collect()
 }
 
 /// Whether a stop at `t` lies only next to `anchors` where the copies agree.
@@ -1894,7 +1926,7 @@ fn absorbs(base: &Trip, other: &Trip) -> bool {
     }
     let anchors = anchors_of(base, &other.calls);
     other.calls.iter().all(|c| {
-        base.call_at(c.station).map_or_else(
+        base.visit(&other.calls, c).map_or_else(
             || anchored(&anchors, c.planned()),
             |b| {
                 let lacks =
@@ -1913,10 +1945,9 @@ fn in_step(base: &Trip, other: &Trip) -> bool {
         (Some(x), Some(y)) => x.planned.signed_duration_since(y.planned).abs() <= SAME_MINUTE,
         _ => true,
     };
-    other
-        .calls
-        .iter()
-        .all(|c| base.call_at(c.station).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure)))
+    other.calls.iter().all(|c| {
+        base.visit(&other.calls, c).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure))
+    })
 }
 
 /// Whether `other` and `base`, sharing a number, are copies of one run. A
@@ -1929,7 +1960,7 @@ fn in_step(base: &Trip, other: &Trip) -> bool {
 fn one_run(base: &Trip, other: &Trip) -> bool {
     // (other's planned time, base's) at each station both list.
     let shared: Vec<Span> =
-        other.calls.iter().filter_map(|c| Some((c.planned()?, base.call_at(c.station)?.planned()?))).collect();
+        other.calls.iter().filter_map(|c| Some((c.planned()?, base.visit(&other.calls, c)?.planned()?))).collect();
     let pairs = || shared.iter().flat_map(|a| shared.iter().map(move |b| (a, b)));
     let same_way = pairs().any(|(a, b)| a.0 < b.0 && a.1 < b.1) && !pairs().any(|(a, b)| a.0 < b.0 && a.1 > b.1);
     let ends = |side: fn(&Span) -> DateTime<Utc>| shared.iter().map(side).min().zip(shared.iter().map(side).max());
@@ -1941,10 +1972,9 @@ fn one_run(base: &Trip, other: &Trip) -> bool {
 /// Whether `other` has `base`'s very times at every station both list.
 fn same_times(base: &Trip, other: &Trip) -> bool {
     let same = |a: Option<Time>, b: Option<Time>| a.zip(b).is_none_or(|(a, b)| a.planned == b.planned);
-    other
-        .calls
-        .iter()
-        .all(|c| base.call_at(c.station).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure)))
+    other.calls.iter().all(|c| {
+        base.visit(&other.calls, c).is_none_or(|b| same(c.arrival, b.arrival) && same(c.departure, b.departure))
+    })
 }
 
 /// Whether two planners' copies are named as one service: by the line, or
