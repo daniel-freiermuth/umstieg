@@ -8,8 +8,8 @@ use proptest::prelude::*;
 use super::ProductClass::{LongDistance, Regional, SBahn};
 use super::{
     Boards, Call, Footpath, ProductClass, Sighting, Station, Stations, Time, Trip, angle_between, bearing,
-    change_points, db_places, fed_trip, finish, footpaths, from_motis, hours, merge, meters, propagate_delays, swedish,
-    tv_station, whole_seconds,
+    change_points, db_places, fed_trip, finish, footpaths, from_motis, hours, join_legs, merge, meters,
+    propagate_delays, swedish, tv_station, whole_seconds,
 };
 use crate::db::{Coverage, Event, Visit};
 use crate::motis::{Itinerary, Leg, Mode, Place, Stop};
@@ -199,13 +199,14 @@ fn fixture_itinerary() -> Itinerary {
     serde_json::from_str(include_str!("../testdata/timetable/motis-itinerary.json")).expect("fixture parses")
 }
 
-/// MOTIS itineraries as `from_motis` sees them, with origin and destination
-/// interned first like `build` does.
+/// MOTIS itineraries as `build` has them from `from_motis`, with origin and
+/// destination interned first and legs joined as `build` does.
 fn rough(itineraries: &[Itinerary], all_stops: bool) -> (Stations, super::Rough) {
     let mut stations = Stations::default();
     let origin = stations.intern(Sighting { name: "Origin", ..Sighting::default() });
     let destination = stations.intern(Sighting { name: "Destination", ..Sighting::default() });
-    let rough = from_motis(itineraries, &HashMap::new(), &mut stations, (origin, destination), all_stops);
+    let mut rough = from_motis(itineraries, &HashMap::new(), &mut stations, (origin, destination), all_stops);
+    join_legs(&mut rough.trips);
     (stations, rough)
 }
 
@@ -955,6 +956,176 @@ fn legs_of_one_trip_from_different_itineraries_unite() {
     assert_eq!(names, ["A", "B", "C"]);
     let b = &rj.calls[1];
     assert_eq!((b.arrival, b.departure, b.platform.as_deref()), (time("09:00"), time("09:05"), Some("2")));
+}
+
+#[test]
+fn legs_meeting_at_a_stop_without_dwell_unite_in_either_order() {
+    // (what, A's departure, C's arrival): the hops next to B can take no minute either.
+    let cases =
+        [("no hop at B's minute", "08:50", "09:10"), ("A to B", "09:00", "09:10"), ("B to C", "08:50", "09:00")];
+    for (hop, a, c) in cases {
+        let ending = || Itinerary { legs: vec![ride("t", vec![stop("A", "", a), stop("B", "09:00", "")])] };
+        let starting = || Itinerary { legs: vec![ride("t", vec![stop("B", "", "09:00"), stop("C", c, "")])] };
+        for (order, itineraries) in
+            [("ending first", [ending(), starting()]), ("starting first", [starting(), ending()])]
+        {
+            let (stations, rough) = rough(&itineraries, false);
+            let calls: Vec<_> = rough.trips["t"]
+                .calls
+                .iter()
+                .map(|c| (stations.list[c.station.0].name.as_str(), c.arrival, c.departure))
+                .collect();
+            assert_eq!(
+                calls,
+                [("A", None, time(a)), ("B", time("09:00"), time("09:00")), ("C", time(c), None)],
+                "{hop}, {order}"
+            );
+        }
+    }
+}
+
+#[test]
+fn legs_of_one_trip_not_meeting_keep_their_ends() {
+    // One answer rides the train A to B, another C to D, the stops between B
+    // and C unknown: B's arrival and C's departure are two stops, not one.
+    let itineraries = [
+        Itinerary { legs: vec![ride("t", vec![stop("A", "", "08:00"), stop("B", "08:30", "")])] },
+        Itinerary { legs: vec![ride("t", vec![stop("C", "", "08:40"), stop("D", "09:00", "")])] },
+    ];
+    let (stations, rough) = rough(&itineraries, false);
+    let calls: Vec<_> = rough.trips["t"]
+        .calls
+        .iter()
+        .map(|c| (stations.list[c.station.0].name.as_str(), c.arrival, c.departure))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("A", None, time("08:00")),
+            ("B", time("08:30"), None),
+            ("C", None, time("08:40")),
+            ("D", time("09:00"), None)
+        ]
+    );
+}
+
+#[test]
+fn a_trip_calling_twice_at_a_station_keeps_both_visits() {
+    // A reversal: X, out to A, back through X, on to B.
+    let legs = vec![ride(
+        "t",
+        vec![stop("X", "", "08:00"), stop("A", "08:10", "08:11"), stop("X", "08:30", "08:32"), stop("B", "08:50", "")],
+    )];
+    let (stations, rough) = rough(&[Itinerary { legs }], false);
+    let calls: Vec<_> = rough.trips["t"]
+        .calls
+        .iter()
+        .map(|c| (stations.list[c.station.0].name.as_str(), c.arrival, c.departure))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("X", None, time("08:00")),
+            ("A", time("08:10"), time("08:11")),
+            ("X", time("08:30"), time("08:32")),
+            ("B", time("08:50"), None)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_ride_passes_two_stops_close_enough_to_be_one_station() {
+    use crate::enumerate::{Limits, Network, enumerate};
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let marktplatz = (49.0, 8.4);
+    let at_ = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(position.0), Some(position.1));
+        p
+    };
+    let mut wrong = Vec::new();
+    for mode in [Mode::Bus, Mode::RegionalRail] {
+        // Rathaus, 200 m on, interns as Marktplatz's station.
+        let places = vec![
+            stop("O", "", "08:00"),
+            at_("Marktplatz", marktplatz, "08:05", "08:05"),
+            at_("Rathaus", north(marktplatz, 200.0), "08:07", "08:07"),
+            stop("D", "08:15", ""),
+        ];
+        let mut leg = ride("t", places);
+        leg.mode = mode;
+        let built =
+            super::build(&motis, None, None, &[Itinerary { legs: vec![leg] }], &end("O"), &end("D"), false).await;
+        let tt = built.timetable;
+        let stops: Vec<Vec<&str>> =
+            tt.trips.iter().map(|t| t.calls.iter().map(|c| tt.stations[c.station.0].name.as_str()).collect()).collect();
+        let limits = Limits {
+            origin: tt.origin,
+            depart_from: at("08:00"),
+            depart_until: at("08:00"),
+            max_changes: 5,
+            extra_time: TimeDelta::hours(12),
+            min_transfer: TimeDelta::minutes(5),
+            missed_by: TimeDelta::zero(),
+            keep_detours: false,
+            forward_only: false,
+            max_nodes: 1_000_000,
+        };
+        let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
+        if stops != [["O", "Marktplatz", "D"]] || shown.len() != 1 {
+            wrong.push(format!("{mode:?}: trips {stops:?}, connections {shown:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[tokio::test]
+async fn a_ride_to_a_lollipop_stops_second_visit_survives_the_whole_run_from_another_answer() {
+    use crate::enumerate::{Limits, Network, enumerate};
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    // The bus passes M, runs the loop L1, L2 and passes M again.
+    let whole = || {
+        ride(
+            "bus",
+            vec![
+                stop("S1", "", "07:50"),
+                stop("M", "08:05", "08:06"),
+                stop("L1", "08:09", "08:10"),
+                stop("L2", "08:15", "08:16"),
+                stop("M", "08:20", "08:21"),
+                stop("S2", "08:30", ""),
+            ],
+        )
+    };
+    let to_m = || ride("bus", vec![stop("L1", "", "08:10"), stop("L2", "08:15", "08:16"), stop("M", "08:20", "")]);
+    for (what, itineraries) in [
+        ("the ride first", [Itinerary { legs: vec![to_m()] }, Itinerary { legs: vec![whole()] }]),
+        ("the whole run first", [Itinerary { legs: vec![whole()] }, Itinerary { legs: vec![to_m()] }]),
+    ] {
+        let built = super::build(&motis, None, None, &itineraries, &end("L1"), &end("M"), false).await;
+        let tt = built.timetable;
+        let stops: Vec<Vec<&str>> =
+            tt.trips.iter().map(|t| t.calls.iter().map(|c| tt.stations[c.station.0].name.as_str()).collect()).collect();
+        assert_eq!(stops, [["S1", "M", "L1", "L2", "M", "S2"]], "{what}");
+        let limits = Limits {
+            origin: tt.origin,
+            depart_from: at("08:00"),
+            depart_until: at("08:30"),
+            max_changes: 5,
+            extra_time: TimeDelta::hours(12),
+            min_transfer: TimeDelta::minutes(5),
+            missed_by: TimeDelta::zero(),
+            keep_detours: false,
+            forward_only: false,
+            max_nodes: 1_000_000,
+        };
+        let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
+        assert_eq!(shown, ["REGIONAL_RAIL L1-M"], "{what}");
+    }
 }
 
 // ---------------------------------------------------------------- merge: DB runs
@@ -2905,6 +3076,82 @@ async fn past_trafikverkets_horizon_sweden_comes_from_transitous_departures() {
 }
 
 #[tokio::test]
+async fn a_loop_trip_from_transitous_departures_keeps_both_visits_rough_routes_end_and_start_at() {
+    use axum::extract::Query;
+    // The train calls at Lessebo twice: out to Emmaboda and back. One rough
+    // route leaves it at the first visit, another boards it at the second;
+    // Transitous's departure at Göteborg shows the stops between.
+    let positions = horizon_stations();
+    let world = crate::testkit::TvWorld::new(
+        positions.iter().map(|(&sig, &(lat, lon))| (sig, sig, "SE", lat, lon)).collect(),
+        Vec::new(),
+    );
+    let tv =
+        crate::trafikverket::Trafikverket::new(&crate::testkit::serve_trafikverket(&world).await, "key", "t").unwrap();
+    let at_goteborg = stop_times(&[(
+        "loop",
+        "Krösatåg",
+        "7300",
+        "",
+        "REGIONAL_RAIL",
+        &[
+            ("G", "", "06:00"),
+            ("Lse", "06:30", "06:31"),
+            ("Em", "07:00", "07:01"),
+            ("Lse", "07:30", "07:31"),
+            ("Ny", "08:00", ""),
+        ],
+    )]);
+    let stoptimes = move |Query(q): Query<HashMap<String, String>>| {
+        let answer = match q.get("stopId").map(String::as_str) {
+            Some("Göteborg Centralstation") => at_goteborg.clone(),
+            _ => serde_json::json!({ "stopTimes": [] }),
+        };
+        async move { axum::Json(answer) }
+    };
+    let router = axum::Router::new().route("/loop/api/v5/stoptimes", axum::routing::get(stoptimes));
+    let motis = crate::motis::Motis::new(&format!("{}/loop", crate::testkit::serve(router).await), "t").unwrap();
+
+    let located = |name: &str, sig: &str, arrival: &str, departure: &str| {
+        let mut p = stop(name, arrival, departure);
+        (p.lat, p.lon) = (Some(positions[sig].0), Some(positions[sig].1));
+        p
+    };
+    let mut to_lessebo = ride(
+        "loop",
+        vec![located("Göteborg Centralstation", "G", "", "06:00"), located("Lessebo", "Lse", "06:30", "")],
+    );
+    let mut from_lessebo =
+        ride("loop", vec![located("Lessebo", "Lse", "", "07:31"), located("Nybro", "Ny", "08:00", "")]);
+    for leg in [&mut to_lessebo, &mut from_lessebo] {
+        (leg.display_name, leg.trip_short_name) = (Some("Krösatåg".to_owned()), Some("7300".to_owned()));
+    }
+    let end =
+        |name: &str, sig: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: Some(positions[sig]) };
+    let itineraries = [Itinerary { legs: vec![to_lessebo] }, Itinerary { legs: vec![from_lessebo] }];
+    let (from, to) = (end("Göteborg Centralstation", "G"), end("Nybro", "Ny"));
+    let built = super::build(&motis, None, Some(&tv), &itineraries, &from, &to, false).await;
+
+    assert!(built.sweden_from_transitous, "{:?}", built.warnings);
+    let tt = &built.timetable;
+    let trips: Vec<Vec<_>> = tt
+        .trips
+        .iter()
+        .map(|t| t.calls.iter().map(|c| (tt.stations[c.station.0].name.as_str(), c.arrival, c.departure)).collect())
+        .collect();
+    assert_eq!(
+        trips,
+        [[
+            ("Göteborg Centralstation", None, time("06:00")),
+            ("Lse", time("06:30"), time("06:31")),
+            ("Em", time("07:00"), time("07:01")),
+            ("Lse", time("07:30"), time("07:31")),
+            ("Nybro", time("08:00"), None),
+        ]]
+    );
+}
+
+#[tokio::test]
 async fn when_trafikverket_runs_fail_the_transitous_trains_in_sweden_stay() {
     // Trafikverket answers the boards but refuses every query for runs.
     let upstream = crate::testkit::serve_trafikverket(&tv_world()).await;
@@ -3479,6 +3726,61 @@ async fn without_db_or_trafikverket_a_copy_merges_into_the_first_train_of_its_nu
     .map(|(id, name, stops)| Itinerary { legs: vec![service(id, Mode::RegionalRail, name, Some("4711"), stops)] });
     let built = super::build(&motis, None, None, &itineraries, &end("O"), &end("D"), false).await;
     assert_eq!(labels(&built.timetable.trips).len(), 2, "{:?}", labels(&built.timetable.trips));
+}
+
+#[tokio::test]
+async fn copies_of_a_train_calling_twice_at_a_station_are_one_train() {
+    // The RE passes M, runs the loop L1, L2 and passes M again.
+    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
+    let whole = [
+        ("S1", "", "07:50"),
+        ("M", "08:05", "08:06"),
+        ("L1", "08:09", "08:10"),
+        ("L2", "08:15", "08:16"),
+        ("M", "08:20", "08:21"),
+        ("S2", "08:30", ""),
+    ];
+    let to_m = [("L1", "", "08:10"), ("L2", "08:15", "08:16"), ("M", "08:20", "")];
+    let from_m = [("M", "", "08:06"), ("L1", "08:09", "08:10"), ("L2", "08:15", "")];
+    // A layover at the first M longer than the loop back to it.
+    let layover = [
+        ("S1", "", "07:50"),
+        ("M", "08:00", "08:10"),
+        ("L1", "08:12", "08:13"),
+        ("L2", "08:15", "08:16"),
+        ("M", "08:18", "08:19"),
+        ("S2", "08:30", ""),
+    ];
+    let from_m_after_layover = [("M", "", "08:10"), ("L1", "08:12", "08:13"), ("L2", "08:15", "")];
+    let mut apart = Vec::new();
+    let cases = [
+        ("two feeds' whole runs", &whole[..], &whole[..]),
+        ("the whole run, then a ride to the second M", &whole, &to_m),
+        ("a ride to the second M, then the whole run", &to_m, &whole),
+        ("a ride from the first M, then the whole run", &from_m, &whole),
+        ("a ride from the first M after a layover, then the whole run", &from_m_after_layover, &layover),
+        ("the whole run, then a ride from the first M after a layover", &layover, &from_m_after_layover),
+    ];
+    // The first copy is `merge`'s base: its id sorts first.
+    for (what, first, second) in cases {
+        let itineraries = [("20261024_07:50_de-DELFI_1", first), ("20261024_07:50_de-VRN_1", second)]
+            .map(|(id, stops)| Itinerary { legs: vec![service(id, Mode::RegionalRail, "RE60", Some("4711"), stops)] });
+        let built = super::build(&motis, None, None, &itineraries, &end("L1"), &end("M"), false).await;
+        let (stations, rough) = rough(&itineraries, false);
+        let merged = merge(&stations.list, &Boards::new(), rough.trips, Vec::new(), false);
+        for (how, trips, names) in [
+            ("without DB or Trafikverket", built.timetable.trips, built.timetable.stations),
+            ("with them", finish(merged), stations.list),
+        ] {
+            let stops: Vec<Vec<&str>> =
+                trips.iter().map(|t| t.calls.iter().map(|c| names[c.station.0].name.as_str()).collect()).collect();
+            if stops != [["S1", "M", "L1", "L2", "M", "S2"]] {
+                apart.push(format!("{what}, {how}: {stops:?}"));
+            }
+        }
+    }
+    assert!(apart.is_empty(), "{apart:#?}");
 }
 
 /// A service under `id`: `mode`, named `name`, with train number `number`,
