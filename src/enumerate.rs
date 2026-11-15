@@ -189,7 +189,9 @@ fn improve<T: Ord + Copy>(slot: &mut Option<T>, v: T) -> bool {
 /// Earliest arrival at every station when leaving `start` at `t0` on a train
 /// departing there by `latest`, with changes of any length, even missed by
 /// up to `missed_by`. Walks only follow a ride (none from `start`: a walk
-/// from the origin is a separate start), never two in a row.
+/// from the origin is a separate start), never two in a row. Nothing leaves
+/// the destination, as no connection does: with missed changes going back
+/// in time, coming back to it could otherwise seem earlier.
 pub fn earliest_arrival(
     tt: &Timetable,
     start: StationIdx,
@@ -205,14 +207,25 @@ pub fn earliest_arrival(
         let mut changed = false;
         for trip in &tt.trips {
             let mut aboard = false;
-            for call in trip.calls.iter().filter(|c| !c.cancelled) {
+            for call in &trip.calls {
                 if aboard {
-                    if let Some(a) = call.arrival_time() {
+                    if !call.cancelled
+                        && let Some(a) = call.arrival_time()
+                    {
                         changed |= improve(entry_mut(&mut rode, call.station.0, "station")?, a);
                     }
-                } else if let Some(d) = call.departure_time() {
+                    // The search stops there; passing it, even where the stop is cancelled, rules it out.
+                    if call.station == tt.destination {
+                        break;
+                    }
+                } else if !call.cancelled
+                    && let Some(d) = call.departure_time()
+                {
                     aboard = if call.station == start {
                         (t0..=latest).contains(&d)
+                    } else if call.station == tt.destination {
+                        // The search stops there.
+                        false
                     } else {
                         let (r, w) =
                             (entry(&rode, call.station.0, "station")?, entry(&walked, call.station.0, "station")?);
@@ -222,7 +235,7 @@ pub fn earliest_arrival(
                 }
             }
         }
-        for fp in tt.footpaths.iter().filter(|fp| fp.from != start) {
+        for fp in tt.footpaths.iter().filter(|fp| fp.from != start && fp.from != tt.destination) {
             // A walk ending after the latest time there is reaches nothing.
             if let Some(e) = *entry(&rode, fp.from.0, "station")?
                 && let Some(t) = e.checked_add_signed(fp.duration)
