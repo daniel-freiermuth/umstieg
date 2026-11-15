@@ -91,7 +91,9 @@ export function initial(f: Field, values: Record<string, string>, now: Date, use
     try {
       return value === undefined ? wallTime(now, zone) : shown(value, zone);
     } catch {
-      return value === undefined ? "" : value.replace(/[+-]\d\d:\d\d$/, ""); // Intl throws for `zone`.
+      // Intl throws for `zone`.
+      // Stryker disable next-line Regex: an `at` the server takes has a `±hh:mm` only at its end; any other it rejects anyway.
+      return value === undefined ? "" : value.replace(/[+-]\d\d:\d\d$/, "");
     }
   }
   return value ?? f.default;
