@@ -1446,18 +1446,23 @@ fn coupled_db_runs_with_identical_calls_become_one_train() {
 fn coupled_runs_share_their_routes_and_numbers() {
     // MOTIS knows only ICE 2808 and its stop at D, which only that run's path lists.
     let stations: Vec<Station> = ["A", "B", "D"].iter().map(|&n| station(n, Some(n))).collect();
-    let visits = run("1-774", "ICE 774", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")])
-        .into_iter()
-        .chain(path_after(
-            run("2-2808", "ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")]),
-            1,
-            &["D"],
-        ));
-    let motis =
-        motis_trip("ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
-    let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
-    assert_eq!(labels(&trips), ["ICE 774 + ICE 2808"]);
-    assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, false)]);
+    // Either run's trip id may sort first: the one whose route tells more too.
+    for (id_774, id_2808, label) in
+        [("1-774", "2-2808", "ICE 774 + ICE 2808"), ("2-774", "1-2808", "ICE 2808 + ICE 774")]
+    {
+        let visits = run(id_774, "ICE 774", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")])
+            .into_iter()
+            .chain(path_after(
+                run(id_2808, "ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02")]),
+                1,
+                &["D"],
+            ));
+        let motis =
+            motis_trip("ICE 2808", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
+        let trips = merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false);
+        assert_eq!(labels(&trips), [label]);
+        assert_eq!(calls_of(&trips[0]), [(0, true), (1, true), (2, false)], "{label}");
+    }
 }
 
 /// (station, cancelled) per call of each trip numbered `number`.
@@ -1661,6 +1666,48 @@ fn coupled_db_runs_splitting_past_the_boards_dont_take_each_others_copies() {
             assert_eq!(calls_numbered(&trips, runs_on), [vec![(0, false), (1, false), (to, false)]], "{case}");
             assert_eq!(calls_numbered(&trips, ends), [vec![(0, false), (1, false)]], "{case}");
         }
+    }
+}
+
+#[test]
+fn coupled_db_runs_parting_past_the_boards_dont_take_each_others_copies() {
+    // Boards at A and B, where ICE 774 and ICE 2808 run coupled with the
+    // very same calls. Then 774 goes on to C and X, 2808 to E and Y, none
+    // named by DB (abroad). No ride runs between their ends.
+    let stations: Vec<Station> =
+        [("A", Some("A")), ("B", Some("B")), ("C", None), ("E", None), ("X", None), ("Y", None)]
+            .iter()
+            .map(|&(n, b)| station(n, b))
+            .collect();
+    let stops: &Stops<'_> = &[(0, "", "08:00"), (1, "09:00", "09:02")];
+    let portion = |id, label, tail: [&str; 2]| {
+        path_after(path_after(run(id, label, Some(LongDistance), stops), 0, &["B", tail[0], tail[1]]), 1, &tail)
+    };
+    // Either run's trip id may sort first.
+    for (id_774, id_2808) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+        let visits = portion(id_774, "ICE 774", ["C", "X"]).into_iter().chain(portion(id_2808, "ICE 2808", ["E", "Y"]));
+        let motis = raw(vec![
+            (
+                "m774",
+                motis_trip(
+                    "ICE 774",
+                    Some(LongDistance),
+                    &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "10:01"), (4, "11:00", "")],
+                ),
+            ),
+            (
+                "m2808",
+                motis_trip(
+                    "ICE 2808",
+                    Some(LongDistance),
+                    &[(0, "", "08:00"), (1, "09:00", "09:02"), (3, "10:00", "10:01"), (5, "11:30", "")],
+                ),
+            ),
+        ]);
+        let trips = finish(merge(&stations, &boards(visits), motis, Vec::new(), false));
+        let case = format!("{id_774} and {id_2808}: {:?}", labels(&trips));
+        assert_eq!(calls_numbered(&trips, 774), [vec![(0, false), (1, false), (2, false), (4, false)]], "{case}");
+        assert_eq!(calls_numbered(&trips, 2808), [vec![(0, false), (1, false), (3, false), (5, false)]], "{case}");
     }
 }
 
