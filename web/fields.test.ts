@@ -93,8 +93,11 @@ describe("initial", () => {
     ["a given flag is on", f("all_stops", "flag"), { all_stops: "" }, true],
     ["the zone is the user's", zone, {}, "Europe/Berlin"],
     ["a given zone over the user's", zone, { time_zone: "America/New_York" }, "America/New_York"],
+    // A zone the browser doesn't know (a typo in a link, under the server's error): kept, to be corrected.
+    ["a given zone that is none, as given", zone, { time_zone: "Nowhere/Else" }, "Nowhere/Else"],
     ["a time not given is now in the user's zone", f("at", "time", "2026-10-25T08:00"), {}, "2026-01-02T04:04"],
     ["or in the given zone", f("at", "time"), { time_zone: "America/New_York" }, "2026-01-01T22:04"],
+    ["or, in a zone that is none, empty: now to the server", f("at", "time"), { time_zone: "Nowhere/Else" }, ""],
     ["a given time", f("at", "time"), { at: "2026-10-25T08:00", time_zone: "Asia/Kolkata" }, "2026-10-25T08:00"],
     // A link dated in the second of a repeated hour carries the offset, which datetime-local would drop.
     [
@@ -102,6 +105,18 @@ describe("initial", () => {
       f("at", "time"),
       { at: "2026-10-25T02:30+01:00", time_zone: "Europe/Berlin" },
       "2026-10-25T02:30",
+    ],
+    [
+      "a given time with an offset, in a zone that is none: as written, without the offset",
+      f("at", "time"),
+      { at: "2026-10-25T08:00+00:00", time_zone: "Nowhere/Else" },
+      "2026-10-25T08:00",
+    ],
+    [
+      "a given time, in a zone that is none",
+      f("at", "time"),
+      { at: "2026-10-25T08:00", time_zone: "Nowhere/Else" },
+      "2026-10-25T08:00",
     ],
     [
       "a given time with an offset that is no date, as given",
@@ -209,6 +224,30 @@ describe("sentTime", () => {
 test("zoneOf: the URL's zone, else the user's", () => {
   expect(zoneOf({}, "Europe/Berlin")).toBe("Europe/Berlin");
   expect(zoneOf({ time_zone: "Asia/Kolkata" }, "Europe/Berlin")).toBe("Asia/Kolkata");
+  expect(zoneOf({ time_zone: "Nowhere/Else" }, "Europe/Berlin")).toBe("Nowhere/Else");
+});
+
+// A link with a typo in its zone: the form shows the typo with the time in no
+// other zone, the user corrects it to Europe/Berlin and sends the link's time.
+describe("a link's zone that is none, corrected", () => {
+  const now = new Date(Date.UTC(2026, 0, 2, 3, 4));
+  const cases: [string, Record<string, string>, string, string][] = [
+    ["now, left empty, sends none: now to the server", {}, "", ""],
+    [
+      "a dated link's moment, as its wall time, sends the moment",
+      { at: "2026-10-25T02:30+01:00" },
+      "2026-10-25T02:30",
+      "2026-10-25T02:30+01:00",
+    ],
+    ["a wall time, as given, sends it", { at: "2026-10-25T08:00" }, "2026-10-25T08:00", "2026-10-25T08:00"],
+  ];
+  for (const [name, at, shown, sent] of cases)
+    test(name, () => {
+      const values = { ...at, time_zone: "Europe/Berln" };
+      expect(zoneOf(values, "America/New_York")).toBe("Europe/Berln");
+      expect(initial(f("at", "time"), values, now, "America/New_York")).toBe(shown);
+      expect(sentTime(shown, given(values, "at"), now, "Europe/Berlin")).toBe(sent);
+    });
 });
 
 test("wallTime: the time in the zone, padded, midnight as 00", () => {

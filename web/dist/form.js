@@ -111,8 +111,14 @@ function initial(f, values, now, userZone) {
     return value !== undefined;
   if (f.kind === "zone")
     return zoneOf(values, userZone);
-  if (f.kind === "time")
-    return value === undefined ? wallTime(now, zoneOf(values, userZone)) : shown(value, zoneOf(values, userZone));
+  if (f.kind === "time") {
+    const zone = zoneOf(values, userZone);
+    try {
+      return value === undefined ? wallTime(now, zone) : shown(value, zone);
+    } catch {
+      return value === undefined ? "" : value.replace(/[+-]\d\d:\d\d$/, "");
+    }
+  }
   return value ?? f.default;
 }
 function shown(value, zone) {

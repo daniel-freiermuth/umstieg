@@ -77,14 +77,23 @@ export const zoneOf = (values: Record<string, string>, userZone: string): string
  * `now` in that zone, one given with an offset (a link dated in the second of
  * a repeated hour: "2026-10-25T02:30+01:00", which a datetime-local input
  * would drop) is its wall time there, anything else is the given value or the
- * default.
+ * default. In a given zone the browser doesn't know (a typo in a link, under
+ * the server's error) there is no wall time to show: a time not given is left
+ * empty, which the server reads as now, and one with an offset is its wall
+ * time as written (the link's zone's, if the server dated it).
  */
 export function initial(f: Field, values: Record<string, string>, now: Date, userZone: string): string | boolean {
   const value = given(values, f.name);
   if (f.kind === "flag") return value !== undefined;
   if (f.kind === "zone") return zoneOf(values, userZone);
-  if (f.kind === "time")
-    return value === undefined ? wallTime(now, zoneOf(values, userZone)) : shown(value, zoneOf(values, userZone));
+  if (f.kind === "time") {
+    const zone = zoneOf(values, userZone);
+    try {
+      return value === undefined ? wallTime(now, zone) : shown(value, zone);
+    } catch {
+      return value === undefined ? "" : value.replace(/[+-]\d\d:\d\d$/, ""); // Intl throws for `zone`.
+    }
+  }
   return value ?? f.default;
 }
 
