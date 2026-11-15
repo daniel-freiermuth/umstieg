@@ -28,7 +28,7 @@ import {
   zoom,
 } from "./geometry";
 import { type Connection, type Need, bestThrough } from "./best";
-import { type Drawn, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
+import { type Drawn, groupOf, header, piecesOf, route, signature, signatureOfPieces } from "./connections";
 import { Fallbacks, arrive } from "./fallback";
 import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
 import {
@@ -768,10 +768,7 @@ function chainOf(c: Connection): number {
     add(p);
     return D.pieces.length - 1;
   });
-  const rides = c.steps.flatMap((s) => (s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []));
-  const label = `${rides[0] ?? ""} … ${rides[rides.length - 1] ?? ""}`;
-  let group = D.groups.findIndex((g) => g.label === label);
-  if (group < 0) group = D.groups.push({ label, count: 0 }) - 1;
+  const group = groupOf(D.groups, D.trips, c);
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
   // Fallbacks per change, as the server computes them for the listed ones.

@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { Connection } from "./best";
-import { buffer, duration, header, piecesOf, route, signature, signatureOfPieces, trainName } from "./connections";
+import type { Group } from "./data";
+import {
+  buffer,
+  duration,
+  groupOf,
+  header,
+  piecesOf,
+  route,
+  signature,
+  signatureOfPieces,
+  trainName,
+} from "./connections";
 
 const M = 60e3;
 const clock = (ms: number): string =>
@@ -89,6 +100,44 @@ describe("words", () => {
     expect(route(direct, names, trips, 5 * M, clock)).toBe(
       "09:00 ICE 374 → 11:00 Mannheim, Hauptbahnhof ‖3m⚠‖ 11:03 ICE 593 → 14:00 Hamburg Hbf",
     );
+  });
+});
+
+describe("groupOf", () => {
+  // Two runs of a numberless tram line, both feeding ICE 578: the server
+  // groups by first and last trip, so their groups share a label.
+  const runs = ["STR 4 → Hbf", "STR 4 → Hbf", "ICE 578 → Berlin"];
+  const riding = (...ids: number[]): Connection => ({
+    ...trip,
+    steps: ids.map((id) => ({ kind: "ride", trip: id, passes: [], calls: [] })),
+  });
+  const listed = (): Group[] => [
+    { label: "STR 4 … ICE 578", count: 3, first: 0, last: 2 },
+    { label: "STR 4 … ICE 578", count: 1, first: 1, last: 2 },
+  ];
+
+  test("a connection joins the group of its first and last trip, not the first with its label", () => {
+    const groups = listed();
+    expect(groupOf(groups, runs, riding(1, 2))).toBe(1);
+    expect(groupOf(groups, runs, riding(0, 2))).toBe(0);
+    expect(groups).toEqual(listed());
+  });
+
+  test("trips no group has get a new group, labelled as the server labels them", () => {
+    const groups = listed().slice(0, 1);
+    expect(groupOf(groups, runs, riding(1, 2))).toBe(1);
+    expect(groups[1]).toEqual({ label: "STR 4 … ICE 578", count: 0, first: 1, last: 2 });
+    // Found again, not added twice; the same first trip ending elsewhere is
+    // another group; a single ride is its own first and last.
+    expect(groupOf(groups, runs, riding(1, 2))).toBe(1);
+    expect(groupOf(groups, runs, riding(1))).toBe(2);
+    expect(groupOf(groups, runs, riding(2))).toBe(3);
+    expect(groups.map((g) => g.label)).toEqual([
+      "STR 4 … ICE 578",
+      "STR 4 … ICE 578",
+      "STR 4 … STR 4",
+      "ICE 578 … ICE 578",
+    ]);
   });
 });
 
