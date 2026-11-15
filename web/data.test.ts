@@ -57,6 +57,7 @@ describe("decodeData", () => {
       span: [0, 2],
     });
     expect(d.chains[0]).toEqual({ group: 0, header: "09:29 → 10:15  46m  2×  min 1m⚠", pieces: [0, 1, 2, 3, 4] });
+    expect(d.groups).toEqual([{ label: "ICE 692 … U5 (2100024)", count: 11, first: 0, last: 2 }]);
     expect(d.details?.[0]?.fallbacks).toEqual([
       [0, "10:29 (+14m)"],
       [1, "10:35 (+20m)"],
@@ -73,6 +74,8 @@ describe("decodeData", () => {
       [patched(["details", 0, "fallbacks", 1], [1]), "data.details[0].fallbacks[1]: expected a pair"],
       [patched(["fallbacks", 1, "pieces", 0], null), "data.fallbacks[1].pieces[0]: expected a number"],
       [patched(["groups", 0, "count"], "11"), "data.groups[0].count: expected a number"],
+      [patched(["groups", 0, "first"], "0"), "data.groups[0].first: expected a number"],
+      [without("last", ["groups", 0]), "data.groups[0].last: expected a value"],
       [patched(["back"], 1), "data.back: expected a string"],
       [without("tz", []), "data.tz: expected a value"],
       [without("route", ["details", 0]), "data.details[0].route: expected a value"],

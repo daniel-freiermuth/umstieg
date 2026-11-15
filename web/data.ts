@@ -15,7 +15,7 @@ export interface Data {
   stations: number[]; // station ids with a row
   names: string[]; // station names by id
   trips: string[]; // "ICE 378 → Berlin Hbf" by trip id
-  groups: { label: string; count: number }[];
+  groups: Group[];
   pieces: PieceData[];
   /** The pieces on some connection within the limits: what is drawn. */
   network: number[];
@@ -39,6 +39,13 @@ interface LimitsData {
   min_transfer: number;
   keep_detours: boolean;
   lower_bound: (number | null)[] | null;
+}
+/** Connections with the same first and last trip (ids), as the server groups them. */
+export interface Group {
+  label: string;
+  count: number;
+  first: number;
+  last: number;
 }
 /** What a connection's selection shows: its route and fallbacks (index, arrival). */
 export interface DetailData {
@@ -113,7 +120,12 @@ export const decodeData: Decoder<Data> = (v, path) => {
       "groups",
       array((g, p) => {
         const og = object(g, p);
-        return { label: field(og, "label", string, p), count: field(og, "count", number, p) };
+        return {
+          label: field(og, "label", string, p),
+          count: field(og, "count", number, p),
+          first: field(og, "first", number, p),
+          last: field(og, "last", number, p),
+        };
       }),
       path,
     ),

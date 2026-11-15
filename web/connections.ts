@@ -2,7 +2,7 @@
 // describes its listed ones: header, route line, and pieces to draw.
 
 import type { Connection, Step } from "./best";
-import type { Kind } from "./data";
+import type { Group, Kind } from "./data";
 import { item } from "./util";
 
 /** A piece to draw: points as (ms, station). */
@@ -31,6 +31,22 @@ export function buffer(ms: number, minTransfer: number): string {
 
 /** A train's name without where it goes: "ICE 593" of "ICE 593 → München Hbf". */
 export const trainName = (trip: string): string => trip.split(" → ")[0] ?? trip;
+
+/**
+ * The index of `c`'s group in `groups`, a new one appended if none matches:
+ * by first and last trip, as the server groups, not by label (runs of a line
+ * without train numbers share one).
+ */
+export function groupOf(groups: Group[], trips: readonly string[], c: Connection): number {
+  const rides = c.steps.flatMap((s) => (s.kind === "ride" ? [s.trip] : []));
+  // The page's search never walks to the destination without riding.
+  const first = item(rides, 0),
+    last = item(rides, rides.length - 1);
+  const found = groups.findIndex((g) => g.first === first && g.last === last);
+  if (found >= 0) return found;
+  const label = `${trainName(item(trips, first))} … ${trainName(item(trips, last))}`;
+  return groups.push({ label, count: 0, first, last }) - 1;
+}
 
 /** One key per way of travelling: the same trains, stops, times and walks. */
 export function signature(steps: readonly Step[]): string {

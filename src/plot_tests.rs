@@ -651,6 +651,42 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
 }
 
 #[test]
+fn groups_name_their_first_and_last_trip_which_a_label_shared_by_runs_of_a_line_does_not() {
+    let mut b = testkit::Builder::new();
+    let early = b.trip("STR 4", &[("A", "", "08:50"), ("B", "09:00", "")]);
+    let late = b.trip("STR 4", &[("A", "", "09:10"), ("B", "09:20", "")]);
+    let ice = b.trip("ICE 578", &[("B", "", "09:30"), ("C", "10:30", "")]);
+    let tt = b.build("A", "C");
+    let net = Network::new(&tt).unwrap();
+    let chains = [early, late].map(|tram| Chain { steps: vec![ride(tram, 0, 1), ride(ice, 0, 1)] });
+    let groups = enumerate::group(&tt, chains.into()).unwrap();
+    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let plot = Plot {
+        bounds: bounds(),
+        usable: &crate::usable::Usable::default(),
+        title: String::new(),
+        subtitle: String::new(),
+        groups: &groups,
+        metric: Metric::RemainingTime,
+        min_transfer: MIN,
+        zone: Berlin,
+        back: None,
+        details_url: None,
+        progress: &|_, _| {},
+    };
+    let data = embedded_json(&render(&net, &mut fallbacks, &plot).unwrap().html, "data");
+    // The page files connections it finds itself by these, as the server does.
+    let out: Vec<_> = data["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| (g["label"].as_str().unwrap().to_owned(), idx(&g["first"]), idx(&g["last"])))
+        .collect();
+    let label = "STR 4 … ICE 578".to_owned();
+    assert_eq!(out, [(label.clone(), early.0, ice.0), (label, late.0, ice.0)]);
+}
+
+#[test]
 fn only_the_requested_metric_must_be_computable() {
     let mut tt = located();
     tt.stations[tt.origin.0].position = None;

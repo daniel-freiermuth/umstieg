@@ -197,6 +197,10 @@ struct MetricOut {
 struct GroupOut {
     label: String,
     count: usize,
+    /// The first and last trip of its connections, what they're grouped by:
+    /// runs of a line without train numbers share a label.
+    first: TripIdx,
+    last: TripIdx,
 }
 
 #[derive(Serialize)]
@@ -657,6 +661,8 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
                 Ok(GroupOut {
                     label: format!("{} … {}", tt.trip(g.first)?.label, tt.trip(g.last)?.label),
                     count: g.chains.len(),
+                    first: g.first,
+                    last: g.last,
                 })
             })
             .collect::<Result<_>>()?,

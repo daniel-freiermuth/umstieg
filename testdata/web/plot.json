@@ -138,7 +138,9 @@
  "groups": [
   {
    "label": "ICE 692 … U5 (2100024)",
-   "count": 11
+   "count": 11,
+   "first": 0,
+   "last": 2
   }
  ],
  "pieces": [

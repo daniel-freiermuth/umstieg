@@ -107,7 +107,12 @@ var decodeData = (v, path) => {
     trips: field(o, "trips", array(string), path),
     groups: field(o, "groups", array((g, p) => {
       const og = object(g, p);
-      return { label: field(og, "label", string, p), count: field(og, "count", number, p) };
+      return {
+        label: field(og, "label", string, p),
+        count: field(og, "count", number, p),
+        first: field(og, "first", number, p),
+        last: field(og, "last", number, p)
+      };
     }), path),
     pieces: field(o, "pieces", array(decodePiece), path),
     network: field(o, "network", array(number), path),
@@ -647,6 +652,15 @@ function buffer(ms, minTransfer) {
   return `${duration(ms)}${ms < minTransfer ? "⚠" : ""}`;
 }
 var trainName = (trip) => trip.split(" → ")[0] ?? trip;
+function groupOf(groups, trips, c) {
+  const rides = c.steps.flatMap((s) => s.kind === "ride" ? [s.trip] : []);
+  const first = item(rides, 0), last = item(rides, rides.length - 1);
+  const found = groups.findIndex((g) => g.first === first && g.last === last);
+  if (found >= 0)
+    return found;
+  const label = `${trainName(item(trips, first))} … ${trainName(item(trips, last))}`;
+  return groups.push({ label, count: 0, first, last }) - 1;
+}
 function signature(steps) {
   return steps.map((s) => {
     if (s.kind === "walk")
@@ -1809,11 +1823,7 @@ function chainOf(c) {
     add(p);
     return D.pieces.length - 1;
   });
-  const rides = c.steps.flatMap((s) => s.kind === "ride" ? [trainName(item(D.trips, s.trip))] : []);
-  const label = `${rides[0] ?? ""} … ${rides[rides.length - 1] ?? ""}`;
-  let group = D.groups.findIndex((g) => g.label === label);
-  if (group < 0)
-    group = D.groups.push({ label, count: 0 }) - 1;
+  const group = groupOf(D.groups, D.trips, c);
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
   const fallbacks = c.steps.filter((s) => s.kind === "ride").slice(1).flatMap((_, change) => alternatives.forChange(c, change).map((a) => ({
