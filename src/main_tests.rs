@@ -87,3 +87,16 @@ fn out_of_range_options_are_rejected_instead_of_overflowing() {
     let search = Cli::try_parse_from(["umstieg", "A", "B"].into_iter().chain(extremes)).unwrap().search.unwrap();
     assert_eq!((search.window, search.extra_hours, search.max_changes), (10080, 168.0, 100));
 }
+
+#[test]
+fn serve_rejects_more_parallel_searches_than_a_semaphore_holds() {
+    // tokio's Semaphore::new panics above MAX_PERMITS; the server would crash at startup.
+    let max = tokio::sync::Semaphore::MAX_PERMITS;
+    let Err(error) = Cli::try_parse_from(["umstieg", "serve", "--parallel", &(max + 1).to_string()]) else {
+        panic!("--parallel above {max} accepted");
+    };
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation, "{error}");
+    let cli = Cli::try_parse_from(["umstieg", "serve", "--parallel", &max.to_string()]).unwrap();
+    let Some(Command::Serve { parallel, .. }) = cli.command else { panic!("serve expected") };
+    assert_eq!(parallel, max);
+}
