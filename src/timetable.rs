@@ -1551,13 +1551,15 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
 /// Coupled trains (e.g. ICE 774 + ICE 2808) appear as separate runs with the
 /// same timetable; while they run together they are one train for us. A run
 /// cancelled where the other isn't, or not running a stretch the other does
-/// (a portion that doesn't run, or is cut short), is a train of its own. The
-/// trains kept, in order, with their routes, the stretches they don't run,
-/// and the trains a copy of each goes into (`Copies`).
+/// (a portion that doesn't run, or is cut short), is a train of its own; so
+/// is one whose route goes where the other's doesn't, and the other's where
+/// its own doesn't: they part past the boards. The trains kept, in order,
+/// with their routes, the stretches they don't run, and the trains a copy of
+/// each goes into (`Copies`).
 fn join_coupled(trips: impl IntoIterator<Item = Fed>) -> Joined {
     // A departure cancelled alone is dropped like one never planned, so
     // the calls don't tell a run cut short from one ending there: its gaps do.
-    let mut seen: HashMap<(Signature, Vec<bool>, Vec<Gap>), usize> = HashMap::new();
+    let mut seen: HashMap<(Signature, Vec<bool>, Vec<Gap>), Vec<usize>> = HashMap::new();
     // Portions kept apart, by their planned timetable. It keeps the events
     // cancelled alone: one ending at C isn't one cut short there.
     let mut portions: HashMap<Signature, Vec<usize>> = HashMap::new();
@@ -1571,14 +1573,18 @@ fn join_coupled(trips: impl IntoIterator<Item = Fed>) -> Joined {
             .map(|c| (c.station, c.arrival.map(|t| t.planned), c.departure.map(|t| t.planned)))
             .collect();
         let key = (signature, trip.calls.iter().map(|c| c.cancelled).collect(), gap);
-        if let Some((other, other_route)) = seen.get(&key).and_then(|&i| kept.get_mut(i).zip(kept_routes.get_mut(i))) {
+        // A route that tells less (no path past the boards, or one ending
+        // sooner) runs together with the other as far as DB knows.
+        let together = |&i: &usize| kept_routes.get(i).is_some_and(|r| r.is_subset(&route) || route.is_subset(r));
+        let twin = seen.get(&key).and_then(|g| g.iter().copied().find(together));
+        if let Some((other, other_route)) = twin.and_then(|i| kept.get_mut(i).zip(kept_routes.get_mut(i))) {
             other.label = format!("{} + {}", other.label, trip.label);
             other.numbers.extend(trip.numbers);
             other_route.extend(route);
         } else {
             portions.entry(planned).or_default().push(kept.len());
             kept_gaps.push(key.2.clone());
-            seen.insert(key, kept.len());
+            seen.entry(key).or_default().push(kept.len());
             kept.push(trip);
             kept_routes.push(route);
         }
