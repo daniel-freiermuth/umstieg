@@ -54,12 +54,19 @@ enum Command {
         addr: SocketAddr,
         /// Searches run at the same time; more wait their turn (they load
         /// Transitous and the DB quota).
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = parallel)]
         parallel: usize,
         /// Services and contact used by every search; not settable from the page.
         #[command(flatten)]
         endpoints: search::Endpoints,
     },
+}
+
+/// `--parallel`: at most what a semaphore holds; tokio panics above.
+fn parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|e| format!("{e}"))?;
+    let max = tokio::sync::Semaphore::MAX_PERMITS;
+    if n <= max { Ok(n) } else { Err(format!("{n} is not in 0..={max}")) }
 }
 
 #[tokio::main]
