@@ -659,6 +659,40 @@ fn missed_connections_are_listed_when_they_are_all_there_is() {
     }
 }
 
+/// When only missed connections exist, `fastest` is the fastest of those, not
+/// a trip that reaches D, leaves it again (on through, on foot, on another
+/// train, or on a train through its cancelled stop there) to C and comes back
+/// on RB 3, "earlier": the search stops at D, and a train passing it marks it
+/// visited, so no listed connection does that.
+#[test]
+fn fastest_missed_connection_never_leaves_the_destination() {
+    for how in ["on through", "on foot", "on another train", "through a cancelled stop"] {
+        let mut b = Builder::new();
+        b.trip("RE 1", &[("A", "", "08:30"), ("B", "08:50", "")]);
+        // RB 2 is missed by 2 at B.
+        if how == "on through" {
+            b.trip("RB 2", &[("B", "", "08:48"), ("D", "09:24", "09:24"), ("C", "09:25", "")]);
+        } else {
+            b.trip("RB 2", &[("B", "", "08:48"), ("D", "09:24", "")]);
+        }
+        if how == "on foot" {
+            b.walk("D", "C", 1);
+        }
+        if how == "on another train" {
+            b.trip("RB 4", &[("D", "", "09:24"), ("C", "09:25", "")]);
+        }
+        if how == "through a cancelled stop" {
+            let rb4 = b.trip("RB 4", &[("B", "", "08:50"), ("D", "09:00", "09:00"), ("C", "09:05", "")]);
+            b.cancel(rb4, "D");
+        }
+        b.trip("RB 3", &[("C", "", "09:19"), ("D", "09:20", "")]);
+        let tt = b.build("A", "D");
+        let limits = Limits { missed_by: min(7), extra_time: TimeDelta::zero(), ..limits(&tt, "08:30", "08:30") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(54)), sorted(&["RE 1 A-B / RB 2 B-D"])), "{how}");
+    }
+}
+
 #[test]
 fn lower_bounds_take_the_fastest_ride_per_stretch() {
     let mut b = Builder::new();
