@@ -6,7 +6,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
 use super::*;
-use crate::testkit::{Builder, Spec, at, ride, show, spec, timetable};
+use crate::testkit::{Builder, at, ride, show, spec, timetable};
 use crate::timetable::{CallIdx, FootpathIdx, StationIdx, TripIdx};
 
 const fn min(m: i64) -> TimeDelta {
@@ -693,6 +693,129 @@ fn fastest_missed_connection_never_leaves_the_destination() {
     }
 }
 
+/// RE 1, RB 3 and RB 2 get to D at 08:40, but RB 2 goes back through X,
+/// where it doesn't stop (cancelled) and where RE 1 left the chain.
+fn back_through_a_cancelled_stop() -> Builder {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("X", "08:10", "")]);
+    b.trip("RB 3", &[("X", "", "08:15"), ("Y", "08:20", "")]);
+    let rb2 = b.trip("RB 2", &[("Y", "", "08:25"), ("X", "08:30", "08:30"), ("D", "08:40", "")]);
+    b.cancel(rb2, "X");
+    b
+}
+
+/// `fastest` is a connection the search can list, which never passes a
+/// station twice: not RE 1, RB 3 and RB 2 in 40 min, but RE 4 and a walk in
+/// 60, which a 40 min limit would cut (also missing the change to RE 10 by
+/// 2, a connection as fast as earliest arrival's). Without that walk only
+/// RE 8, missed by 2, gets there. With missed changes going back in time,
+/// RB 6, RB 7 and RB 5 get to D in 7 min, back through C; nothing else does.
+#[test]
+fn fastest_never_passes_a_station_twice() {
+    let walk_on = || {
+        let mut b = back_through_a_cancelled_stop();
+        b.trip("RE 4", &[("A", "", "08:00"), ("B", "08:50", "")]);
+        b.walk("B", "D", 10);
+        b.trip("RE 9", &[("A", "", "08:00"), ("Q", "08:20", "")]);
+        b.trip("RE 10", &[("Q", "", "08:18"), ("D", "08:40", "")]);
+        b
+    };
+    let missed_only = || {
+        let mut b = back_through_a_cancelled_stop();
+        b.trip("RE 4", &[("A", "", "08:00"), ("B", "08:50", "")]);
+        b.trip("RE 8", &[("B", "", "08:48"), ("D", "09:10", "")]);
+        b
+    };
+    let back_in_time = || {
+        let mut b = Builder::new();
+        b.trip("RB 6", &[("A", "", "08:34"), ("C", "08:52", "")]);
+        b.trip("RB 7", &[("C", "", "08:45"), ("B", "08:45", "")]);
+        b.trip("RB 5", &[("B", "", "08:41"), ("C", "08:41", "08:41"), ("D", "08:41", "")]);
+        b
+    };
+    // (timetable, missed by, extra time, fastest, listed)
+    let cases = [
+        (walk_on(), 0, 0, Some(60), &["RE 4 A-B / walk B-D"][..]),
+        (walk_on(), 0, 20, Some(60), &["RE 4 A-B / walk B-D"]),
+        (walk_on(), 5, 0, Some(60), &["RE 4 A-B / walk B-D", "RE 9 A-Q / RE 10 Q-D"]),
+        (missed_only(), 0, 0, None, &[]),
+        (missed_only(), 5, 0, Some(70), &["RE 4 A-B / RE 8 B-D"]),
+        (back_in_time(), 7, 0, None, &[]),
+    ];
+    for (b, missed_by, extra, fastest, expected) in cases {
+        let tt = b.build("A", "D");
+        let limits = Limits { missed_by: min(missed_by), extra_time: min(extra), ..limits(&tt, "08:00", "08:34") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        assert_eq!(
+            (result.fastest, shown(&tt, &result)),
+            (fastest.map(min), sorted(expected)),
+            "{expected:?} missed by {missed_by}, {extra} min extra"
+        );
+        assert_eq!(result.complete_up_to, Some(limits.max_changes));
+    }
+}
+
+/// 17 states list what takes up to earliest arrival's 40 min (nothing);
+/// finding that RE 4's 60 min are the fastest takes more. Cut short there,
+/// `fastest` is 40 min and the list may lack connections with any changes.
+#[test]
+fn a_search_for_the_fastest_cut_short_leaves_the_list_incomplete() {
+    let mut b = back_through_a_cancelled_stop();
+    b.trip("RE 4", &[("A", "", "08:00"), ("D", "09:00", "")]);
+    let tt = b.build("A", "D");
+    // (cap, fastest, listed, complete up to)
+    let cases: [(usize, i64, &[&str], Option<usize>); 2] =
+        [(20, 40, &[], None), (1_000_000, 60, &["RE 4 A-D"], Some(5))];
+    for (max_nodes, fastest, expected, complete) in cases {
+        let limits = Limits { extra_time: TimeDelta::zero(), max_nodes, ..limits(&tt, "08:00", "08:00") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        assert_eq!(
+            (result.fastest, shown(&tt, &result), result.complete_up_to),
+            (Some(min(fastest)), sorted(expected), complete),
+            "cap {max_nodes}"
+        );
+    }
+}
+
+/// Like earliest arrival, `fastest` counts connections the limits leave out,
+/// none listed as fast: RE 1 to B, away from D (ICE 9 is faster from A),
+/// then RE 2; and RB 1, RB 2 and RB 3 from H, a detour as RB 3 calls at P
+/// before, where it can't be boarded for D (it passes A).
+#[test]
+fn fastest_counts_connections_the_limits_leave_out() {
+    let away_and_back = || {
+        let mut b = Builder::new();
+        b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:10", "")]);
+        b.trip("RE 2", &[("B", "", "08:15"), ("D", "08:40", "")]);
+        b.trip("RE 3", &[("A", "", "08:00"), ("D", "09:00", "")]);
+        b.trip("ICE 9", &[("A", "", "10:00"), ("D", "10:20", "")]);
+        b
+    };
+    let detour = || {
+        let mut b = Builder::new();
+        b.trip("RB 1", &[("A", "", "08:00"), ("P", "08:10", "")]);
+        b.trip("RB 2", &[("P", "", "08:12"), ("H", "08:20", "")]);
+        b.trip("RB 3", &[("P", "", "08:20"), ("A", "08:30", "08:30"), ("H", "08:40", "08:40"), ("D", "09:00", "")]);
+        b.trip("RE 4", &[("A", "", "08:00"), ("D", "09:30", "")]);
+        b
+    };
+    // (timetable, max changes, forward only, keep detours, extra time, fastest, listed)
+    let cases = [
+        (away_and_back(), 5, false, false, 20, 40, &["RE 1 A-B / RE 2 B-D", "RE 3 A-D"][..]),
+        (away_and_back(), 0, false, false, 20, 40, &["RE 3 A-D"]),
+        (away_and_back(), 5, true, false, 20, 40, &["RE 3 A-D"]),
+        (detour(), 5, false, true, 30, 60, &["RB 1 A-P / RB 2 P-H / RB 3 H-D", "RE 4 A-D"]),
+        (detour(), 5, false, false, 30, 60, &["RE 4 A-D"]),
+    ];
+    for (b, max_changes, forward_only, keep_detours, extra, fastest, expected) in cases {
+        let tt = b.build("A", "D");
+        let limits =
+            Limits { max_changes, forward_only, keep_detours, extra_time: min(extra), ..limits(&tt, "08:00", "08:00") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(fastest)), sorted(expected)), "{expected:?}");
+    }
+}
+
 #[test]
 fn lower_bounds_take_the_fastest_ride_per_stretch() {
     let mut b = Builder::new();
@@ -1045,19 +1168,16 @@ proptest! {
         prop_assert!(pruned.chains.iter().all(|c| unique.contains(&c.steps)));
     }
 
-    /// `fastest` is the fastest connection that can be listed; if only missed
-    /// ones exist, the fastest of those. (Earliest arrival can't see that the
-    /// enumeration never revisits a station, which matters only after passing
-    /// a stop without leaving the train there, or arriving on foot where a
-    /// walk later leaves: no gaps, no trains back through the origin, walks
-    /// only into the destination here.)
+    /// `fastest` is the fastest connection that can be listed with any number
+    /// of changes; if only missed ones exist, the fastest of those. Earliest
+    /// arrival only bounds it: it doesn't see that no connection passes a
+    /// station twice, going back through one where a train doesn't stop or
+    /// over changes missed going back in time.
     #[test]
     fn fastest_is_the_fastest_listed_connection(
-        spec in spec(false, false),
+        spec in spec(true, true),
         (from, window, _, _, missed_by, _) in arb_limits(),
     ) {
-        let destination = spec.stations - 1;
-        let spec = Spec { walks: spec.walks.into_iter().filter(|w| w.1 == destination).collect(), ..spec };
         let tt = timetable(&spec);
         let net = Network::new(&tt).unwrap();
         let depart_from = at("08:00") + min(from);
