@@ -20,9 +20,12 @@ exclude_re = [
   'replace < with <= in fastest_journeys',
   # Pushes a second entry with the same departure instead of overwriting; lookups take the last one.
   'replace match guard last\.0 == r\.departure with false in fastest_journeys',
-  # Recomputes fastest_with(missed_by <= 0): the same or a stricter search that already found nothing.
-  'replace match guard limits\.missed_by > TimeDelta::zero\(\) with true in enumerate$',
-  'replace > with >= in enumerate$',
+  # Recomputes fastest_with(missed_by <= 0), or the search for the fastest with
+  # it: the same or a stricter search that already found nothing.
+  'replace match guard limits\.missed_by > TimeDelta::zero\(\) with true in enumerate_reporting$',
+  'replace > with >= in enumerate_reporting$',
+  # Lists again with the limit just used: the same list.
+  'replace match guard f == fastest_duration with false in enumerate_reporting$',
   # Riding a train past the deadline stops at its first stop: no node, no chain.
   "replace match guard departure > d with false in Search<'_>::explore",
   # presence is empty exactly when no ride was taken, so this arm can't match then.

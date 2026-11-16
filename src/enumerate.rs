@@ -133,6 +133,11 @@ impl Chain {
         checked::later(arrival, walk, "arrival after the last walk")
     }
 
+    /// From leaving the origin to arriving.
+    fn duration(&self, tt: &Timetable) -> Result<TimeDelta> {
+        Ok(self.arrival(tt)?.signed_duration_since(self.departure(tt)?))
+    }
+
     pub fn transfers(&self, tt: &Timetable) -> Result<Vec<Transfer>> {
         let mut out = Vec::new();
         let mut previous: Option<(StationIdx, DateTime<Utc>)> = None;
@@ -168,8 +173,11 @@ impl Chain {
 
 pub struct Enumeration {
     pub chains: Vec<Chain>,
-    /// Shortest travel time found; the duration limit is based on it. If
-    /// only missed connections (within `missed_by`) exist, the fastest of those.
+    /// Shortest travel time of a connection the search can list with any
+    /// number of changes; the duration limit is based on it. If only missed
+    /// connections (within `missed_by`) exist, the fastest of those. Where the
+    /// effort cap cut short the search for it, a lower bound (and
+    /// `complete_up_to` is `None`).
     pub fastest: Option<TimeDelta>,
     /// Highest number of changes for which the list is complete; below
     /// `max_changes` when the effort cap was hit.
@@ -562,9 +570,9 @@ pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(P
         Ok(fastest)
     };
     // Connections just missed are listed too, also when nothing else works.
-    let fastest = match fastest_with(TimeDelta::zero())? {
-        None if limits.missed_by > TimeDelta::zero() => fastest_with(limits.missed_by)?,
-        fastest => fastest,
+    let (fastest, missed_by) = match fastest_with(TimeDelta::zero())? {
+        None if limits.missed_by > TimeDelta::zero() => (fastest_with(limits.missed_by)?, limits.missed_by),
+        fastest => (fastest, TimeDelta::zero()),
     };
     let Some(fastest_duration) = fastest else {
         return Ok(Enumeration {
@@ -574,30 +582,46 @@ pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(P
             nodes: 0,
         });
     };
-
-    let mut search = Search {
-        tt,
-        limits,
-        departures: &net.departures,
-        walks: &net.walks,
-        lower_bound: &net.lower_bound,
-        bound: &net.bound,
-        // Saturating: a limit beyond the longest duration there is limits nothing.
-        max_duration: checked::sum(fastest_duration, limits.extra_time),
-        visited: vec![false; tt.stations.len()],
-        used: vec![false; tt.trips.len()],
-        steps: Vec::new(),
-        lead: TimeDelta::zero(),
-        rides: 0,
-        max_rides: 0,
-        presence: Vec::new(),
-        found: HashSet::new(),
-        nodes: 0,
-        truncated: false,
-        report,
-        report_at: next_report(),
+    let listing = list(net, limits, fastest_duration, report)?;
+    // Earliest arrival can't see that no connection passes a station twice:
+    // coming back through one (on a train not stopping there, or over changes
+    // missed going back in time), it can get there sooner than any connection.
+    // A connection listed as fast, missing no change by more than earliest
+    // arrival allowed, shows it didn't.
+    for chain in &listing.chains {
+        if chain.duration(tt)? == fastest_duration
+            && chain.min_slack(tt)?.is_none_or(|s| checked::sum(s, missed_by) >= TimeDelta::zero())
+        {
+            return Ok(listing);
+        }
+    }
+    let exact = |missed_by| {
+        fastest_with(missed_by)?
+            .map_or_else(|| Ok(Fastest::Takes(None)), |lower| fastest_listed(net, limits, missed_by, lower))
     };
-    *entry_mut(&mut search.visited, limits.origin.0, "origin station")? = true;
+    let fastest = match exact(TimeDelta::zero())? {
+        Fastest::Takes(None) if limits.missed_by > TimeDelta::zero() => exact(limits.missed_by)?,
+        fastest => fastest,
+    };
+    match fastest {
+        // Left out by the limits only.
+        Fastest::Takes(Some(f)) if f == fastest_duration => Ok(listing),
+        Fastest::Takes(Some(f)) => list(net, limits, f, report),
+        Fastest::Takes(None) => Ok(Enumeration {
+            chains: Vec::new(),
+            fastest: None,
+            complete_up_to: Some(limits.max_changes),
+            nodes: listing.nodes,
+        }),
+        // The limit earliest arrival gives may leave out connections, with any number of changes.
+        Fastest::CutShort => Ok(Enumeration { complete_up_to: None, ..listing }),
+    }
+}
+
+/// The connections within `limits` taking at most `fastest` and the extra time.
+fn list(net: &Network<'_>, limits: &Limits, fastest: TimeDelta, report: &dyn Fn(Progress)) -> Result<Enumeration> {
+    // Saturating: a limit beyond the longest duration there is limits nothing.
+    let mut search = Search::new(net, limits, checked::sum(fastest, limits.extra_time), report)?;
     // Deepen by changes so that hitting the effort cap still leaves complete
     // lists for few changes instead of an arbitrary depth-first subset.
     let mut complete_up_to = None;
@@ -612,7 +636,88 @@ pub fn enumerate_reporting(net: &Network<'_>, limits: &Limits, report: &dyn Fn(P
     }
 
     let chains = search.found.into_iter().map(|steps| Chain { steps }).collect();
-    Ok(Enumeration { chains, fastest, complete_up_to, nodes: search.nodes })
+    Ok(Enumeration { chains, fastest: Some(fastest), complete_up_to, nodes: search.nodes })
+}
+
+/// How the search for the fastest connection came out.
+enum Fastest {
+    /// The fastest connection's duration; `None` if there is none.
+    Takes(Option<TimeDelta>),
+    /// The effort cap cut it short.
+    CutShort,
+}
+
+/// The fastest connection the search can list with changes missed by up to
+/// `missed_by`, taking `lower` (earliest arrival's) at the least: with any
+/// number of changes, detours and rides away from the destination, as
+/// earliest arrival, but never at a station twice. Searches up to a limit
+/// from `lower` on, doubling what it exceeds `lower` by, until a connection
+/// fits or the limit is the longest any connection can take.
+fn fastest_listed(net: &Network<'_>, limits: &Limits, missed_by: TimeDelta, lower: TimeDelta) -> Result<Fastest> {
+    let tt = net.tt;
+    let relaxed = Limits { missed_by, keep_detours: true, forward_only: false, ..*limits };
+    let quiet = |_: Progress| {};
+    let mut search = Search::new(net, &relaxed, lower, &quiet)?;
+    // Every ride ends at a station not visited yet.
+    search.max_rides = tt.stations.len();
+    // Leaving in the window, no connection arrives after the last train does and a walk.
+    let last = tt.trips.iter().flat_map(|t| &t.calls).filter_map(Call::arrival_time).max();
+    let walk = tt.footpaths.iter().map(|fp| fp.duration).max().unwrap_or_default();
+    let longest = last.map_or(lower, |l| checked::sum(l.signed_duration_since(limits.depart_from), walk));
+    loop {
+        search.explore(limits.origin, limits.depart_from, None, false)?;
+        if search.truncated {
+            return Ok(Fastest::CutShort);
+        }
+        if !search.found.is_empty() {
+            let mut fastest = None;
+            for steps in search.found {
+                improve(&mut fastest, Chain { steps }.duration(tt)?);
+            }
+            return Ok(Fastest::Takes(fastest));
+        }
+        if search.max_duration == longest {
+            return Ok(Fastest::Takes(None));
+        }
+        // Saturating; a limit past `longest` finds nothing more.
+        let excess = checked::difference(search.max_duration, lower).max(TimeDelta::minutes(1));
+        search.max_duration = checked::sum(search.max_duration, excess).min(longest);
+    }
+}
+
+impl<'a> Search<'a> {
+    /// A search of `net` within `limits` for connections taking at most `max_duration`.
+    fn new(
+        net: &'a Network<'_>,
+        limits: &'a Limits,
+        max_duration: TimeDelta,
+        report: &'a dyn Fn(Progress),
+    ) -> Result<Self> {
+        let tt = net.tt;
+        let mut visited = vec![false; tt.stations.len()];
+        *entry_mut(&mut visited, limits.origin.0, "origin station")? = true;
+        Ok(Self {
+            tt,
+            limits,
+            departures: &net.departures,
+            walks: &net.walks,
+            lower_bound: &net.lower_bound,
+            bound: &net.bound,
+            max_duration,
+            visited,
+            used: vec![false; tt.trips.len()],
+            steps: Vec::new(),
+            lead: TimeDelta::zero(),
+            rides: 0,
+            max_rides: 0,
+            presence: Vec::new(),
+            found: HashSet::new(),
+            nodes: 0,
+            truncated: false,
+            report,
+            report_at: next_report(),
+        })
+    }
 }
 
 impl Search<'_> {
