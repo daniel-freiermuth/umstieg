@@ -258,7 +258,7 @@ fn form_page(params: &[(String, String)], error: Option<&str>) -> Html<String> {
         error: Option<&'a str>,
     }
     let spec = Spec { fields: fields(), values: params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(), error };
-    Html(page::FORM.render(Some(&spec)).unwrap_or_else(|e| format!("{e:#}")))
+    Html(page::FORM.render(&spec).unwrap_or_else(|e| format!("{e:#}")))
 }
 
 async fn form(Query(params): Query<Vec<(String, String)>>) -> Html<String> {
@@ -325,7 +325,7 @@ async fn search(
         plot.html.clone()
     } else {
         let progress = Progress { status: format!("/job/{id}/status") };
-        page::PROGRESS.render(Some(&progress)).unwrap_or_else(|e| format!("{e:#}"))
+        page::PROGRESS.render(&progress).unwrap_or_else(|e| format!("{e:#}"))
     };
     drop(jobs);
     // The same link shows progress first, the plot later.

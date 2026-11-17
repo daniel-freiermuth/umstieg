@@ -47,26 +47,23 @@ impl Page {
     /// The page with the shared look at `<!--__HEAD__-->` and `<!--__BRAND__-->`,
     /// `data` as JSON at `/*__DATA__*/` and its script at `/*__SCRIPT__*/`,
     /// which comes after the rest in every template.
-    pub fn render(&self, data: Option<&impl Serialize>) -> Result<String> {
+    pub fn render(&self, data: &impl Serialize) -> Result<String> {
         self.render_brand(data, true)
     }
 
     /// [`Page::render`] for a page written to a file: its logo links nowhere.
-    pub fn render_file(&self, data: Option<&impl Serialize>) -> Result<String> {
+    pub fn render_file(&self, data: &impl Serialize) -> Result<String> {
         self.render_brand(data, false)
     }
 
-    fn render_brand(&self, data: Option<&impl Serialize>, linked: bool) -> Result<String> {
+    fn render_brand(&self, data: &impl Serialize, linked: bool) -> Result<String> {
         // Placeholders are only looked for in the template: data or script
         // text that looks like one stays as it is.
         let (top, bottom) = self.html.split_once(SCRIPT).context("page template without script placeholder")?;
         let top = top.replacen(HEAD, &head(), 1).replacen(BRAND, &brand(linked), 1);
-        let top = match data {
-            // `<` only occurs in JSON strings, where `\u003c` means the same;
-            // escaped, the data can't close or confuse the surrounding <script>.
-            Some(data) => top.replacen(DATA, &serde_json::to_string(data)?.replace('<', "\\u003c"), 1),
-            None => top,
-        };
+        // `<` only occurs in JSON strings, where `\u003c` means the same;
+        // escaped, the data can't close or confuse the surrounding <script>.
+        let top = top.replacen(DATA, &serde_json::to_string(data)?.replace('<', "\\u003c"), 1);
         Ok(format!("{top}{}{bottom}", self.script))
     }
 }
