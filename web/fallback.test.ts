@@ -77,7 +77,6 @@ class World {
     return new Fallbacks({
       pieces: this.pieces,
       network: this.pieces.map((_, i) => i),
-      stations: this.names.length,
       limits: {
         origin: 0,
         destination: this.station(this.destination),
