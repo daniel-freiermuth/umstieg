@@ -830,7 +830,7 @@ class Fallbacks {
       keepDetours: false,
       lowerBound: null
     };
-    const all = everyConnection(g.pieces, g.network, g.stations, limits);
+    const all = everyConnection(g.pieces, g.network, g.names.length, limits);
     const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
     const found = all.filter((c) => c.arrival - c.departure <= fastest + EXTRA);
     this.cache.set(key, found);
@@ -1271,7 +1271,6 @@ var clock = (ms) => clockFmt.format(ms);
 var alternatives = new Fallbacks({
   pieces: D.pieces,
   network: D.network,
-  stations: D.names.length,
   limits: D.limits,
   names: D.names,
   trips: D.trips,

@@ -54,7 +54,6 @@ export interface Alternative {
 export interface Ground {
   pieces: readonly Stretch[];
   network: readonly number[];
-  stations: number;
   limits: Limits;
   names: readonly string[];
   trips: readonly string[];
@@ -88,7 +87,7 @@ export class Fallbacks {
       keepDetours: false,
       lowerBound: null,
     };
-    const all = everyConnection(g.pieces, g.network, g.stations, limits);
+    const all = everyConnection(g.pieces, g.network, g.names.length, limits);
     const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
     const found = all.filter((c) => c.arrival - c.departure <= fastest + EXTRA);
     // Stryker disable next-line all: a cache, the same found without it.

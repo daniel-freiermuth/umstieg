@@ -112,7 +112,6 @@ const clock = (ms: number): string => clockFmt.format(ms);
 const alternatives = new Fallbacks({
   pieces: D.pieces,
   network: D.network,
-  stations: D.names.length,
   limits: D.limits,
   names: D.names,
   trips: D.trips,
