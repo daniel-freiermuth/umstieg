@@ -495,7 +495,9 @@ struct Search<'a> {
     lower_bound: &'a [Option<TimeDelta>],
     bound: &'a [Option<TimeDelta>],
     max_duration: TimeDelta,
-    visited: Vec<bool>,
+    /// For each station visited, the chain's stop (index into `presence`)
+    /// it was reached for: the origin 0, passed stations the stop they lead to.
+    visited: Vec<Option<usize>>,
     used: Vec<bool>,
     steps: Vec<Step>,
     /// The walk from the origin before the first train, if the chain starts with one.
@@ -505,6 +507,11 @@ struct Search<'a> {
     max_rides: usize,
     /// Stations where the chain stopped, and from when another train could be caught there.
     presence: Vec<Presence>,
+    /// Per train boarded that is a detour unless the rest of the chain passes
+    /// a station: per earlier stop it could have been boarded at instead, the
+    /// stations it would have passed from there that the chain had not been
+    /// at. A connection passing none of one stop's is that detour.
+    detour_unless: Vec<Vec<Vec<StationIdx>>>,
     /// Every connection found once; deepening by changes revisits shorter ones.
     found: HashSet<Vec<Step>>,
     nodes: usize,
@@ -694,8 +701,8 @@ impl<'a> Search<'a> {
         report: &'a dyn Fn(Progress),
     ) -> Result<Self> {
         let tt = net.tt;
-        let mut visited = vec![false; tt.stations.len()];
-        *entry_mut(&mut visited, limits.origin.0, "origin station")? = true;
+        let mut visited = vec![None; tt.stations.len()];
+        *entry_mut(&mut visited, limits.origin.0, "origin station")? = Some(0);
         Ok(Self {
             tt,
             limits,
@@ -711,6 +718,7 @@ impl<'a> Search<'a> {
             rides: 0,
             max_rides: 0,
             presence: Vec::new(),
+            detour_unless: Vec::new(),
             found: HashSet::new(),
             nodes: 0,
             truncated: false,
@@ -753,7 +761,7 @@ impl Search<'_> {
             return Ok(());
         }
         if station == self.tt.destination {
-            self.record();
+            self.record()?;
             return Ok(());
         }
         let (tt, departures, walks) = (self.tt, self.departures, self.walks);
@@ -766,10 +774,9 @@ impl Search<'_> {
                 let to = fp.to;
                 // Saturating: a walk ending after the latest time there is reaches nothing in time.
                 let ready = checked::later_or_max(self.limits.depart_from, fp.duration);
-                if to == tt.destination || *entry(&self.visited, to.0, "station")? {
+                if to == tt.destination || entry(&self.visited, to.0, "station")?.is_some() {
                     continue;
                 }
-                *entry_mut(&mut self.visited, to.0, "station")? = true;
                 // The origin, where a train calling there too is boarded instead,
                 // and where the walk leads.
                 self.presence.push(Presence {
@@ -778,6 +785,7 @@ impl Search<'_> {
                     since: self.limits.depart_from,
                     slack_out: None,
                 });
+                *entry_mut(&mut self.visited, to.0, "station")? = Some(self.presence.len());
                 self.presence.push(Presence { station: to, arrival: Some(ready), since: ready, slack_out: None });
                 self.steps.push(Step::Walk { footpath });
                 self.lead = fp.duration;
@@ -785,7 +793,7 @@ impl Search<'_> {
                 self.lead = TimeDelta::zero();
                 self.steps.pop();
                 self.presence.truncate(self.presence.len().saturating_sub(2));
-                *entry_mut(&mut self.visited, to.0, "station")? = false;
+                *entry_mut(&mut self.visited, to.0, "station")? = None;
                 if self.truncated {
                     return Ok(());
                 }
@@ -797,19 +805,19 @@ impl Search<'_> {
                 // A walk ending after the latest time there is misses any deadline.
                 let Some(arrive) = ready.checked_add_signed(fp.duration) else { continue };
                 let to = fp.to;
-                if *entry(&self.visited, to.0, "station")?
+                if entry(&self.visited, to.0, "station")?.is_some()
                     || arrive > deadline
                     || !self.reachable(to, arrive, deadline)?
                 {
                     continue;
                 }
-                *entry_mut(&mut self.visited, to.0, "station")? = true;
+                *entry_mut(&mut self.visited, to.0, "station")? = Some(self.presence.len());
                 self.presence.push(Presence { station: to, arrival: Some(arrive), since: arrive, slack_out: None });
                 self.steps.push(Step::Walk { footpath });
                 self.explore(to, arrive, Some(deadline), true)?;
                 self.steps.pop();
                 self.presence.pop();
-                *entry_mut(&mut self.visited, to.0, "station")? = false;
+                *entry_mut(&mut self.visited, to.0, "station")? = None;
             }
         }
         if self.rides >= self.max_rides {
@@ -847,8 +855,17 @@ impl Search<'_> {
             };
             let earlier_calls =
                 calls.get(..board.0).with_context(|| format!("trip {} has no call {}", trip.0, board.0))?;
-            if !self.limits.keep_detours && self.is_detour(earlier_calls, departure) {
-                continue;
+            let unless = if self.limits.keep_detours {
+                Vec::new()
+            } else {
+                match self.detour(earlier_calls, departure)? {
+                    Some(unless) => unless,
+                    None => continue,
+                }
+            };
+            let deferred = !unless.is_empty();
+            if deferred {
+                self.detour_unless.push(unless);
             }
 
             let first = self.rides == 0;
@@ -862,10 +879,12 @@ impl Search<'_> {
             // Below `max_rides` here, so this never saturates.
             self.rides = self.rides.saturating_add(1);
             let mut passed = Vec::new();
+            // The stop each station passed leads to.
+            let reached = self.presence.len();
             for (alight, call) in calls.iter().enumerate().skip(board.0.saturating_add(1)) {
                 let alight = CallIdx(alight);
                 let seen = entry_mut(&mut self.visited, call.station.0, "station")?;
-                if *seen {
+                if seen.is_some() {
                     break;
                 }
                 let Some(arrival) = call.arrival_time() else { break };
@@ -873,7 +892,7 @@ impl Search<'_> {
                 if arrival > deadline || arrival < departure {
                     break;
                 }
-                *seen = true;
+                *seen = Some(reached);
                 passed.push(call.station);
                 let worth_stopping = call.station == tt.destination
                     || !entry(departures, call.station.0, "station")?.is_empty()
@@ -895,11 +914,14 @@ impl Search<'_> {
                 }
             }
             for s in passed {
-                *entry_mut(&mut self.visited, s.0, "station")? = false;
+                *entry_mut(&mut self.visited, s.0, "station")? = None;
             }
             // Incremented above.
             self.rides = self.rides.saturating_sub(1);
             *entry_mut(&mut self.used, trip.0, "trip")? = false;
+            if deferred {
+                self.detour_unless.pop();
+            }
             if first {
                 self.presence.pop();
             } else if let Some(here) = self.presence.last_mut() {
@@ -915,31 +937,56 @@ impl Search<'_> {
     /// Boarding this train where the chain stands (the last presence) is a
     /// detour if it already called at a station the chain stopped at earlier,
     /// catchable there comfortably and with at least the buffer the detour's
-    /// changes leave. Detours that raise the worst buffer (S1 to Altona
-    /// instead of a short change at Hamburg Hbf) stay. At the origin, any
-    /// later departure of the train counts.
-    fn is_detour(&self, earlier_calls: &[Call], departure: DateTime<Utc>) -> bool {
-        let Some((here, before)) = self.presence.split_last() else { return false };
+    /// changes leave, and boarded there would have got here and on as the
+    /// chain does: passing no station the chain had been at by then, nor one
+    /// the rest of the chain passes. Detours that raise the worst buffer (S1
+    /// to Altona instead of a short change at Hamburg Hbf) stay. At the
+    /// origin, any later departure of the train counts. `None` if it is a
+    /// detour whatever follows; otherwise, per earlier stop it is a detour
+    /// from unless the rest of the chain passes one, the stations the train
+    /// passes from there that the chain has not been at (none: no detour).
+    fn detour(&self, earlier_calls: &[Call], departure: DateTime<Utc>) -> Result<Option<Vec<Vec<StationIdx>>>> {
+        let mut unless = Vec::new();
+        let Some((here, before)) = self.presence.split_last() else { return Ok(Some(unless)) };
         // Worst buffer of the detour from an earlier stop up to boarding here.
         let mut worst = here.arrival.map_or(TimeDelta::MAX, |a| departure.signed_duration_since(a));
-        for p in before.iter().rev() {
-            let caught = earlier_calls.iter().find(|c| c.station == p.station).and_then(Call::departure_time);
-            if let Some(d) = caught.filter(|&d| d >= p.since) {
-                match p.arrival {
-                    None => return true,
-                    Some(arrival) => {
-                        let direct = d.signed_duration_since(arrival);
-                        if direct >= self.limits.min_transfer
-                            && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX))
-                        {
-                            return true;
-                        }
-                    }
+        for (stop, p) in before.iter().enumerate().rev() {
+            let mut from_p = earlier_calls.iter().skip_while(|c| c.station != p.station);
+            let caught = from_p.next().and_then(Call::departure_time).filter(|&d| d >= p.since);
+            let comfortable = caught.is_some_and(|d| {
+                p.arrival.is_none_or(|arrival| {
+                    let direct = d.signed_duration_since(arrival);
+                    direct >= self.limits.min_transfer && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX))
+                })
+            });
+            if comfortable && let Some(stations) = self.not_yet_passed(stop, from_p)? {
+                if stations.is_empty() {
+                    return Ok(None);
                 }
+                unless.push(stations);
             }
             worst = worst.min(p.slack_out.unwrap_or(TimeDelta::MAX));
         }
-        false
+        Ok(Some(unless))
+    }
+
+    /// The stations of `calls` the chain has not been at, for a train boarded
+    /// at the chain's stop `stop`; `None` if one is at a station the chain had
+    /// been at by then, where its ride would end (cancelled stops included).
+    fn not_yet_passed<'c>(
+        &self,
+        stop: usize,
+        calls: impl Iterator<Item = &'c Call>,
+    ) -> Result<Option<Vec<StationIdx>>> {
+        let mut stations = Vec::new();
+        for call in calls {
+            match *entry(&self.visited, call.station.0, "station")? {
+                Some(reached) if reached <= stop => return Ok(None),
+                Some(_) => {}
+                None => stations.push(call.station),
+            }
+        }
+        Ok(Some(stations))
     }
 
     /// Whether the destination can still be reached by `deadline` from
@@ -958,9 +1005,21 @@ impl Search<'_> {
     }
 
     /// Every variant counts, also ones riding the same trains but changing
-    /// elsewhere (Ludwigshafen Mitte instead of Ludwigshafen Hbf).
-    fn record(&mut self) {
+    /// elsewhere (Ludwigshafen Mitte instead of Ludwigshafen Hbf), unless it
+    /// is a detour after all: it passes none of the stations boarding a train
+    /// earlier would have.
+    fn record(&mut self) -> Result<()> {
+        for stations in self.detour_unless.iter().flatten() {
+            let mut passed = false;
+            for s in stations {
+                passed |= entry(&self.visited, s.0, "station")?.is_some();
+            }
+            if !passed {
+                return Ok(());
+            }
+        }
         self.found.insert(self.steps.clone());
+        Ok(())
     }
 }
 
