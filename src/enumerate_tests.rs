@@ -477,6 +477,63 @@ fn detour_worst_buffer_counts_every_change_since_the_earlier_stop() {
     }
 }
 
+/// Boarding the train at an earlier stop is the alternative only if the train
+/// gets from there to where the chain boards it without passing a station
+/// the chain had visited by then. RB 3 calls at P, but from P it passes V,
+/// which RE 1 ran through (cancelled there): RE 1, RB 2 and RB 3, the only
+/// connection, is no detour. The RJ passes Harburg, which only RE 7 of the
+/// detour ran through: pruned.
+#[test]
+fn detour_counts_only_a_boarding_the_chain_could_have_made() {
+    let mut b = Builder::new();
+    let re1 = b.trip("RE 1", &[("A", "", "08:00"), ("V", "08:05", "08:05"), ("P", "08:10", "")]);
+    b.cancel(re1, "V");
+    b.trip("RB 2", &[("P", "", "08:12"), ("H", "08:20", "")]);
+    b.trip("RB 3", &[("P", "", "08:15"), ("V", "08:18", "08:18"), ("H", "08:30", "08:30"), ("D", "08:50", "")]);
+    let tt = b.build("A", "D");
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:00")).unwrap();
+    assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(50)), sorted(&["RE 1 A-P / RB 2 P-H / RB 3 H-D"])));
+
+    let mut b = Builder::new();
+    b.trip("ICE 1", &[("Frankfurt", "", "07:00"), ("Hamburg", "11:51", "")]);
+    b.trip("RE 7", &[("Hamburg", "", "12:02"), ("Harburg", "12:10", "12:10"), ("Schleswig", "12:50", "")]);
+    b.trip(
+        "RJ 384",
+        &[
+            ("Hamburg", "", "12:38"),
+            ("Harburg", "12:48", "12:48"),
+            ("Schleswig", "13:20", "13:22"),
+            ("København", "16:00", ""),
+        ],
+    );
+    let tt = b.build("Frankfurt", "København");
+    assert_eq!(listed(&tt, &limits(&tt, "07:00", "07:00")), ["ICE 1 Frankfurt-Hamburg / RJ 384 Hamburg-København"]);
+}
+
+/// Boarding RB 3 at P instead of H, the chain also passes S (cancelled
+/// there), so onward rides through S rule that alternative out: RE 1, RB 2,
+/// RB 3 and RB 4 via S is the only connection. Onward rides around S leave
+/// it, and the detour is pruned.
+#[test]
+fn detour_counts_only_an_alternative_the_onward_rides_allow() {
+    // (RB 4 passes S, listed)
+    let cases =
+        [(true, &["RE 1 A-P / RB 2 P-H / RB 3 H-X / RB 4 X-D"][..]), (false, &["RE 1 A-P / RB 3 P-X / RB 4 X-D"])];
+    for (via_s, expected) in cases {
+        let mut b = Builder::new();
+        b.trip("RE 1", &[("A", "", "08:00"), ("P", "08:10", "")]);
+        b.trip("RB 2", &[("P", "", "08:12"), ("H", "08:18", "")]);
+        let rb3 =
+            b.trip("RB 3", &[("P", "", "08:20"), ("S", "08:25", "08:25"), ("H", "08:30", "08:30"), ("X", "08:40", "")]);
+        b.cancel(rb3, "S");
+        let via = if via_s { "S" } else { "T" };
+        b.trip("RB 4", &[("X", "", "08:45"), (via, "08:50", "08:50"), ("D", "09:00", "")]);
+        let tt = b.build("A", "D");
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:00")).unwrap();
+        assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(60)), sorted(expected)), "RB 4 via {via}");
+    }
+}
+
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {

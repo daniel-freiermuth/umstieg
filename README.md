@@ -220,12 +220,13 @@ command line logs nothing unless `RUST_LOG` is set.
    - no pointless detours: a train is not boarded if the chain already stopped
      at an earlier station where it could have been caught comfortably
      (≥ `--min-transfer`) with at least the smallest buffer the detour's changes
-     leave — and never after leaving the origin before the same train
-     (`--keep-detours` disables). Arriving at Hamburg Hbf 11:51 and taking the
-     RE7 to Schleswig (11 min change) for the RJ that leaves Hamburg Hbf at
-     12:38 is pruned; arriving 12:36 and taking the S1 to Altona (16 and 18 min
-     changes) instead of a 14 min change to the same RJ stays, as it raises
-     the worst buffer.
+     leave, and from where the connection boarding it there would still pass
+     no station twice — and never after leaving the origin before the
+     same train (`--keep-detours` disables). Arriving at Hamburg Hbf 11:51 and
+     taking the RE7 to Schleswig (11 min change) for the RJ that leaves Hamburg
+     Hbf at 12:38 is pruned; arriving 12:36 and taking the S1 to Altona (16
+     and 18 min changes) instead of a 14 min change to the same RJ stays, as it
+     raises the worst buffer.
 
    Variants riding the same trains but changing at different stations are all
    kept (RNV 4 → S1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte).
