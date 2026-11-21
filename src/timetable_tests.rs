@@ -1660,6 +1660,37 @@ fn a_coupled_db_run_cancelled_throughout_doesnt_cancel_the_portion_that_runs() {
 }
 
 #[test]
+fn a_coupled_db_run_cancelled_throughout_doesnt_keep_the_portion_that_runs_from_its_stops_abroad() {
+    // Boards at A and B; both portions' routes go on to X, unknown to DB
+    // (abroad). ICE 774 is cancelled throughout. MOTIS knows the train under
+    // either portion's number or one of neither (by shared times).
+    let stations = vec![station("A", Some("A")), station("B", Some("B")), station("X", None)];
+    let stops: &Stops<'_> = &[(0, "", "08:00"), (1, "09:00", "09:02")];
+    let portion =
+        |id, label| path_after(path_after(run(id, label, Some(LongDistance), stops), 0, &["B", "X"]), 1, &["X"]);
+    // Either run's trip id may sort first.
+    for (cancelled_id, running_id) in [("1-774", "2-2808"), ("2-774", "1-2808")] {
+        for label in ["ICE 2808", "ICE 774", "ICE 9999"] {
+            let mut cancelled = portion(cancelled_id, "ICE 774");
+            for (_, v) in &mut cancelled {
+                for e in [&mut v.arrival, &mut v.departure].into_iter().flatten() {
+                    e.cancelled = true;
+                }
+            }
+            let visits = cancelled.into_iter().chain(portion(running_id, "ICE 2808"));
+            let motis =
+                motis_trip(label, Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "09:02"), (2, "10:00", "")]);
+            let trips = finish(merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+            let case = format!("{cancelled_id} cancelled, MOTIS {label}");
+            assert_eq!(calls_numbered(&trips, 2808), [vec![(0, false), (1, false), (2, false)]], "{case}");
+            let ridden =
+                trips.iter().filter(|t| !t.numbers.contains(&2808)).flat_map(|t| &t.calls).any(|c| !c.cancelled);
+            assert!(!ridden, "{case}: {trips:?}");
+        }
+    }
+}
+
+#[test]
 fn a_coupled_db_run_cut_short_doesnt_cut_short_the_portion_that_runs() {
     // Boards at A and D only: ICE 774's changed route at A ends at B, it
     // doesn't reach D; ICE 2808 runs on. B, G and C: no board, from MOTIS,
