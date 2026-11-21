@@ -875,13 +875,14 @@ impl Search<'_> {
             match self.presence.last_mut() {
                 // The change made here, for detour comparisons further on.
                 Some(here) if !first => here.slack_out = here.arrival.map(|a| departure.signed_duration_since(a)),
-                // Leaving later on the same train from the origin is never worse.
+                // Leaving later on the same train from the origin is never worse;
+                // after a walk from there, the origin is left a walk before.
                 _ => self.presence.push(Presence {
                     station,
                     arrival: None,
                     since: departure,
                     slack_out: None,
-                    starts: Some(TimeDelta::zero()),
+                    starts: Some(self.lead),
                 }),
             }
             *self.used.get_mut(trip)? = true;
@@ -957,11 +958,12 @@ impl Search<'_> {
     /// origin, any later departure of the train counts; after a walk from
     /// there, also an earlier one, there or where the walk led, but only for
     /// a connection arriving within the travel time limit from leaving the
-    /// origin for it. `None` if it is a detour whatever follows (arriving by
-    /// `deadline`); otherwise, per earlier stop it is a detour from unless
-    /// the rest of the chain passes one or arrives later, the stations the
-    /// train passes from there that the chain has not been at (none: no
-    /// detour) and the latest arrival boarding there allows.
+    /// origin for it. Either way only one leaving the origin within the
+    /// window counts, as the search lists no other. `None` if it is a detour
+    /// whatever follows (arriving by `deadline`); otherwise, per earlier stop
+    /// it is a detour from unless the rest of the chain passes one or arrives
+    /// later, the stations the train passes from there that the chain has not
+    /// been at (none: no detour) and the latest arrival boarding there allows.
     fn detour(
         &self,
         earlier_calls: &[Call],
@@ -982,14 +984,16 @@ impl Search<'_> {
                     direct >= self.limits.min_transfer && direct >= worst.min(p.slack_out.unwrap_or(TimeDelta::MAX))
                 })
             });
-            if comfortable && let Some(stations) = self.not_yet_passed(stop, from_p)? {
-                // Boarding where it starts the connection, it may leave the
-                // origin earlier than the chain and take longer: listed only
-                // if within the limit.
-                let by = match (p.starts, caught) {
-                    (Some(walk), Some(d)) => checked::later_or_max(checked::earlier_or_min(d, walk), self.max_duration),
-                    _ => DateTime::<Utc>::MAX_UTC,
-                };
+            // Boarding where it starts the connection, it leaves the origin
+            // a walk before the train: listed only within the window.
+            let leaves = p.starts.zip(caught).map(|(walk, d)| checked::earlier_or_min(d, walk));
+            if comfortable
+                && leaves.is_none_or(|l| l <= self.limits.depart_until)
+                && let Some(stations) = self.not_yet_passed(stop, from_p)?
+            {
+                // It may leave the origin earlier than the chain and take
+                // longer: listed only if within the limit.
+                let by = leaves.map_or(DateTime::<Utc>::MAX_UTC, |l| checked::later_or_max(l, self.max_duration));
                 if stations.is_empty() && by >= deadline {
                     return Ok(None);
                 }
