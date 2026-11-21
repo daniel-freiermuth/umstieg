@@ -586,7 +586,7 @@ async fn a_picked_stop_is_found_by_its_id_among_those_of_its_name() {
 }
 
 #[tokio::test]
-async fn plans_are_asked_once_then_cached_in_memory_and_on_disk() {
+async fn plans_are_asked_once_then_cached_on_disk() {
     let fake = Arc::new(Fake::default());
     fake.on("/api/v5/plan", 200, None, PLAN);
     let motis = client(&fake).await;
