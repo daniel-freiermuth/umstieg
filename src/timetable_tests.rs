@@ -1660,6 +1660,47 @@ fn a_coupled_db_run_cancelled_throughout_doesnt_cancel_the_portion_that_runs() {
 }
 
 #[test]
+fn a_db_train_cancelled_at_every_board_call_isnt_ridden_between_its_boards() {
+    // Boards at A and B only; O, X, G, H, C and D: no board, from MOTIS,
+    // which doesn't know of the cancellation. G and H lie between the
+    // boards: the train runs neither into A nor out of B, so not there.
+    // Before A and past B it may run, cut short or starting late.
+    let stations: Vec<Station> =
+        ["O", "X", "A", "G", "H", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+    let mut visits = path_after(
+        run("1-774", "ICE 774", Some(LongDistance), &[(2, "08:00", "08:02"), (5, "09:00", "09:02")]),
+        2,
+        &["G", "H", "B", "C", "D"],
+    );
+    visits = path_after(visits, 5, &["C", "D"]);
+    visits[0].1.arrival.as_mut().expect("arrives").planned_path = vec!["O".to_owned(), "X".to_owned()];
+    for (_, v) in &mut visits {
+        for e in [&mut v.arrival, &mut v.departure].into_iter().flatten() {
+            e.cancelled = true;
+        }
+    }
+    let motis = motis_trip(
+        "ICE 774",
+        Some(LongDistance),
+        &[
+            (0, "", "06:00"),
+            (1, "07:00", "07:01"),
+            (2, "08:00", "08:02"),
+            (3, "08:20", "08:21"),
+            (4, "08:40", "08:41"),
+            (5, "09:00", "09:02"),
+            (6, "10:00", "10:01"),
+            (7, "11:00", ""),
+        ],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+    assert_eq!(
+        calls_numbered(&trips, 774),
+        [vec![(0, false), (1, false), (2, true), (3, true), (4, true), (5, true), (6, false), (7, false)]]
+    );
+}
+
+#[test]
 fn a_coupled_db_run_cut_short_doesnt_cut_short_the_portion_that_runs() {
     // Boards at A and D only: ICE 774's changed route at A ends at B, it
     // doesn't reach D; ICE 2808 runs on. B, G and C: no board, from MOTIS,
