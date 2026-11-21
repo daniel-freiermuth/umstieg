@@ -510,6 +510,21 @@ fn detour_counts_only_a_boarding_the_chain_could_have_made() {
     assert_eq!(listed(&tt, &limits(&tt, "07:00", "07:00")), ["ICE 1 Frankfurt-Hamburg / RJ 384 Hamburg-København"]);
 }
 
+/// RB 3 is cancelled at P, so the chain cannot board it there: RE 1, RB 2
+/// and RB 3, the only connection, is no detour.
+#[test]
+fn detour_counts_no_boarding_at_a_cancelled_stop() {
+    let mut b = Builder::new();
+    b.trip("RE 1", &[("A", "", "08:00"), ("P", "08:10", "")]);
+    b.trip("RB 2", &[("P", "", "08:12"), ("H", "08:20", "")]);
+    let rb3 =
+        b.trip("RB 3", &[("Q", "", "08:05"), ("P", "08:15", "08:15"), ("H", "08:30", "08:30"), ("D", "08:50", "")]);
+    b.cancel(rb3, "P");
+    let tt = b.build("A", "D");
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits(&tt, "08:00", "08:00")).unwrap();
+    assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(50)), sorted(&["RE 1 A-P / RB 2 P-H / RB 3 H-D"])));
+}
+
 /// Boarding RB 3 at P instead of H, the chain also passes S (cancelled
 /// there), so onward rides through S rule that alternative out: RE 1, RB 2,
 /// RB 3 and RB 4 via S is the only connection. Onward rides around S leave
