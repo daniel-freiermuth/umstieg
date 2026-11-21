@@ -767,7 +767,10 @@ function chainOf(c: Connection): number {
     add(p);
     return D.pieces.length - 1;
   });
+  const groups = D.groups.length;
   const group = groupOf(D.groups, D.trips, c);
+  // A group none of the listed connections is in gets its row too, to hide it.
+  if (D.groups.length > groups) groupRow(group);
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
   // Fallbacks per change, as the server computes them for the listed ones.
@@ -1157,7 +1160,9 @@ document.addEventListener("keydown", (e) => {
 });
 
 const groupsEl = byId("groups", HTMLDivElement);
-D.groups.forEach((g, i) => {
+/** Group `i`'s row in the group list: hovering highlights its listed connections, clicking hides it. */
+function groupRow(i: number): void {
+  const g = item(D.groups, i);
   const row = document.createElement("div");
   row.className = "group";
   row.innerHTML = `<span>${esc(g.label)}</span><span class="count">${String(g.count)}</span>`;
@@ -1181,6 +1186,9 @@ D.groups.forEach((g, i) => {
     render();
   });
   groupsEl.appendChild(row);
+}
+D.groups.forEach((_, i) => {
+  groupRow(i);
 });
 
 buildModel();
