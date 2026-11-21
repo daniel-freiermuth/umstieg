@@ -1783,6 +1783,12 @@ fn merge(
                 // off at Karlsruhe, so its Mannheim time would be too.
                 let from_feed = !trip.calls.iter().any(|c| c.from_board);
                 let anchors = anchors_of(trip, &motis.calls);
+                // A train cancelled at each of its board calls runs neither
+                // into the first nor out of the last: it is cancelled at the
+                // copy's stops between them too (MOTIS often lacks the
+                // cancellation). Before and past them it may run, cut short
+                // or starting late.
+                let cancelled = trip.calls.iter().filter(|c| c.from_board).all(|c| c.cancelled);
                 let mut added = Vec::new();
                 for call in &motis.calls {
                     let name = stations.get(call.station.0).and_then(|s| s.board_name.as_ref());
@@ -1804,8 +1810,9 @@ fn merge(
                         && !parted
                         && !covered(call, motis.class)
                     {
+                        let call = Call { cancelled: call.cancelled || (cancelled && inside), ..call.clone() };
                         added.push(call.clone());
-                        trip.calls.push(call.clone());
+                        trip.calls.push(call);
                     }
                 }
                 index(&mut at_station, i, &added);
