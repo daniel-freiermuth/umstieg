@@ -1,7 +1,5 @@
 //! Minimal client for the MOTIS routing API (as served by Transitous).
 
-use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -11,7 +9,6 @@ use tokio::sync::Semaphore;
 
 use crate::cache::DiskCache;
 use crate::db::fold;
-use crate::sync::lock;
 use crate::timetable::ProductClass;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
@@ -324,7 +321,6 @@ pub struct Motis {
     http: reqwest::Client,
     base: String,
     permits: Semaphore,
-    cache: Mutex<HashMap<String, Vec<Itinerary>>>,
     disk: DiskCache,
     requests: AtomicUsize,
 }
@@ -335,7 +331,6 @@ impl Motis {
             http: crate::http::client(user_agent, REQUEST_TIMEOUT)?,
             base: base.trim_end_matches('/').to_owned(),
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
-            cache: Mutex::new(HashMap::new()),
             disk: DiskCache::new("motis", PLAN_CACHE_TTL),
             requests: AtomicUsize::new(0),
         })
@@ -506,14 +501,9 @@ impl Motis {
             ("time", time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             ("searchWindow", window.num_seconds().max(0).to_string()),
         ];
-        let key = format!("{query:?}");
-        if let Some(hit) = lock(&self.cache).get(&key) {
-            return Ok(hit.clone());
-        }
-        let text =
-            self.disk.get_or_fetch(&format!("{}{key}", self.base), self.get_text("/api/v5/plan", &query)).await?;
+        let key = format!("{}{query:?}", self.base);
+        let text = self.disk.get_or_fetch(&key, self.get_text("/api/v5/plan", &query)).await?;
         let resp: PlanResponse = serde_json::from_str(&text).context("decoding plan")?;
-        lock(&self.cache).insert(key, resp.itineraries.clone());
         Ok(resp.itineraries)
     }
 
