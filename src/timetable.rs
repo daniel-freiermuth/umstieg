@@ -1829,9 +1829,10 @@ fn merge(
     // Only now, with every feed's stops in, a train turned short becomes one
     // train up to where it ends and one from its new start; the stops between
     // are dropped. Where no board says where it ends, it ends at the last stop
-    // before the new start on its changed route, else at the departure whose
-    // changed route that is; failing that, the first train keeps every stop
-    // before the new start; starting late, there is none.
+    // before the new start on its changed route (a station DB doesn't know
+    // only by MOTIS' name for it), else at the departure whose changed route
+    // that is; failing that, the first train keeps every stop before the new
+    // start; starting late, there is none.
     let mut split = Vec::with_capacity(trips.len());
     for (i, mut trip) in trips.into_iter().enumerate() {
         let gaps = gaps.get(i).map_or(&[][..], Vec::as_slice);
@@ -1866,9 +1867,10 @@ fn merge(
 }
 
 /// When `calls`, sorted by planned time, last stop before `start` at a
-/// station boarded as one on `path`, the changed route of the departure
-/// planned at `departed`; failing that, `departed`: the train ends before the
-/// next of `calls`.
+/// station on `path`, the changed route of the departure planned at
+/// `departed`: boarded under a name on it or, not boarded at all (abroad),
+/// named by MOTIS as one on it. Failing that, `departed`: the train ends
+/// before the next of `calls`.
 fn last_call_on(
     calls: &[Call],
     stations: &[Station],
@@ -1876,12 +1878,17 @@ fn last_call_on(
     path: &[String],
     start: DateTime<Utc>,
 ) -> DateTime<Utc> {
+    let keys: Vec<String> = path.iter().map(|n| db::station_key(n)).collect();
+    let on_path = |c: &&Call| {
+        stations.get(c.station.0).is_some_and(|s| {
+            s.board_name.as_ref().map_or_else(|| keys.contains(&db::station_key(&s.name)), |n| path.contains(n))
+        })
+    };
     calls
         .iter()
         .filter(|c| c.planned() > Some(departed) && c.planned() < Some(start))
-        .filter(|c| stations.get(c.station.0).and_then(|s| s.board_name.as_ref()).is_some_and(|n| path.contains(n)))
-        .filter_map(Call::planned)
-        .next_back()
+        .rfind(on_path)
+        .and_then(Call::planned)
         .unwrap_or(departed)
 }
 
