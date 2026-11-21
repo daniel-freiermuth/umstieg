@@ -1316,6 +1316,141 @@ fn a_db_train_only_cut_short_where_its_changed_route_ends_at_none_of_the_station
 }
 
 #[test]
+fn a_db_train_only_cut_short_where_its_changed_route_runs_on_to_stations_db_doesnt_know_runs_to_them() {
+    // Boards at A and D only: D is skipped, A's changed route runs on to L
+    // and X abroad, which DB's boards don't name. L and X: from MOTIS.
+    let stations = [station("A", Some("A")), station("D", Some("D")), station("L", None), station("X", None)];
+    let mut visits = path_after(
+        run("r1", "ICE 10", Some(LongDistance), &[(0, "", "08:00"), (1, "08:30", "08:32")]),
+        0,
+        &["D", "L", "X"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["L".to_owned(), "X".to_owned()]);
+    let d = &mut visits[1].1;
+    for e in [&mut d.arrival, &mut d.departure].into_iter().flatten() {
+        e.cancelled = true;
+    }
+    let motis = motis_trip(
+        "ICE 10",
+        Some(LongDistance),
+        &[(0, "", "08:00"), (1, "08:30", "08:32"), (2, "09:00", "09:01"), (3, "09:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("ice", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.cancelled)).collect()).collect();
+    assert_eq!(calls, [vec![(0, false), (1, true), (2, false), (3, false)]], "A to L and X still runs");
+}
+
+#[test]
+fn a_db_train_only_cut_short_where_its_changed_route_ends_at_a_station_isnt_ridden_on_to_stations_db_doesnt_know() {
+    // Boards at A and D only: D is skipped, A's changed route ends at B; X
+    // past D, abroad, isn't named by DB's boards. B and X: from MOTIS.
+    let stations = [station("A", Some("A")), station("B", Some("B")), station("D", Some("D")), station("X", None)];
+    let mut visits = path_after(
+        run("r1", "ICE 10", Some(LongDistance), &[(0, "", "08:00"), (2, "08:30", "08:32")]),
+        0,
+        &["B", "D", "X"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+    let d = &mut visits[1].1;
+    for e in [&mut d.arrival, &mut d.departure].into_iter().flatten() {
+        e.cancelled = true;
+    }
+    let motis = motis_trip(
+        "ICE 10",
+        Some(LongDistance),
+        &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:30", "08:32"), (3, "09:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("ice", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.cancelled)).collect()).collect();
+    assert_eq!(calls, [vec![(0, false), (1, false)]], "A to B runs, nothing past B");
+}
+
+#[test]
+fn a_db_train_only_cut_short_before_every_station_isnt_ridden_on_to_ones_db_doesnt_know() {
+    // Boards at A and D only: D is skipped, A's changed route ends at B, which
+    // isn't one of the stations. G and C: from MOTIS, past B; X past D,
+    // abroad, isn't named by DB's boards: the train may reach it, but not via G and C.
+    let stations = [station("A", Some("A")), station("G", Some("G")), station("C", Some("C"))]
+        .into_iter()
+        .chain([station("D", Some("D")), station("X", None)])
+        .collect::<Vec<_>>();
+    let mut visits = path_after(
+        run("r1", "ICE 10", Some(LongDistance), &[(0, "", "08:00"), (3, "08:30", "08:32")]),
+        0,
+        &["B", "G", "C", "D", "X"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+    let d = &mut visits[1].1;
+    for e in [&mut d.arrival, &mut d.departure].into_iter().flatten() {
+        e.cancelled = true;
+    }
+    d.arrival.as_mut().expect("arrives").planned_path = ["A", "B", "G", "C"].map(str::to_owned).to_vec();
+    let motis = motis_trip(
+        "ICE 10",
+        Some(LongDistance),
+        &[(0, "", "08:00"), (1, "08:15", "08:16"), (2, "08:20", "08:21"), (3, "08:30", "08:32"), (4, "09:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("ice", motis)]), Vec::new(), false));
+    assert!(
+        trips.iter().all(|t| !t.calls.iter().any(|c| c.station.0 == 0) || t.calls.iter().all(|c| c.station.0 == 0)),
+        "the train from A doesn't reach G, C, D or X: {trips:?}"
+    );
+}
+
+#[test]
+fn a_db_train_only_cut_short_at_a_station_db_doesnt_know_isnt_ridden_past_it() {
+    // Boards at A and D only: D is skipped, A's changed route ends at U,
+    // abroad, which DB's boards don't name; nor Y past it. U and Y: from MOTIS.
+    let stations = [station("A", Some("A")), station("D", Some("D")), station("U", None), station("Y", None)];
+    let mut visits = path_after(
+        run("r1", "ICE 10", Some(LongDistance), &[(0, "", "08:00"), (1, "08:30", "08:32")]),
+        0,
+        &["D", "U", "Y"],
+    );
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["U".to_owned()]);
+    let d = &mut visits[1].1;
+    for e in [&mut d.arrival, &mut d.departure].into_iter().flatten() {
+        e.cancelled = true;
+    }
+    let motis = motis_trip(
+        "ICE 10",
+        Some(LongDistance),
+        &[(0, "", "08:00"), (1, "08:30", "08:32"), (2, "09:00", "09:01"), (3, "09:30", "")],
+    );
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("ice", motis)]), Vec::new(), false));
+    let calls: Vec<Vec<_>> =
+        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.cancelled)).collect()).collect();
+    assert_eq!(calls, [vec![(0, false), (1, true), (2, false)]], "A to U runs, nothing past U");
+}
+
+#[test]
+fn a_db_train_only_cut_short_before_its_skipped_boards_isnt_ridden_on_to_stations_db_doesnt_know() {
+    // Boards at A, G, C and D: A's changed route ends at B, which isn't one of
+    // the stations, so G, C and D are skipped. X past D, abroad, isn't named by
+    // DB's boards nor on the changed route. X: from MOTIS.
+    let stations = [station("A", Some("A")), station("G", Some("G")), station("C", Some("C"))]
+        .into_iter()
+        .chain([station("D", Some("D")), station("X", None)])
+        .collect::<Vec<_>>();
+    let stops = [(0, "", "08:00"), (1, "08:15", "08:16"), (2, "08:20", "08:21"), (3, "08:30", "08:32")];
+    let mut visits = path_after(run("r1", "ICE 10", Some(LongDistance), &stops), 0, &["B", "G", "C", "D", "X"]);
+    visits[0].1.departure.as_mut().expect("departs").changed_path = Some(vec!["B".to_owned()]);
+    for (_, v) in &mut visits[1..] {
+        for e in [&mut v.arrival, &mut v.departure].into_iter().flatten() {
+            e.cancelled = true;
+        }
+    }
+    let motis = motis_trip("ICE 10", Some(LongDistance), &[&stops[..], &[(4, "09:30", "")]].concat());
+    let trips = finish(merge(&stations, &boards(visits), raw(vec![("ice", motis)]), Vec::new(), false));
+    assert!(
+        trips.iter().all(|t| !t.calls.iter().any(|c| c.station.0 == 0) || t.calls.iter().all(|c| c.station.0 == 0)),
+        "the train from A doesn't reach X: {trips:?}"
+    );
+}
+
+#[test]
 fn a_db_train_only_cut_short_where_its_changed_route_ends_back_where_it_started_runs_to_its_last_departure() {
     // Boards at B, A and D only: from A the train goes back to B, its changed
     // route ends there; B's board shows only its start, D isn't called at.
