@@ -534,6 +534,51 @@ fn detour_counts_only_an_alternative_the_onward_rides_allow() {
     }
 }
 
+/// Walking from A to B for Bus 1 leaves A at 08:25 and takes 35 min.
+/// Boarding Bus 1 at A instead counts as the alternative only if it is
+/// listed: leaving A at 08:00 it takes 60 min, within the travel time limit
+/// only from 25 min extra on. Otherwise the walk is the only connection.
+#[test]
+fn detour_from_the_origin_after_a_walk_counts_only_a_listed_alternative() {
+    // (Bus 1 leaves A, extra minutes, listed)
+    let cases = [
+        ("08:00", 0, "walk A-B / Bus 1 B-D"),
+        ("08:00", 24, "walk A-B / Bus 1 B-D"),
+        ("08:00", 25, "Bus 1 A-D"),
+        ("08:25", 0, "Bus 1 A-D"),
+    ];
+    for (leaves_a, extra, only) in cases {
+        let mut b = Builder::new();
+        b.trip("Bus 1", &[("A", "", leaves_a), ("B", "08:30", "08:35"), ("D", "09:00", "")]);
+        b.walk("A", "B", 10);
+        let tt = b.build("A", "D");
+        let limits = Limits { extra_time: min(extra), ..limits(&tt, "08:00", "08:30") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let expected = (Some(min(35)), vec![only.to_owned()]);
+        assert_eq!((result.fastest, shown(&tt, &result)), expected, "Bus 1 at {leaves_a}, {extra} min extra");
+    }
+}
+
+/// Walking from A to T at 08:59 for T1 and changing at X to T2 takes 31 min.
+/// Walking to T2 at T instead leaves A at 08:29 and takes 61 min: the
+/// alternative only from 30 min extra on, as at the origin itself.
+#[test]
+fn detour_from_where_a_walk_from_the_origin_led_counts_only_a_listed_alternative() {
+    // (extra minutes, listed)
+    let cases = [(0, "walk A-T / T1 T-X / T2 X-D"), (29, "walk A-T / T1 T-X / T2 X-D"), (30, "walk A-T / T2 T-D")];
+    for (extra, only) in cases {
+        let mut b = Builder::new();
+        b.walk("A", "T", 1);
+        b.trip("T1", &[("T", "", "09:00"), ("X", "09:10", "")]);
+        b.trip("T2", &[("T", "", "08:30"), ("X", "09:20", "09:20"), ("D", "09:30", "")]);
+        let tt = b.build("A", "D");
+        let limits = Limits { extra_time: min(extra), ..limits(&tt, "08:00", "09:00") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let expected = (Some(min(31)), vec![only.to_owned()]);
+        assert_eq!((result.fastest, shown(&tt, &result)), expected, "{extra} min extra");
+    }
+}
+
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {
