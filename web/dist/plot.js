@@ -479,7 +479,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   for (const run of runs) {
     const split = run.span !== null && resumed.has(`${String(run.trip)}:${String(run.span[1])}`);
     const kept = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
-    const calls = kept.map((c, k) => run.setdowns.has(k) ? { ...c, dep: null } : c);
+    const calls = kept.map((c, k) => run.setdowns.has(k) || run.skips.has(k) ? { ...c, dep: null } : c);
     tripCalls.set(run.trip, [...tripCalls.get(run.trip) ?? [], ...calls]);
   }
   for (const calls of tripCalls.values())
