@@ -14,19 +14,25 @@ export type Segment = [piece: number, from: number, to: number];
 export type Spot = { piece: number; from: number; to: number } | { station: number; t: number };
 
 /**
- * Whether `p` calls at a point of it: not at the points of a call it only
- * passes (cancelled), as `raw` and `skips` name them; points at the station
- * of the one before belong to its call.
+ * Whether a point of `p` belongs to a call whose first point is in `firsts`,
+ * as `raw` names them; points at the station of the one before belong to its
+ * call.
  */
-function callsAt(p: Line): (x: Pt) => boolean {
-  const passed = new Set<string>();
+function inCalls(p: Line, firsts: readonly number[]): (x: Pt) => boolean {
+  const marked = new Set<string>();
   // Stryker disable next-line BooleanLiteral: the first point always sets it.
-  let skipped = false;
+  let inside = false;
   p.raw.forEach(([t, s], i) => {
-    if (p.raw[i - 1]?.[1] !== s) skipped = p.skips.includes(i);
-    if (skipped) passed.add(`${String(t)}:${String(s)}`);
+    if (p.raw[i - 1]?.[1] !== s) inside = firsts.includes(i);
+    if (inside) marked.add(`${String(t)}:${String(s)}`);
   });
-  return (x) => !passed.has(`${String(x[0])}:${String(x[2])}`);
+  return (x) => marked.has(`${String(x[0])}:${String(x[2])}`);
+}
+
+/** Whether `p` calls at a point of it: not at the points of a call it only passes (cancelled, `skips`). */
+function callsAt(p: Line): (x: Pt) => boolean {
+  const passed = inCalls(p, p.skips);
+  return (x) => !passed(x);
 }
 
 /**
@@ -98,9 +104,10 @@ export interface Line {
   warn: boolean;
   trip: number | null;
   pts: readonly Pt[];
-  /** Points as (time, station), and the first point of each call it only passes (cancelled). */
+  /** Points as (time, station), and the first point of each call it only passes (cancelled), or has no departure at (set-down only). */
   raw: readonly (readonly [number, number])[];
   skips: readonly number[];
+  setdowns: readonly number[];
 }
 /** A connection: its pieces by index. */
 export interface Route {
@@ -205,7 +212,7 @@ export interface Ride {
   /** The network piece it is part of. */
   piece: number;
   chains: Set<number>;
-  /** Whether the train calls at its start (end): can be boarded (left) there; false where it only passes. */
+  /** Whether the train can be boarded at its start (left at its end); false where it only passes, nor boarded where it only sets down. */
   stops: [boolean, boolean];
 }
 
@@ -287,14 +294,15 @@ export function network(
     const p = item(pieces, pi);
     // Rides carry their train, waits and walks none.
     if (p.trip !== null) {
-      const stops = callsAt(p);
+      const stops = callsAt(p),
+        setsDown = inCalls(p, p.setdowns);
       for (let k = 1; k < p.pts.length; k++) {
         const a = item(p.pts, k - 1),
           b = item(p.pts, k);
-        const at: [boolean, boolean] = [stops(a), stops(b)];
+        const at: [boolean, boolean] = [stops(a) && !setsDown(a), stops(b)];
         rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set(), stops: at });
         // Passing a stop is no standing there.
-        if (a[2] === b[2] && at[0]) stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
+        if (a[2] === b[2] && stops(a)) stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
       }
     } else if (p.kind === "wait") {
       const first = p.pts[0],

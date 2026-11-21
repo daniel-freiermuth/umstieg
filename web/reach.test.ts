@@ -19,9 +19,15 @@ import {
 const pt = (s: number, t: number): Pt => [t, 100 - 10 * s, s];
 /**
  * A ride: [station, time] boards or alights, [station, arrival, departure] is
- * a stop in between; `cancelled` are positions in `calls` it only passes.
+ * a stop in between; `cancelled` are positions in `calls` it only passes,
+ * `setdown` those it has no departure at.
  */
-function ride(trip: number, calls: ([number, number] | [number, number, number])[], cancelled: number[] = []): Line {
+function ride(
+  trip: number,
+  calls: ([number, number] | [number, number, number])[],
+  cancelled: number[] = [],
+  setdown: number[] = [],
+): Line {
   const raw = calls.flatMap(([s, ...ts]) => ts.map((t): [number, number] => [t, s]));
   // As the data names them: by the index of their first point.
   const first = (k: number): number => calls.slice(0, k).reduce((n, c) => n + c.length - 1, 0);
@@ -32,6 +38,7 @@ function ride(trip: number, calls: ([number, number] | [number, number, number])
     pts: raw.map(([t, s]) => pt(s, t)),
     raw,
     skips: cancelled.map(first),
+    setdowns: setdown.map(first),
   };
 }
 const wait = (s: number, from: number, to: number, warn = false): Line => ({
@@ -44,6 +51,7 @@ const wait = (s: number, from: number, to: number, warn = false): Line => ({
     [to, s],
   ],
   skips: [],
+  setdowns: [],
 });
 const walk = (a: number, t: number, b: number, t2: number): Line => ({
   kind: "walk",
@@ -55,6 +63,7 @@ const walk = (a: number, t: number, b: number, t2: number): Line => ({
     [t2, b],
   ],
   skips: [],
+  setdowns: [],
 });
 
 /**
@@ -525,6 +534,41 @@ describe("reach is transitive over everything plotted", () => {
     expect(plot.reach({ at: [], back: [[B, 40]] })).toEqual(["T2 5-35", "T4 10-20"]);
     // Passing B is no standing there, nor being there at all.
     expect([net.stays.get(B), net.touching.get(B), net.chainsAt(B, 31)]).toEqual([undefined, undefined, []]);
+  });
+
+  test("a call a train only sets down at is left there, never boarded", () => {
+    // ICE 1 has no departure at B (10–10); S 2 reaches B at 4; RE 3 leaves B at 20.
+    const plot = new Plot(
+      {
+        ICE: ride(
+          1,
+          [
+            [A, 0],
+            [B, 10, 10],
+            [C, 30],
+          ],
+          [],
+          [1],
+        ),
+        S: ride(2, [
+          [D, 1],
+          [B, 4],
+        ]),
+        RE: ride(3, [
+          [B, 20],
+          [E, 40],
+        ]),
+      },
+      ["ICE"],
+    );
+    // By the S to B: on the RE there, not on the ICE.
+    expect(plot.reach({ at: [[D, 1]] })).toEqual(["RE 20-40", "S 1-4"]);
+    // On the ICE from A: on to C, and off at B onto the RE.
+    expect(plot.reach({ at: [[A, 0]] })).toEqual(["ICE 0-30", "RE 20-40"]);
+    // At C by 30: by the ICE from A, not from B off the S.
+    expect(plot.reach({ at: [], back: [[C, 30]] })).toEqual(["ICE 0-30"]);
+    // The ICE still stands at B.
+    expect(plot.net().stays.get(B)?.spans).toEqual([{ from: 10, to: 10, trip: 1 }]);
   });
 });
 
