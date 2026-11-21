@@ -7,7 +7,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::testkit::{Builder, at, ride, show, spec, timetable};
-use crate::timetable::{CallIdx, FootpathIdx, StationIdx, TripIdx};
+use crate::timetable::{CallIdx, FootpathIdx, PerStation, StationIdx, TripIdx};
 
 const fn min(m: i64) -> TimeDelta {
     TimeDelta::minutes(m)
@@ -155,9 +155,9 @@ fn a_stop_without_departure_time_is_ridden_through() {
     assert_eq!(listed(&tt, &limits(&tt, "08:00", "08:00")), ["RE 1 A-D"]);
     let net = Network::new(&tt).unwrap();
     let (a, bb) = (station(&tt, "A"), station(&tt, "B"));
-    assert_eq!((net.lower_bound[a.0], net.bound[a.0]), (Some(min(60)), Some(min(60))));
+    assert_eq!((net.lower_bound[a], net.bound[a]), (Some(min(60)), Some(min(60))));
     let fastest = fastest_journeys(&tt).unwrap();
-    assert_eq!((fastest[a.0], fastest[bb.0]), (Some(min(60)), None));
+    assert_eq!((fastest[a], fastest[bb]), (Some(min(60)), None));
 }
 
 fn three_ways() -> Timetable {
@@ -323,7 +323,7 @@ fn a_walk_too_long_to_end_is_never_taken() {
     }
     assert_eq!(listed(&tt, &limits(&tt, "08:00", "08:00")), ["RE 1 A-D"]);
     // Walking all the way: as long as the walk.
-    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C").0], Some(TimeDelta::MAX));
+    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C")], Some(TimeDelta::MAX));
     let chain = Chain { steps: vec![ride(&tt, "RE 2", "A", "C"), walk(&tt, "C", "D")] };
     let err = chain.arrival(&tt).unwrap_err().to_string();
     assert!(err.contains("arrival after the last walk") && err.contains("out of range"), "{err}");
@@ -736,11 +736,11 @@ fn earliest_arrival_by_train_from_a_start_time() {
         ("W", None),
     ];
     for (name, expected) in cases {
-        assert_eq!(ea[station(&tt, name).0], expected.map(at), "{name}");
+        assert_eq!(ea[station(&tt, name)], expected.map(at), "{name}");
     }
     // RB 8 is missed by 4 min.
     let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:45"), min(4)).unwrap();
-    assert_eq!(ea[station(&tt, "M").0], Some(at("08:50")));
+    assert_eq!(ea[station(&tt, "M")], Some(at("08:50")));
 }
 
 /// A pass can improve trains but no walks; only a pass improving nothing
@@ -754,7 +754,7 @@ fn earliest_arrival_scans_until_nothing_improves() {
     b.walk("B", "C", 5);
     let tt = b.build("A", "E");
     let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:00"), TimeDelta::zero()).unwrap();
-    assert_eq!(ea[station(&tt, "E").0], Some(at("09:30")));
+    assert_eq!(ea[station(&tt, "E")], Some(at("09:30")));
 }
 
 /// Missed connections are listed even when nothing else gets there.
@@ -957,7 +957,7 @@ fn lower_bounds_take_the_fastest_ride_per_stretch() {
     ];
     for (name, planned, live) in cases {
         let s = station(&tt, name);
-        assert_eq!((net.lower_bound[s.0], net.bound[s.0]), (planned.map(min), live.map(min)), "{name}");
+        assert_eq!((net.lower_bound[s], net.bound[s]), (planned.map(min), live.map(min)), "{name}");
     }
 }
 
@@ -998,7 +998,7 @@ fn fastest_journeys_wait_for_a_later_faster_train() {
     b.trip("RE 5", &[("V", "", "08:20"), ("Q", "08:50", "")]);
     let tt = b.build("V", "D");
     let fastest = fastest_journeys(&tt).unwrap();
-    assert_eq!((fastest[station(&tt, "V").0], fastest[station(&tt, "Q").0]), (Some(min(80)), Some(min(30))));
+    assert_eq!((fastest[station(&tt, "V")], fastest[station(&tt, "Q")]), (Some(min(80)), Some(min(30))));
 }
 
 /// Rides taking no time at 09:00, scanned in an order where ICE 1 passing P
@@ -1012,7 +1012,7 @@ fn fastest_journeys_settle_rides_taking_no_time() {
     b.trip("RB 3", &[("Q", "", "09:10"), ("D", "09:40", "")]);
     let tt = b.build("V", "D");
     let fastest = fastest_journeys(&tt).unwrap();
-    let at_station = |name| fastest[station(&tt, name).0];
+    let at_station = |name| fastest[station(&tt, name)];
     assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
 }
 
@@ -1046,7 +1046,7 @@ struct Oracle<'a> {
     tt: &'a Timetable,
     limits: &'a Limits,
     max_duration: TimeDelta,
-    lower_bound: &'a [Option<TimeDelta>],
+    lower_bound: &'a PerStation<Option<TimeDelta>>,
     visited: Vec<bool>,
     used: Vec<bool>,
     steps: Vec<Step>,
@@ -1058,7 +1058,7 @@ impl Oracle<'_> {
         tt: &Timetable,
         limits: &Limits,
         max_duration: TimeDelta,
-        lower_bound: &[Option<TimeDelta>],
+        lower_bound: &PerStation<Option<TimeDelta>>,
     ) -> HashSet<Vec<Step>> {
         let mut o = Oracle {
             tt,
@@ -1142,8 +1142,7 @@ impl Oracle<'_> {
                     }
                     self.visited[c.station.0] = true;
                     passed.push(c.station);
-                    let progress =
-                        !self.limits.forward_only || self.lower_bound[c.station.0] < self.lower_bound[station.0];
+                    let progress = !self.limits.forward_only || self.lower_bound[c.station] < self.lower_bound[station];
                     if !c.cancelled && progress {
                         self.steps.push(Step::Ride {
                             trip: TripIdx(trip),
@@ -1342,16 +1341,17 @@ proptest! {
         let tt = timetable(&spec);
         let net = Network::new(&tt).unwrap();
         let fastest = fastest_journeys(&tt).unwrap();
-        for (s, &fastest) in fastest.iter().enumerate() {
-            let [duration, planned, live] = journeys(&tt, StationIdx(s));
+        for (s, fastest) in fastest.into_iter().enumerate() {
+            let station = StationIdx(s);
+            let [duration, planned, live] = journeys(&tt, station);
             prop_assert_eq!(fastest, duration, "fastest from S{}", s);
             if let Some(planned) = planned {
-                prop_assert!(net.lower_bound[s].is_some_and(|lb| lb <= planned), "planned bound at S{}", s);
+                prop_assert!(net.lower_bound[station].is_some_and(|lb| lb <= planned), "planned bound at S{}", s);
             }
             if let Some(live) = live {
-                prop_assert!(net.bound[s].is_some_and(|lb| lb <= live), "live bound at S{}", s);
+                prop_assert!(net.bound[station].is_some_and(|lb| lb <= live), "live bound at S{}", s);
             }
-            prop_assert!(net.bound[s] <= net.lower_bound[s]);
+            prop_assert!(net.bound[station] <= net.lower_bound[station]);
         }
     }
 }

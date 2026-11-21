@@ -18,7 +18,7 @@ use crate::enumerate::{self, Chain, Group, Network, Step};
 use crate::fallback::{Fallback, Fallbacks};
 use crate::page;
 use crate::text;
-use crate::timetable::{CallIdx, StationIdx, Timetable, Trip, TripIdx, meters};
+use crate::timetable::{CallIdx, PerStation, StationIdx, Timetable, Trip, TripIdx, meters};
 use crate::usable::Usable;
 
 /// How a station's height is computed; all are "remaining", goal = 0.
@@ -64,14 +64,14 @@ impl Metric {
 
 /// Height per station, `None` where it can't be computed (no coordinates, or
 /// the goal is unreachable from there).
-fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
+fn heights(net: &Network<'_>, metric: Metric) -> Result<PerStation<Option<f64>>> {
     let tt = net.tt;
     let minutes = |d: &Option<TimeDelta>| d.map(|d| d.as_seconds_f64() / 60.0);
     let geometric: fn(f64, f64, f64) -> f64 = match metric {
         Metric::RemainingTime => {
             return Ok(remaining_ride_minutes(tt)?.into_iter().map(|m| m.map(f64::from)).collect());
         }
-        Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt)?.iter().map(minutes).collect()),
+        Metric::FastestReal => return Ok(enumerate::fastest_journeys(tt)?.map(minutes)),
         Metric::Hyperbolic => |a, b, total| f64::midpoint(b - a, total),
         Metric::Axis => |a, b, total| total - f64::mul_add(b, -b, f64::mul_add(a, a, total * total)) / (2.0 * total),
         Metric::Ratio => |a, b, _| 100.0 * b / (a + b).max(f64::EPSILON),
@@ -101,13 +101,13 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<Vec<Option<f64>>> {
 /// than it lasts: minutes as drawn (whole minutes of the timestamps), the
 /// shorter of planned and live time, cancelled stops included, walks rounded
 /// down. Heights are i32 minutes: a lower bound beyond ~4000 years saturates.
-fn remaining_ride_minutes(tt: &Timetable) -> Result<Vec<Option<i32>>> {
+fn remaining_ride_minutes(tt: &Timetable) -> Result<PerStation<Option<i32>>> {
     let minute = |t: DateTime<Utc>| t.timestamp().div_euclid(60);
-    let mut edges: Vec<Vec<(StationIdx, i64)>> = vec![Vec::new(); tt.stations.len()];
+    let mut edges: PerStation<Vec<(StationIdx, i64)>> = tt.per_station(Vec::new());
     let mut connect = |a: StationIdx, b: StationIdx, w: i64| -> Result<()> {
         if a != b {
-            edges.get_mut(a.0).with_context(|| format!("no station {} in the timetable", a.0))?.push((b, w));
-            edges.get_mut(b.0).with_context(|| format!("no station {} in the timetable", b.0))?.push((a, w));
+            edges.get_mut(a)?.push((b, w));
+            edges.get_mut(b)?.push((a, w));
         }
         Ok(())
     };
@@ -180,7 +180,7 @@ struct LimitsOut {
     /// With `--forward-only`, the least remaining travel time from each station
     /// in seconds (`null` where the destination is out of reach): rides are only
     /// left where it is less than where they were boarded.
-    lower_bound: Option<Vec<Option<i64>>>,
+    lower_bound: Option<PerStation<Option<i64>>>,
 }
 
 #[derive(Serialize)]
@@ -190,7 +190,7 @@ struct MetricOut {
     unit: &'static str,
     description: &'static str,
     /// Height per station, `null` where it can't be computed.
-    heights: Vec<Option<f64>>,
+    heights: PerStation<Option<f64>>,
 }
 
 #[derive(Serialize)]
@@ -430,7 +430,7 @@ pub struct Bounds {
     pub keep_detours: bool,
     /// With `--forward-only`, each station's least remaining time as the
     /// enumeration saw it (before stops were completed on the found trains).
-    pub lower_bound: Option<Vec<Option<TimeDelta>>>,
+    pub lower_bound: Option<PerStation<Option<TimeDelta>>>,
 }
 
 pub struct Plot<'a> {
@@ -467,7 +467,7 @@ fn metrics(net: &Network<'_>, requested: Metric) -> Result<(Vec<MetricOut>, usiz
             shown = metrics.len();
         }
         let id = m.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
-        let heights = heights.into_iter().map(|h| h.map(|h| (h * 100.0).round() / 100.0)).collect();
+        let heights = heights.map(|h| h.map(|h| (h * 100.0).round() / 100.0));
         metrics.push(MetricOut { id, unit: m.unit(), description: m.description(), heights });
     }
     Ok((metrics, shown))
@@ -682,11 +682,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             missed_by: plot.bounds.missed_by.num_minutes(),
             min_transfer: plot.min_transfer.num_minutes(),
             keep_detours: plot.bounds.keep_detours,
-            lower_bound: plot
-                .bounds
-                .lower_bound
-                .as_ref()
-                .map(|lb| lb.iter().map(|b| b.map(|d| d.num_seconds())).collect()),
+            lower_bound: plot.bounds.lower_bound.as_ref().map(|lb| lb.map(|b| b.map(|d| d.num_seconds()))),
         },
     };
     // Without a link back the page is a file (`umstieg --html`), like plot.ts's #new-search.
