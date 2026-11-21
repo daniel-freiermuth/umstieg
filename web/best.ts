@@ -315,8 +315,8 @@ function search(
   for (const run of runs) {
     const split = run.span !== null && resumed.has(`${String(run.trip)}:${String(run.span[1])}`);
     const kept = split ? run.calls.slice(0, run.calls.length - 1) : run.calls;
-    // A stop without a departure is no place the train could have been caught.
-    const calls = kept.map((c, k) => (run.setdowns.has(k) ? { ...c, dep: null } : c));
+    // A stop without a departure, or one passed (cancelled), is no place the train could have been caught.
+    const calls = kept.map((c, k) => (run.setdowns.has(k) || run.skips.has(k) ? { ...c, dep: null } : c));
     tripCalls.set(run.trip, [...(tripCalls.get(run.trip) ?? []), ...calls]);
   }
   for (const calls of tripCalls.values()) calls.sort((a, b) => (a.dep ?? a.arr ?? 0) - (b.dep ?? b.arr ?? 0));

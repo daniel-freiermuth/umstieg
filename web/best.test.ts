@@ -383,6 +383,35 @@ describe("the best connections", () => {
     expect(search(net)).toEqual(["4:0>6@1 2:6>2@8 1:2>9@30", "5:0>7@0 1:7>9@8"]);
   });
 
+  test("a train is not caught earlier where it is cancelled: no detour", () => {
+    // ICE 1 passes 6 without stopping; boarding it at 2 after reaching 6 first is no detour.
+    const net = [
+      ride(5, [
+        [0, 0],
+        [7, 3],
+      ]),
+      ride(
+        1,
+        [
+          [7, 8],
+          [6, 12, 12],
+          [2, 30, 30],
+          [9, 40],
+        ],
+        [1],
+      ),
+      ride(4, [
+        [0, 1],
+        [6, 5],
+      ]),
+      ride(2, [
+        [6, 8],
+        [2, 15],
+      ]),
+    ];
+    expect(search(net)).toEqual(["4:0>6@1 2:6>2@8 1:2>9@30", "5:0>7@0 1:7>9@8"]);
+  });
+
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
     // Boarded at its second call, 0: what it passes counts from there.
     const ice = (cancelled: number[]): Stretch[] => [
