@@ -1822,7 +1822,10 @@ function chainOf(c) {
     add(p);
     return D.pieces.length - 1;
   });
+  const groups = D.groups.length;
   const group = groupOf(D.groups, D.trips, c);
+  if (D.groups.length > groups)
+    groupRow(group);
   D.chains.push({ group, header: header(c, D.limits.minTransfer, clock), pieces });
   const i = D.chains.length - 1;
   const fallbacks = c.steps.filter((s) => s.kind === "ride").slice(1).flatMap((_, change) => alternatives.forChange(c, change).map((a) => ({
@@ -2167,7 +2170,8 @@ document.addEventListener("keydown", (e) => {
   refresh();
 });
 var groupsEl = byId("groups", HTMLDivElement);
-D.groups.forEach((g, i) => {
+function groupRow(i) {
+  const g = item(D.groups, i);
   const row = document.createElement("div");
   row.className = "group";
   row.innerHTML = `<span>${esc(g.label)}</span><span class="count">${String(g.count)}</span>`;
@@ -2194,6 +2198,9 @@ D.groups.forEach((g, i) => {
     render();
   });
   groupsEl.appendChild(row);
+}
+D.groups.forEach((_, i) => {
+  groupRow(i);
 });
 buildModel();
 new ResizeObserver(render).observe(plotEl);
