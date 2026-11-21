@@ -952,7 +952,8 @@ impl Search<'_> {
         let mut worst = here.arrival.map_or(TimeDelta::MAX, |a| departure.signed_duration_since(a));
         for (stop, p) in before.iter().enumerate().rev() {
             let mut from_p = earlier_calls.iter().skip_while(|c| c.station != p.station);
-            let caught = from_p.next().and_then(Call::departure_time).filter(|&d| d >= p.since);
+            let caught =
+                from_p.next().filter(|c| !c.cancelled).and_then(Call::departure_time).filter(|&d| d >= p.since);
             let comfortable = caught.is_some_and(|d| {
                 p.arrival.is_none_or(|arrival| {
                     let direct = d.signed_duration_since(arrival);
