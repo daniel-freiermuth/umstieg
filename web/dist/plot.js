@@ -925,16 +925,20 @@ var byText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 var arrive = (lands, planned, clock) => `${clock(lands)} (+${duration(Math.max(0, lands - planned))})`;
 
 // reach.ts
-function callsAt(p) {
-  const passed = new Set;
-  let skipped = false;
+function inCalls(p, firsts) {
+  const marked = new Set;
+  let inside = false;
   p.raw.forEach(([t, s], i) => {
     if (p.raw[i - 1]?.[1] !== s)
-      skipped = p.skips.includes(i);
-    if (skipped)
-      passed.add(`${String(t)}:${String(s)}`);
+      inside = firsts.includes(i);
+    if (inside)
+      marked.add(`${String(t)}:${String(s)}`);
   });
-  return (x) => !passed.has(`${String(x[0])}:${String(x[2])}`);
+  return (x) => marked.has(`${String(x[0])}:${String(x[2])}`);
+}
+function callsAt(p) {
+  const passed = inCalls(p, p.skips);
+  return (x) => !passed(x);
 }
 function covers(segments, lines, spot) {
   if ("piece" in spot) {
@@ -1053,12 +1057,12 @@ function network(pieces, base, chains, visible) {
   for (const pi of base) {
     const p = item(pieces, pi);
     if (p.trip !== null) {
-      const stops = callsAt(p);
+      const stops = callsAt(p), setsDown = inCalls(p, p.setdowns);
       for (let k = 1;k < p.pts.length; k++) {
         const a = item(p.pts, k - 1), b = item(p.pts, k);
-        const at = [stops(a), stops(b)];
+        const at = [stops(a) && !setsDown(a), stops(b)];
         rides.set(stretchKey(p.trip, a, b), { trip: p.trip, pts: [a, b], piece: pi, chains: new Set, stops: at });
-        if (a[2] === b[2] && at[0])
+        if (a[2] === b[2] && stops(a))
           stay(a[2], a[1], { from: a[0], to: b[0], trip: p.trip });
       }
     } else if (p.kind === "wait") {
