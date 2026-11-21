@@ -594,6 +594,56 @@ fn detour_from_where_a_walk_from_the_origin_led_counts_only_a_listed_alternative
     }
 }
 
+/// Boarding the train where it starts the connection (the origin, or where a
+/// walk from it led) counts as the alternative only if that leaves the origin
+/// within the window: the search lists no connection leaving after it.
+#[test]
+fn detour_from_the_origin_counts_no_alternative_leaving_after_the_window() {
+    // (scenario, window end, fastest minutes, listed)
+    let cases = [
+        ("train", "08:30", 45, "X A-B / Y B-D"),
+        ("train", "08:35", 35, "Y A-D"),
+        ("walk", "08:30", 30, "walk A-B / Bus 1 B-D"),
+        ("walk", "08:35", 25, "Bus 1 A-D"),
+        ("walked", "08:30", 32, "walk A-T / T1 T-X / T2 X-D"),
+        ("walked", "08:44", 16, "walk A-T / T2 T-D"),
+        ("boarded", "08:00", 30, "walk A-T / T2 T-D"),
+    ];
+    for (scenario, until, fastest, only) in cases {
+        let mut b = Builder::new();
+        match scenario {
+            // X to B for Y, which leaves A after the window.
+            "train" => {
+                b.trip("X", &[("A", "", "08:25"), ("B", "08:40", "")]);
+                b.trip("Y", &[("A", "", "08:35"), ("B", "08:45", "08:50"), ("D", "09:10", "")]);
+            }
+            // Walking to B for Bus 1, which leaves A after the window.
+            "walk" => {
+                b.trip("Bus 1", &[("A", "", "08:35"), ("B", "08:45", "08:45"), ("D", "09:00", "")]);
+                b.walk("A", "B", 15);
+            }
+            // Walking to T for T1 and changing at X to T2, which leaves T as T1 does: a walk
+            // after leaving A, at the window's end.
+            "boarded" => {
+                b.walk("A", "T", 5);
+                b.trip("T1", &[("T", "", "08:05"), ("X", "08:10", "")]);
+                b.trip("T2", &[("T", "", "08:05"), ("X", "08:20", "08:20"), ("D", "08:30", "")]);
+            }
+            // Walking to T for T1 and changing at X to T2, which leaves T a walk after the window.
+            _ => {
+                b.walk("A", "T", 1);
+                b.trip("T1", &[("T", "", "08:29"), ("X", "08:40", "")]);
+                b.trip("T2", &[("T", "", "08:45"), ("X", "08:50", "08:50"), ("D", "09:00", "")]);
+            }
+        }
+        let tt = b.build("A", "D");
+        let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", until) };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let expected = (Some(min(fastest)), vec![only.to_owned()]);
+        assert_eq!((result.fastest, shown(&tt, &result)), expected, "{scenario} until {until}");
+    }
+}
+
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {
@@ -896,8 +946,7 @@ fn a_search_for_the_fastest_cut_short_leaves_the_list_incomplete() {
 
 /// Like earliest arrival, `fastest` counts connections the limits leave out,
 /// none listed as fast: RE 1 to B, away from D (ICE 9 is faster from A),
-/// then RE 2; and RB 1, RB 2 and RB 3 from H, a detour as RB 3 calls at P
-/// before, where it can't be boarded for D (it passes A).
+/// then RE 2.
 #[test]
 fn fastest_counts_connections_the_limits_leave_out() {
     let away_and_back = || {
@@ -908,26 +957,15 @@ fn fastest_counts_connections_the_limits_leave_out() {
         b.trip("ICE 9", &[("A", "", "10:00"), ("D", "10:20", "")]);
         b
     };
-    let detour = || {
-        let mut b = Builder::new();
-        b.trip("RB 1", &[("A", "", "08:00"), ("P", "08:10", "")]);
-        b.trip("RB 2", &[("P", "", "08:12"), ("H", "08:20", "")]);
-        b.trip("RB 3", &[("P", "", "08:20"), ("A", "08:30", "08:30"), ("H", "08:40", "08:40"), ("D", "09:00", "")]);
-        b.trip("RE 4", &[("A", "", "08:00"), ("D", "09:30", "")]);
-        b
-    };
-    // (timetable, max changes, forward only, keep detours, extra time, fastest, listed)
+    // (timetable, max changes, forward only, extra time, fastest, listed)
     let cases = [
-        (away_and_back(), 5, false, false, 20, 40, &["RE 1 A-B / RE 2 B-D", "RE 3 A-D"][..]),
-        (away_and_back(), 0, false, false, 20, 40, &["RE 3 A-D"]),
-        (away_and_back(), 5, true, false, 20, 40, &["RE 3 A-D"]),
-        (detour(), 5, false, true, 30, 60, &["RB 1 A-P / RB 2 P-H / RB 3 H-D", "RE 4 A-D"]),
-        (detour(), 5, false, false, 30, 60, &["RE 4 A-D"]),
+        (away_and_back(), 5, false, 20, 40, &["RE 1 A-B / RE 2 B-D", "RE 3 A-D"][..]),
+        (away_and_back(), 0, false, 20, 40, &["RE 3 A-D"]),
+        (away_and_back(), 5, true, 20, 40, &["RE 3 A-D"]),
     ];
-    for (b, max_changes, forward_only, keep_detours, extra, fastest, expected) in cases {
+    for (b, max_changes, forward_only, extra, fastest, expected) in cases {
         let tt = b.build("A", "D");
-        let limits =
-            Limits { max_changes, forward_only, keep_detours, extra_time: min(extra), ..limits(&tt, "08:00", "08:00") };
+        let limits = Limits { max_changes, forward_only, extra_time: min(extra), ..limits(&tt, "08:00", "08:00") };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(fastest)), sorted(expected)), "{expected:?}");
     }
