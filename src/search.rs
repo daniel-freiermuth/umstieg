@@ -338,7 +338,11 @@ fn drawn(
 }
 
 /// What the search kept to, for the page's own search through picks.
-fn bounds(limits: &Limits, fastest: TimeDelta, lower_bound: Option<Vec<Option<TimeDelta>>>) -> plot::Bounds {
+fn bounds(
+    limits: &Limits,
+    fastest: TimeDelta,
+    lower_bound: Option<timetable::PerStation<Option<TimeDelta>>>,
+) -> plot::Bounds {
     plot::Bounds {
         depart_from: limits.depart_from,
         depart_until: limits.depart_until,
@@ -586,7 +590,7 @@ struct Report {
     enumeration: enumerate::Enumeration,
     limits: Limits,
     /// With `--forward-only`, the lower bounds the enumeration kept to.
-    lower_bound: Option<Vec<Option<TimeDelta>>>,
+    lower_bound: Option<timetable::PerStation<Option<TimeDelta>>>,
     hubs: Vec<String>,
     /// When the planner's earliest answer leaves and arrives.
     planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>,

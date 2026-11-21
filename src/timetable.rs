@@ -4,6 +4,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use chrono::{DateTime, DurationRound, TimeDelta, Utc};
 use futures::future::join_all;
@@ -119,6 +120,89 @@ pub struct CallIdx(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FootpathIdx(pub usize);
 
+/// An index into one of the timetable's lists, keying a table kept per entry of it.
+pub trait Idx: Copy {
+    /// What it indexes, for errors.
+    const WHAT: &'static str;
+    fn index(self) -> usize;
+}
+
+impl Idx for StationIdx {
+    const WHAT: &'static str = "station";
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl Idx for TripIdx {
+    const WHAT: &'static str = "trip";
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// A value per entry of the list `I` indexes: only that kind of index reads
+/// it, so a trip's index can't read a station's slot. Serializes as a plain array.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct IdxVec<I, T> {
+    items: Vec<T>,
+    #[serde(skip)]
+    idx: PhantomData<fn(I)>,
+}
+
+/// A value per station.
+pub type PerStation<T> = IdxVec<StationIdx, T>;
+/// A value per trip.
+pub type PerTrip<T> = IdxVec<TripIdx, T>;
+
+impl<I: Idx, T> IdxVec<I, T> {
+    /// Entry `i`, or an error naming it: indexes all come from the same
+    /// timetable, so this only fails on a bug.
+    pub fn get(&self, i: I) -> anyhow::Result<&T> {
+        self.items.get(i.index()).ok_or_else(|| anyhow::anyhow!("no {} {} in the timetable", I::WHAT, i.index()))
+    }
+
+    pub fn get_mut(&mut self, i: I) -> anyhow::Result<&mut T> {
+        self.items.get_mut(i.index()).ok_or_else(|| anyhow::anyhow!("no {} {} in the timetable", I::WHAT, i.index()))
+    }
+}
+
+impl<I, T> IdxVec<I, T> {
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.items.iter_mut()
+    }
+
+    /// The same table with `f` applied to every entry.
+    pub fn map<U>(&self, f: impl FnMut(&T) -> U) -> IdxVec<I, U> {
+        self.items.iter().map(f).collect()
+    }
+}
+
+/// In index order: the values of entries 0, 1, ….
+impl<I, T> FromIterator<T> for IdxVec<I, T> {
+    fn from_iter<It: IntoIterator<Item = T>>(iter: It) -> Self {
+        Self { items: iter.into_iter().collect(), idx: PhantomData }
+    }
+}
+
+impl<I, T> IntoIterator for IdxVec<I, T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+/// Tests may index and fail by panicking; the program reads through `get`.
+#[cfg(test)]
+impl<I: Idx, T> std::ops::Index<I> for IdxVec<I, T> {
+    type Output = T;
+    fn index(&self, i: I) -> &T {
+        &self.items[i.index()]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Call {
     pub station: StationIdx,
@@ -216,6 +300,16 @@ impl Timetable {
     /// Footpath `i`.
     pub fn footpath(&self, i: FootpathIdx) -> anyhow::Result<&Footpath> {
         self.footpaths.get(i.0).ok_or_else(|| anyhow::anyhow!("no footpath {} in the timetable", i.0))
+    }
+
+    /// `value` for every station.
+    pub fn per_station<T: Clone>(&self, value: T) -> PerStation<T> {
+        self.stations.iter().map(|_| value.clone()).collect()
+    }
+
+    /// `value` for every trip.
+    pub fn per_trip<T: Clone>(&self, value: T) -> PerTrip<T> {
+        self.trips.iter().map(|_| value.clone()).collect()
     }
 
     /// Planned times everywhere: delays are dropped, while the latest schedule

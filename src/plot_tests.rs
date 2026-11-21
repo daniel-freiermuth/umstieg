@@ -55,7 +55,7 @@ fn network() -> Timetable {
 fn time_heights_are_remaining_minutes_with_and_without_waits() {
     let tt = network();
     let net = Network::new(&tt).unwrap();
-    let (a, b, c, d) = (station(&tt, "A").0, station(&tt, "B").0, station(&tt, "C").0, station(&tt, "D").0);
+    let (a, b, c, d) = (station(&tt, "A"), station(&tt, "B"), station(&tt, "C"), station(&tt, "D"));
 
     let remaining = heights(&net, Metric::RemainingTime).unwrap();
     // Fastest ride per stretch, waits ignored: 60 + 20. D only has the bus from
@@ -96,12 +96,12 @@ fn geographic_heights_follow_their_geometry() {
     let axis = heights(&net, Metric::Axis).unwrap();
     let ratio = heights(&net, Metric::Ratio).unwrap();
     for (name, h, x, r) in cases {
-        let s = station(&tt, name).0;
+        let s = station(&tt, name);
         assert!(close(hyperbolic[s], h), "{name} hyperbolic {:?} != {h}", hyperbolic[s]);
         assert!((axis[s].unwrap() - x).abs() < 1e-3, "{name} axis {:?} != {x}", axis[s]);
         assert!(close(ratio[s], r), "{name} ratio {:?} != {r}", ratio[s]);
     }
-    let nowhere = station(&tt, "Nowhere").0;
+    let nowhere = station(&tt, "Nowhere");
     assert_eq!((hyperbolic[nowhere], axis[nowhere], ratio[nowhere]), (None, None, None));
 }
 
@@ -114,7 +114,7 @@ fn geographic_heights_need_both_ends_located() {
         let err = heights(&net, metric).unwrap_err().to_string();
         assert!(err.contains(&format!("{metric:?}")) && err.contains("coordinates"), "{err}");
     }
-    assert!(heights(&net, Metric::RemainingTime).is_ok_and(|h| h.len() == tt.stations.len()));
+    assert!(heights(&net, Metric::RemainingTime).is_ok_and(|h| h.into_iter().count() == tt.stations.len()));
 }
 
 #[test]
@@ -428,7 +428,7 @@ fn with_forward_only_the_page_gets_the_least_remaining_times_the_enumeration_kep
     let net = Network::new(&tt).unwrap();
     // A, B, C, X: here ICE 1 then RE 2, RE 2, there, Bus 3 on.
     let mins = |m: [i64; 4]| m.map(|m| Some(TimeDelta::minutes(m))).to_vec();
-    assert_eq!(net.lower_bound, mins([110, 50, 0, 89]));
+    assert_eq!(net.lower_bound, mins([110, 50, 0, 89]).into_iter().collect());
     // Completing stops after the enumeration can lower the timetable's bounds;
     // the page keeps to those the enumeration used, as given, not to its own.
     let mut used = mins([120, 50, 0, 89]);
@@ -436,7 +436,7 @@ fn with_forward_only_the_page_gets_the_least_remaining_times_the_enumeration_kep
     let groups = chains(&net);
     let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
     let plot = Plot {
-        bounds: super::Bounds { lower_bound: Some(used), ..bounds() },
+        bounds: super::Bounds { lower_bound: Some(used.into_iter().collect()), ..bounds() },
         usable: &crate::usable::Usable::default(),
         title: "A → C".to_owned(),
         subtitle: "sub".to_owned(),
