@@ -1858,7 +1858,8 @@ fn merge(
         if let Some(twin) = twin {
             // A coupled train's portions kept apart each take the copy. Past
             // their boards they may part, each to its own end: there only a
-            // portion the copy names takes its stops.
+            // portion the copy names takes its stops, or one whose own route
+            // goes there (a station DB doesn't know by MOTIS' name for it).
             let coupled = copies.get(twin).filter(|c| !c.is_empty());
             let into = coupled.map_or_else(|| std::slice::from_ref(&twin), Vec::as_slice);
             for &i in into {
@@ -1894,7 +1895,15 @@ fn merge(
                     let off_route = name.is_some_and(|n| !route.is_empty() && !route.contains(n));
                     let inside = span.zip(call.planned()).is_some_and(|((lo, hi), t)| lo <= t && t <= hi);
                     let unknown_inside = name.is_none() && !route.is_empty() && inside;
-                    let parted = !whole && !inside;
+                    let on_route = || {
+                        stations.get(call.station.0).is_some_and(|s| {
+                            s.board_name.as_ref().map_or_else(
+                                || route.iter().any(|n| db::station_key(n) == db::station_key(&s.name)),
+                                |n| route.contains(n),
+                            )
+                        })
+                    };
+                    let parted = !whole && !inside && !on_route();
                     let unanchored = from_feed && !anchored(&anchors, call.planned());
                     // Where the base's ride ends or starts, the copy passing
                     // through gives the half it lacks (`absorbs` checked they agree).
