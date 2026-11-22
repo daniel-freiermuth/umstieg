@@ -34,6 +34,12 @@ exclude_re = [
   "replace match guard departure > d with false in Search<'_>::explore",
   # presence is empty exactly when no ride was taken, so this arm can't match then.
   "replace match guard !first with true in Search<'_>::explore",
+  # Defers to `record` what `detour` prunes at boarding: with --forward-only,
+  # every such alternative; without, those from an earlier stop closer by the
+  # best case. `record` prunes every chain using one all the same (it arrives
+  # by the deadline and, with --forward-only, leaves the train where less
+  # remains than where it boards, so than at the earlier stop): same results, slower.
+  "replace \\|\\| with && in Search<'_>::detour$",
   # Only a nonzero b overflows, so b == 0 never decides the saturation side.
   'replace < with <= in sum',
   'replace > with >= in difference',
