@@ -641,6 +641,26 @@ fn detour_from_the_origin_counts_no_alternative_leaving_after_the_window() {
     }
 }
 
+/// Boarding T at A instead of walking to B for it is the alternative only if
+/// it reaches every stop within the limit, not just D: after the change at X
+/// missed by 3 min, D is reached before X, and T's ride ends at a stop
+/// arriving after the deadline.
+#[test]
+fn detour_from_the_origin_counts_an_alternative_reaching_every_stop_in_time() {
+    let mut b = Builder::new();
+    b.walk("A", "B", 10);
+    b.trip("T", &[("A", "", "08:00"), ("B", "08:20", "08:20"), ("X", "09:00", "")]);
+    b.trip("U", &[("X", "", "08:57"), ("D", "08:59", "")]);
+    let tt = b.build("A", "D");
+    // (extra minutes, listed): T from A takes 59 min, but reaches X 60 min after leaving.
+    let cases = [(9, "walk A-B / T B-X / U X-D"), (10, "walk A-B / T B-X / U X-D"), (11, "T A-X / U X-D")];
+    for (extra, only) in cases {
+        let limits = Limits { missed_by: min(5), extra_time: min(extra), ..limits(&tt, "08:00", "08:30") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(49)), vec![only.to_owned()]), "extra {extra}");
+    }
+}
+
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {

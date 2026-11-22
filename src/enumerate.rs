@@ -476,10 +476,14 @@ struct Presence {
     /// Where a train boarded starts the connection (the origin, or where the
     /// walk from it leads): the walk from the origin before it.
     starts: Option<TimeDelta>,
+    /// The latest arrival on the way here from the stop before: the arrival,
+    /// or a later one at a station the ride here passed; `None` at the origin.
+    latest: Option<DateTime<Utc>>,
 }
 
 /// What makes boarding a train from one earlier stop no detour after all:
-/// the rest of the chain passes one of the stations, or arrives after the time.
+/// the rest of the chain passes one of the stations, or reaches a stop after
+/// the time (boarded there, the train is ridden no further).
 type Unless = (Vec<StationIdx>, DateTime<Utc>);
 
 struct Search<'a> {
@@ -503,12 +507,13 @@ struct Search<'a> {
     /// Stations where the chain stopped, and from when another train could be caught there.
     presence: Vec<Presence>,
     /// Per train boarded that is a detour unless the rest of the chain passes
-    /// a station or arrives late: per earlier stop it could have been boarded
+    /// a station or reaches a stop late: the chain's stops from there on (an
+    /// index into `presence`) and per earlier stop it could have been boarded
     /// at instead, the stations it would have passed from there that the chain
     /// had not been at, and the arrival up to which boarding it there would
     /// still have been listed. A connection passing none of one stop's
-    /// stations and arriving by then is that detour.
-    detour_unless: Vec<Vec<Unless>>,
+    /// stations and reaching every stop by then is that detour.
+    detour_unless: Vec<(usize, Vec<Unless>)>,
     /// Every connection found once; deepening by changes revisits shorter ones.
     found: HashSet<Vec<Step>>,
     nodes: usize,
@@ -758,7 +763,7 @@ impl Search<'_> {
             return Ok(());
         }
         if station == self.tt.destination {
-            self.record(ready)?;
+            self.record()?;
             return Ok(());
         }
         let (tt, departures, walks) = (self.tt, self.departures, self.walks);
@@ -782,6 +787,7 @@ impl Search<'_> {
                     since: self.limits.depart_from,
                     slack_out: None,
                     starts: Some(TimeDelta::zero()),
+                    latest: None,
                 });
                 *self.visited.get_mut(to)? = Some(self.presence.len());
                 self.presence.push(Presence {
@@ -790,6 +796,7 @@ impl Search<'_> {
                     since: ready,
                     slack_out: None,
                     starts: Some(fp.duration),
+                    latest: Some(ready),
                 });
                 self.steps.push(Step::Walk { footpath });
                 self.lead = fp.duration;
@@ -819,6 +826,7 @@ impl Search<'_> {
                     since: arrive,
                     slack_out: None,
                     starts: None,
+                    latest: Some(arrive),
                 });
                 self.steps.push(Step::Walk { footpath });
                 self.explore(to, arrive, Some(deadline), true)?;
@@ -872,7 +880,7 @@ impl Search<'_> {
             };
             let deferred = !unless.is_empty();
             if deferred {
-                self.detour_unless.push(unless);
+                self.detour_unless.push((self.presence.len(), unless));
             }
 
             let first = self.rides == 0;
@@ -887,12 +895,15 @@ impl Search<'_> {
                     since: departure,
                     slack_out: None,
                     starts: Some(self.lead),
+                    latest: None,
                 }),
             }
             *self.used.get_mut(trip)? = true;
             // Below `max_rides` here, so this never saturates.
             self.rides = self.rides.saturating_add(1);
             let mut passed = Vec::new();
+            // The latest arrival at a station passed so far.
+            let mut latest = departure;
             // The stop each station passed leads to.
             let reached = self.presence.len();
             for (alight, call) in calls.iter().enumerate().skip(board.0.saturating_add(1)) {
@@ -907,6 +918,7 @@ impl Search<'_> {
                     break;
                 }
                 *seen = Some(reached);
+                latest = latest.max(arrival);
                 passed.push(call.station);
                 let worth_stopping = call.station == tt.destination
                     || !departures.get(call.station)?.is_empty()
@@ -920,6 +932,7 @@ impl Search<'_> {
                         since: arrival,
                         slack_out: None,
                         starts: None,
+                        latest: Some(latest),
                     };
                     self.presence.push(at);
                     self.steps.push(Step::Ride { trip, board, alight });
@@ -1044,17 +1057,21 @@ impl Search<'_> {
 
     /// Every variant counts, also ones riding the same trains but changing
     /// elsewhere (Ludwigshafen Mitte instead of Ludwigshafen Hbf), unless it
-    /// is a detour after all: arriving at `arrival`, it passes none of the
-    /// stations boarding a train earlier would have, and arrives in time for
-    /// that connection to be listed.
-    fn record(&mut self, arrival: DateTime<Utc>) -> Result<()> {
-        for (stations, by) in self.detour_unless.iter().flatten() {
-            let mut passed = arrival > *by;
-            for &s in stations {
-                passed |= self.visited.get(s)?.is_some();
-            }
-            if !passed {
-                return Ok(());
+    /// is a detour after all: it passes none of the stations boarding a train
+    /// earlier would have, and reaches every stop from there in time for that
+    /// connection to be listed. After a change missed by up to `missed_by`, a
+    /// stop may be reached later than the destination.
+    fn record(&mut self) -> Result<()> {
+        for (from, unless) in &self.detour_unless {
+            let latest = self.presence.get(*from..).into_iter().flatten().filter_map(|p| p.latest).max();
+            for (stations, by) in unless {
+                let mut passed = latest.is_some_and(|l| l > *by);
+                for &s in stations {
+                    passed |= self.visited.get(s)?.is_some();
+                }
+                if !passed {
+                    return Ok(());
+                }
             }
         }
         self.found.insert(self.steps.clone());
