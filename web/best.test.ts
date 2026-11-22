@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type Call,
   type Connection,
   type Limits,
   type Need,
+  type Presence,
   type Step,
   type Stretch,
+  type Unless,
   ENOUGH_BUFFER,
   bestThrough,
   callsOf,
-  isDetour,
+  detourUnless,
   meets,
 } from "./best";
 
@@ -412,6 +415,120 @@ describe("the best connections", () => {
     expect(search(net)).toEqual(["4:0>6@1 2:6>2@8 1:2>9@30", "5:0>7@0 1:7>9@8"]);
   });
 
+  test("a detour counts only an alternative the onward rides allow", () => {
+    // 1 from 0 to 1; 2 from 1 to 2; 3 from 1 via 3 (cancelled) and 2 to 4; 4 from 4 via 3 or 5 to 9.
+    // Boarding 3 at 1 instead of 2 passes 3, so going on via 3 rules that alternative out.
+    const net = (via: number): Stretch[] => [
+      ride(1, [
+        [0, 0],
+        [1, 10],
+      ]),
+      ride(2, [
+        [1, 12],
+        [2, 18],
+      ]),
+      ride(
+        3,
+        [
+          [1, 20],
+          [3, 25, 25],
+          [2, 30, 30],
+          [4, 40],
+        ],
+        [1],
+      ),
+      ride(4, [
+        [4, 45],
+        [via, 50, 50],
+        [9, 60],
+      ]),
+    ];
+    expect(search(net(3), [], { until: 0 })).toEqual(["1:0>1@0 2:1>2@12 3:2>4@30 4:4>9@45"]);
+    expect(search(net(5), [], { until: 0 })).toEqual(["1:0>1@0 3:1>4@20 4:4>9@45"]);
+  });
+
+  test("after a walk from the origin, boarding there instead counts only if listed: within the travel time", () => {
+    // Bus 1 from 0 via 1 (30 to 35) to 9 at 60; a 10-minute walk from 0 to 1, leaving 0 at 25.
+    const net = (leaves: number): Stretch[] => [
+      ride(1, [
+        [0, leaves],
+        [1, 30, 35],
+        [9, 60],
+      ]),
+      walk(0, 1, 10),
+    ];
+    const window = { until: 30 * M };
+    expect(search(net(0), [], { ...window, maxDuration: 35 * M })).toEqual(["walk 0>1@25 1:1>9@35"]);
+    expect(search(net(0), [], { ...window, maxDuration: 59 * M })).toEqual(["walk 0>1@25 1:1>9@35"]);
+    expect(search(net(0), [], { ...window, maxDuration: 60 * M })).toEqual(["1:0>9@0"]);
+    expect(search(net(25), [], { ...window, maxDuration: 35 * M })).toEqual(["1:0>9@25"]);
+  });
+
+  test("boarding a train at the origin instead counts only if it leaves within the window", () => {
+    // 1 from 0 at 25 to 1 at 40; 2 from 0 at 35 via 1 (45 to 50) to 9 at 70.
+    const net = [
+      ride(1, [
+        [0, 25],
+        [1, 40],
+      ]),
+      ride(2, [
+        [0, 35],
+        [1, 45, 50],
+        [9, 70],
+      ]),
+    ];
+    expect(search(net, [], { until: 30 * M, maxDuration: 45 * M })).toEqual(["1:0>1@25 2:1>9@50"]);
+    expect(search(net, [], { until: 35 * M, maxDuration: 35 * M })).toEqual(["2:0>9@35"]);
+  });
+
+  test("no alternative boarding a train where it would pass a station the connection had been at by then", () => {
+    // 1 from 0 via 2 to 3 at 20; 2 from 3 at 24 to 4; 5 from 3 at 25 back via 2 to 4 and 9.
+    // Boarded at 3, 5 would pass 2 again: taking it at 4 is no detour.
+    const net = [
+      ride(1, [
+        [0, 0],
+        [2, 10, 10],
+        [3, 20],
+      ]),
+      ride(2, [
+        [3, 24],
+        [4, 30],
+      ]),
+      ride(5, [
+        [3, 25],
+        [2, 35, 35],
+        [4, 45, 45],
+        [9, 60],
+      ]),
+    ];
+    const on2: Need = { kind: "ride", trip: 2, from: 3, at: 24 * M, to: 4, until: 30 * M };
+    expect(search(net, [on2], { until: 0 })).toEqual(["1:0>3@0 2:3>4@24 5:4>9@45"]);
+  });
+
+  test("a walk after a train leaves the origin no earlier: boarding where it leads instead is a detour", () => {
+    // 1 from 0 to 1 at 10, a 3-minute walk to 2, 2 from 2 at 15 to 3; 5 from 2 at 30 via 3 (35) to 9.
+    const net = [
+      ride(1, [
+        [0, 0],
+        [1, 10],
+      ]),
+      walk(1, 2, 3),
+      ride(2, [
+        [2, 15],
+        [3, 20],
+      ]),
+      ride(5, [
+        [2, 30],
+        [3, 35, 35],
+        [9, 50],
+      ]),
+    ];
+    const on2: Need = { kind: "ride", trip: 2, from: 2, at: 15 * M, to: 3, until: 20 * M };
+    expect(search(net, [], { until: 0 })).toEqual(["1:0>1@0 walk 1>2@10 5:2>9@30"]);
+    // Through 2's ride, 5 is boarded at 3 instead of 2: a detour.
+    expect(search(net, [on2], { until: 0 })).toEqual([]);
+  });
+
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
     // Boarded at its second call, 0: what it passes counts from there.
     const ice = (cancelled: number[]): Stretch[] => [
@@ -801,42 +918,81 @@ describe("the best connections", () => {
   });
 });
 
-describe("isDetour", () => {
+describe("detourUnless", () => {
   const at = (
     station: number,
     arrival: number | null,
     since: number,
     slackOut: number | null = null,
-  ): { station: number; arrival: number | null; since: number; slackOut: number | null } => ({
-    station,
-    arrival,
-    since,
-    slackOut,
-  });
-  const calls = (...stops: [number, number][]): ReturnType<typeof callsOf> =>
-    stops.map(([station, dep]) => ({ station, arr: dep, dep }));
+    starts: number | null = null,
+  ): Presence => ({ station, arrival, since, slackOut, starts });
+  const calls = (...stops: [number, number][]): Call[] => stops.map(([station, dep]) => ({ station, arr: dep, dep }));
+  const unless = (
+    stops: Presence[],
+    earlier: Call[],
+    dep: number,
+    {
+      deadline = 100,
+      until = 100,
+      maxDuration = 100,
+      reached = (): number | null => null,
+    }: { deadline?: number; until?: number; maxDuration?: number; reached?: (s: number) => number | null } = {},
+  ): Unless[] | null => detourUnless(stops, earlier, dep, deadline, { until, maxDuration, minTransfer: 3 }, reached);
   test("nothing to compare at the start", () => {
-    expect(isDetour([], calls([0, 5]), 10, 3)).toBe(false);
-    expect(isDetour([at(0, null, 5)], calls([0, 5]), 10, 3)).toBe(false);
+    expect(unless([], calls([0, 5]), 10)).toEqual([]);
+    expect(unless([at(0, null, 5)], calls([0, 5]), 10)).toEqual([]);
   });
   test("at the origin any later departure of the train counts", () => {
     // At 0 since 5 (the first train), now at 1 (arrived 20) boarding at 30 a train that left 0 at 8.
-    expect(isDetour([at(0, null, 5, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(true);
-    expect(isDetour([at(0, null, 9, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(false);
+    expect(unless([at(0, null, 5, 10), at(1, 20, 20)], calls([0, 8]), 30)).toBeNull();
+    expect(unless([at(0, null, 9, 10), at(1, 20, 20)], calls([0, 8]), 30)).toEqual([]);
     // Leaving as the connection does: the same train, so boarding it later is a detour.
-    expect(isDetour([at(0, null, 8, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(true);
+    expect(unless([at(0, null, 8, 10), at(1, 20, 20)], calls([0, 8]), 30)).toBeNull();
   });
   test("elsewhere only if catchable comfortably, with at least the detour's worst buffer", () => {
     // At 2 from 40 (left again 9 minutes later), now at 3 (arrived 50), boarding at 52: the
     // detour's worst buffer is 2. The train left 2 at 45 (5 minutes there) or 43 (3) or 42 (2).
     const stops = [at(0, null, 0, 0), at(2, 40, 40, 9), at(3, 50, 50)];
-    expect([45, 43, 42, 39].map((d) => isDetour(stops, calls([2, d]), 52, 3))).toEqual([true, true, false, false]);
+    expect([45, 43, 42, 39].map((d) => unless(stops, calls([2, d]), 52))).toEqual([null, null, [], []]);
     // Boarding at 57 here (7 minutes), 6 at 2 before: at 2 it must have been at least 6.
     const roomy = [at(0, null, 0, 0), at(2, 40, 40, 6), at(3, 50, 50)];
-    expect([46, 45].map((d) => isDetour(roomy, calls([2, d]), 57, 3))).toEqual([true, false]);
+    expect([46, 45].map((d) => unless(roomy, calls([2, d]), 57))).toEqual([null, []]);
     // Every change since counts: a 1-minute one at 3 on the way from 2 to 4.
     const tight = [at(0, null, 0, 0), at(2, 40, 40, 9), at(3, 50, 50, 1), at(4, 60, 60)];
-    expect(isDetour(tight, calls([2, 45]), 70, 3)).toBe(true);
+    expect(unless(tight, calls([2, 45]), 70)).toBeNull();
+  });
+  test("boarded earlier, the train would have passed the stations the connection has not been at yet", () => {
+    // At 0, then at 2 (arrived 20) boarding at 30 a train that left 0 at 8 via 5 and 6.
+    const stops = [at(0, null, 5, 10), at(2, 20, 20)];
+    const train = calls([0, 8], [5, 12], [6, 15]);
+    // 5 and 6 not visited: a detour unless the rest of the connection passes one.
+    expect(unless(stops, train, 30)).toEqual([{ stations: [5, 6], by: Infinity }]);
+    // 5 passed on the way to 2: a detour whatever follows, as long as 6 is not passed later.
+    expect(unless(stops, train, 30, { reached: (s) => (s === 5 ? 1 : null) })).toEqual([
+      { stations: [6], by: Infinity },
+    ]);
+    expect(unless(stops, calls([0, 8], [5, 12]), 30, { reached: (s) => (s === 5 ? 1 : null) })).toBeNull();
+    // At a station the connection had been at by then (0's stop): that ride would end there, no alternative.
+    expect(unless(stops, train, 30, { reached: (s) => (s === 6 ? 0 : null) })).toEqual([]);
+  });
+  test("where the train starts the connection, only an alternative leaving the origin within the window and limit", () => {
+    // The origin (since 0) and a 10-minute walk to 1: boarding there at 35 a train that left 0 at 4.
+    const stops = [at(0, null, 0, null, 0), at(1, 10, 10, null, 10)];
+    const train = calls([0, 4]);
+    // Arriving by 4 + 35 is that detour; arriving later, it was never listed.
+    expect(unless(stops, train, 35, { deadline: 60, maxDuration: 35 })).toEqual([{ stations: [], by: 39 }]);
+    expect(unless(stops, train, 35, { deadline: 39, maxDuration: 35 })).toBeNull();
+    // Leaving the origin after the window: no alternative.
+    expect(unless(stops, train, 35, { until: 3 })).toEqual([]);
+    expect(unless(stops, train, 35, { until: 4 })).toBeNull();
+    // Boarded at 1 at 15, now at 2 (arrived 25) boarding at 35 a train that left 1 at 20: it
+    // leaves the origin a walk (10 minutes) before, from the walk's end or the boarding there.
+    const walked = [...stops, at(1, null, 15, null, 10), at(2, 25, 25)];
+    const late = calls([1, 20]);
+    const listed = { stations: [], by: 45 };
+    expect(unless(walked, late, 35, { deadline: 60, maxDuration: 35 })).toEqual([listed, listed]);
+    expect(unless(walked, late, 35, { until: 9 })).toEqual([]);
+    expect(unless(walked, late, 35, { until: 10 })).toBeNull();
   });
 });
 
@@ -1025,17 +1181,26 @@ function detour(path: Step[], pieces: Stretch[], l: Limits): boolean {
   const stops = new Map<number, ReturnType<typeof callsOf>>();
   for (const p of pieces)
     if (p.kind === "ride" && p.trip !== null) stops.set(p.trip, [...(stops.get(p.trip) ?? []), ...callsOf(p.raw)]);
-  const at: Parameters<typeof isDetour>[0][number][] = [];
-  let rides = 0;
+  const at: Presence[] = [];
+  // Per station, the presence it was reached for.
+  const reached = new Map([[l.origin, 0]]);
+  const unless: Unless[] = [];
+  let rides = 0,
+    lead = 0,
+    deadline = Infinity,
+    arrival = 0;
   for (const s of path) {
     if (s.kind === "walk") {
       const d = s.end - s.start;
-      if (rides === 0)
+      if (rides === 0) {
+        lead += d;
         at.push(
-          { station: l.origin, arrival: null, since: l.from, slackOut: null },
-          { station: s.to, arrival: l.from + d, since: l.from + d, slackOut: null },
+          { station: l.origin, arrival: null, since: l.from, slackOut: null, starts: 0 },
+          { station: s.to, arrival: l.from + d, since: l.from + d, slackOut: null, starts: d },
         );
-      else at.push({ station: s.to, arrival: s.end, since: s.end, slackOut: null });
+      } else at.push({ station: s.to, arrival: s.end, since: s.end, slackOut: null, starts: null });
+      reached.set(s.to, at.length - 1);
+      arrival = s.end;
       continue;
     }
     const board = s.calls[0],
@@ -1043,15 +1208,20 @@ function detour(path: Step[], pieces: Stretch[], l: Limits): boolean {
     const dep = board?.dep ?? null,
       arr = alight?.arr ?? null;
     if (!board || !alight || dep === null || arr === null) return true;
+    if (rides === 0) deadline = dep - lead + l.maxDuration;
     const earlier = (stops.get(s.trip) ?? []).filter((c) => (c.dep ?? c.arr ?? Infinity) < dep);
-    if (isDetour(at, earlier, dep, l.minTransfer)) return true;
+    const u = detourUnless(at, earlier, dep, deadline, l, (st) => reached.get(st) ?? null);
+    if (u === null) return true;
+    unless.push(...u);
     const here = at[at.length - 1];
     if (rides > 0 && here) here.slackOut = here.arrival === null ? null : dep - here.arrival;
-    else at.push({ station: board.station, arrival: null, since: dep, slackOut: null });
-    at.push({ station: alight.station, arrival: arr, since: arr, slackOut: null });
+    else at.push({ station: board.station, arrival: null, since: dep, slackOut: null, starts: lead });
+    for (const c of s.calls.slice(1)) reached.set(c.station, at.length);
+    at.push({ station: alight.station, arrival: arr, since: arr, slackOut: null, starts: null });
+    arrival = arr;
     rides++;
   }
-  return false;
+  return unless.some(({ stations, by }) => arrival <= by && !stations.some((st) => reached.has(st)));
 }
 
 function valid(path: Step[], l: Limits): boolean {

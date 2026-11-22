@@ -631,6 +631,21 @@ describe("fallbacks, as the server finds them", () => {
     expect(lines(w, plan)).toEqual([["walk 8m to Hbf 09:20 RE S → 11:00 Ziel", "11:00"]]);
   });
 
+  test("bounded by the fastest, a walk to a train boarded where it starts the walk is no detour if boarding there takes too long", () => {
+    // From B walking to C for BUS 1 takes 20m; boarding it at B at 09:05 takes 105m, over the
+    // fastest's hour: never listed, so the walk to it is no detour (as the server finds it).
+    const { w, plan } = missedAtB([
+      "BUS 1",
+      [
+        ["B", "", "09:05"],
+        ["C", "10:35", "10:40"],
+        ["D", "10:50", ""],
+      ],
+    ]);
+    w.walk("B", "C", 10);
+    expect(lines(w, plan)).toEqual([["walk 10m to C 10:40 BUS 1 → 10:50 D", "10:50"]]);
+  });
+
   test("after a change with a walk, a ride back to a train past the window stays", () => {
     // STR 9 leaves Zentrum after the window from there.
     const { w, plan } = walkedChange(
