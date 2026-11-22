@@ -428,24 +428,42 @@ function presence(steps) {
   }
   return out;
 }
-function isDetour(presence2, earlier, dep, minTransfer) {
+function detourUnless(presence2, earlier, dep, deadline, limits, reached) {
+  const unless = [];
   const here = presence2[presence2.length - 1];
   if (!here)
-    return false;
+    return unless;
   let worst = here.arrival === null ? Infinity : dep - here.arrival;
-  for (let i = presence2.length - 2;i >= 0; i--) {
-    const p = item(presence2, i);
-    const caught = earlier.find((c) => c.station === p.station)?.dep ?? null;
+  for (let stop = presence2.length - 2;stop >= 0; stop--) {
+    const p = item(presence2, stop);
+    const at = earlier.findIndex((c) => c.station === p.station);
+    const caught = at < 0 ? null : item(earlier, at).dep;
     if (caught !== null && caught >= p.since) {
-      if (p.arrival === null)
-        return true;
-      const direct = caught - p.arrival;
-      if (direct >= minTransfer && direct >= Math.min(worst, p.slackOut ?? Infinity))
-        return true;
+      const direct = p.arrival === null ? Infinity : caught - p.arrival;
+      const comfortable = direct >= limits.minTransfer && direct >= Math.min(worst, p.slackOut ?? Infinity);
+      const leaves = p.starts === null ? null : caught - p.starts;
+      const stations = comfortable && (leaves === null || leaves <= limits.until) ? notYetPassed(stop, earlier.slice(at + 1), reached) : null;
+      if (stations) {
+        const by = leaves === null ? Infinity : leaves + limits.maxDuration;
+        if (stations.length === 0 && by >= deadline)
+          return null;
+        unless.push({ stations, by });
+      }
     }
     worst = Math.min(worst, p.slackOut ?? Infinity);
   }
-  return false;
+  return unless;
+}
+function notYetPassed(stop, calls, reached) {
+  const stations = [];
+  for (const c of calls) {
+    const r = reached(c.station);
+    if (r === null)
+      stations.push(c.station);
+    else if (r <= stop)
+      return null;
+  }
+  return stations;
 }
 function reach(departures, walks, destination, missedBy, maxBoardings) {
   const position = new Map;
@@ -604,10 +622,15 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
     });
   for (const list of departures.values())
     list.sort((a, b) => a[2] - b[2]);
-  const visited = new Uint8Array(stations);
+  const visited = new Int32Array(stations);
+  const reached = (s) => {
+    const v = visited[s] ?? 0;
+    return v ? v - 1 : null;
+  };
   const presence2 = [];
   const used = new Set;
   const steps = [];
+  const deferred = [];
   let found = [];
   let nodes = 0;
   let complete = true;
@@ -615,6 +638,8 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
   let leave = 0;
   let slack = null;
   const record2 = (arrival) => {
+    if (deferred.some((u) => u.some(({ stations: stations2, by }) => arrival <= by && !stations2.some((s) => visited[s]))))
+      return;
     if (!needs.every((n) => meets(steps, n)))
       return;
     const c = { steps: [...steps], departure: leave, arrival, changes: rides - 1, slack };
@@ -672,11 +697,11 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
             continue;
         }
         const end = start + d;
-        visited[to] = 1;
         steps.push({ kind: "walk", from: station, to, start, end });
-        const marks = deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null }] : [];
-        marks.push({ station: to, arrival: end, since: end, slackOut: null });
+        const marks = deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null, starts: 0 }] : [];
+        marks.push({ station: to, arrival: end, since: end, slackOut: null, starts: deadline === null ? d : null });
         presence2.push(...marks);
+        visited[to] = presence2.length;
         explore(to, end, deadline, true, d);
         presence2.length -= marks.length;
         steps.pop();
@@ -704,13 +729,19 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
       }
       const all = tripCalls.get(run.trip) ?? [];
       const before = all.slice(0, all.indexOf(item(run.calls, k)));
-      if (!limits.keepDetours && isDetour(presence2, before, dep, limits.minTransfer))
-        continue;
+      let unless = [];
+      if (!limits.keepDetours) {
+        const u = detourUnless(presence2, before, dep, limit, limits, reached);
+        if (u === null)
+          continue;
+        unless = u;
+      }
+      deferred.push(unless);
       const saved = { leave, slack };
       const here = presence2[presence2.length - 1];
       const first = rides === 0;
       if (first || !here)
-        presence2.push({ station, arrival: null, since: dep, slackOut: null });
+        presence2.push({ station, arrival: null, since: dep, slackOut: null, starts: lead });
       else
         here.slackOut = here.arrival === null ? null : dep - here.arrival;
       if (first) {
@@ -722,12 +753,13 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         slack = Math.min(slack ?? Infinity, dep - ready);
       used.add(run.trip);
       rides++;
+      const stop = presence2.length;
       const passed = [], through = [];
       for (let j = k + 1;j < run.calls.length; j++) {
         const c = item(run.calls, j);
         if (visited[c.station] || c.arr === null || c.arr > limit || c.arr < dep)
           break;
-        visited[c.station] = 1;
+        visited[c.station] = stop + 1;
         passed.push(c.station);
         if (run.skips.has(j)) {
           through.push(j - k);
@@ -737,7 +769,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         if (lb && !((lb[c.station] ?? Infinity) < (lb[station] ?? -Infinity)))
           continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
-        presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
+        presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null, starts: null });
         explore(c.station, c.arr, limit, false, 0);
         presence2.pop();
         steps.pop();
@@ -748,6 +780,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         presence2.pop();
       else
         here.slackOut = null;
+      deferred.pop();
       rides--;
       used.delete(run.trip);
       ({ leave, slack } = saved);
@@ -945,12 +978,13 @@ class Fallbacks {
       maxDuration: Infinity,
       maxChanges: CHANGES,
       missedBy: 0,
-      keepDetours: false,
+      keepDetours: true,
       lowerBound: null
     };
-    const all = everyConnection(g.pieces, g.network, g.names.length, limits);
-    const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
-    const found = all.filter((c) => c.arrival - c.departure <= fastest + EXTRA);
+    const best = bestThrough(g.pieces, g.network, g.names.length, limits, []).found;
+    const fastest = Math.min(...best.map((c) => c.arrival - c.departure));
+    const bounded = { ...limits, maxDuration: fastest + EXTRA, keepDetours: false };
+    const found = everyConnection(g.pieces, g.network, g.names.length, bounded);
     this.cache.set(key, found);
     return found;
   }

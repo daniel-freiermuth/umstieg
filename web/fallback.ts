@@ -2,7 +2,16 @@
 // (best.ts): as the server's src/fallback.rs, over the network it sends, which
 // holds the stretches of every fallback of every change on it.
 
-import { type Connection, type Limits, type Step, type Stretch, alightAt, boardAt, everyConnection } from "./best";
+import {
+  type Connection,
+  type Limits,
+  type Step,
+  type Stretch,
+  alightAt,
+  bestThrough,
+  boardAt,
+  everyConnection,
+} from "./best";
 import { type Clock, type Drawn, duration, piecesOf, route, signature } from "./connections";
 import { item } from "./util";
 
@@ -84,12 +93,15 @@ export class Fallbacks {
       maxChanges: CHANGES,
       // What to do once the change is missed: only what still works.
       missedBy: 0,
-      keepDetours: false,
+      keepDetours: true,
       lowerBound: null,
     };
-    const all = everyConnection(g.pieces, g.network, g.names.length, limits);
-    const fastest = Math.min(...all.map((c) => c.arrival - c.departure));
-    const found = all.filter((c) => c.arrival - c.departure <= fastest + EXTRA);
+    // As the server's: an hour above the fastest with detours kept bounds the
+    // search, and so which detour's alternative is listed (and prunes it).
+    const best = bestThrough(g.pieces, g.network, g.names.length, limits, []).found;
+    const fastest = Math.min(...best.map((c) => c.arrival - c.departure));
+    const bounded = { ...limits, maxDuration: fastest + EXTRA, keepDetours: false };
+    const found = everyConnection(g.pieces, g.network, g.names.length, bounded);
     // Stryker disable next-line all: a cache, the same found without it.
     this.cache.set(key, found);
     return found;
