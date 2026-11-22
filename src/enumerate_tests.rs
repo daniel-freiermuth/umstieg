@@ -661,6 +661,58 @@ fn detour_from_the_origin_counts_an_alternative_reaching_every_stop_in_time() {
     }
 }
 
+/// With `--forward-only`, boarding T at the earlier stop P (the origin, or
+/// where the chain changed) instead of where the walk from it led counts as
+/// the alternative only if that ride reduces the best case too. V, outside
+/// the window, makes P as close to D as X by the best case: T from P to X is
+/// no progress, never listed, and the walk to T stays the only connection.
+#[test]
+fn with_forward_only_detour_counts_only_an_alternative_reducing_the_best_case() {
+    // (P is the origin, V's shortcut, listed)
+    let cases = [
+        (true, true, "walk P-W / T W-X / U X-D"),
+        (true, false, "T P-X / U X-D"),
+        (false, true, "R A-P / walk P-W / T W-X / U X-D"),
+        (false, false, "R A-P / T P-X / U X-D"),
+    ];
+    for (at_origin, shortcut, only) in cases {
+        let mut b = Builder::new();
+        if !at_origin {
+            b.trip("R", &[("A", "", "08:00"), ("P", "08:05", "")]);
+        }
+        b.walk("P", "W", 5);
+        b.trip("T", &[("P", "", "08:15"), ("W", "08:20", "08:20"), ("X", "08:35", "")]);
+        b.trip("U", &[("X", "", "08:40"), ("D", "09:00", "")]);
+        if shortcut {
+            b.trip("V", &[("P", "", "07:00"), ("D", "07:20", "")]);
+        }
+        let tt = b.build(if at_origin { "P" } else { "A" }, "D");
+        let limits = Limits { forward_only: true, ..limits(&tt, "08:00", "09:00") };
+        let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let fastest = if at_origin { 45 } else { 60 };
+        let expected = (Some(min(fastest)), vec![only.to_owned()]);
+        assert_eq!((result.fastest, shown(&tt, &result)), expected, "at origin {at_origin}, shortcut {shortcut}");
+    }
+}
+
+/// With `--forward-only`, after the walk from P to W (which raises the best
+/// case), boarding T at P instead counts per stop the chain leaves it at:
+/// leaving at X, as close to D as P by the best case, the alternative is no
+/// progress and the walk stays; leaving at Y, it is, and the walk is pruned.
+#[test]
+fn with_forward_only_detour_counts_the_alternative_where_the_chain_leaves_the_train() {
+    let mut b = Builder::new();
+    b.walk("P", "W", 5);
+    b.trip("T", &[("P", "", "08:15"), ("W", "08:20", "08:20"), ("X", "08:35", "08:35"), ("Y", "08:50", "")]);
+    b.trip("U", &[("X", "", "08:40"), ("D", "09:00", "")]);
+    b.trip("Z", &[("Y", "", "08:52"), ("D", "08:57", "")]);
+    b.trip("V", &[("P", "", "07:00"), ("D", "07:20", "")]);
+    let tt = b.build("P", "D");
+    let limits = Limits { forward_only: true, ..limits(&tt, "08:00", "09:00") };
+    let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+    let expected = (Some(min(42)), sorted(&["T P-Y / Z Y-D", "walk P-W / T W-X / U X-D"]));
+    assert_eq!((result.fastest, shown(&tt, &result)), expected);
+}
 /// RNV 4 → S 1 changing at Ludwigshafen Hbf or at Ludwigshafen Mitte: both listed.
 #[test]
 fn same_trains_changing_at_different_stations_are_all_kept() {

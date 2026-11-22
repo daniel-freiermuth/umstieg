@@ -483,8 +483,10 @@ struct Presence {
 
 /// What makes boarding a train from one earlier stop no detour after all:
 /// the rest of the chain passes one of the stations, or reaches a stop after
-/// the time (boarded there, the train is ridden no further).
-type Unless = (Vec<StationIdx>, DateTime<Utc>);
+/// the time (boarded there, the train is ridden no further), or, with
+/// `--forward-only`, leaves the train where the least remaining time is not
+/// below the earlier stop's (riding there from it is no progress).
+type Unless = (Vec<StationIdx>, DateTime<Utc>, Option<TimeDelta>);
 
 struct Search<'a> {
     tt: &'a Timetable,
@@ -507,12 +509,14 @@ struct Search<'a> {
     /// Stations where the chain stopped, and from when another train could be caught there.
     presence: Vec<Presence>,
     /// Per train boarded that is a detour unless the rest of the chain passes
-    /// a station or reaches a stop late: the chain's stops from there on (an
-    /// index into `presence`) and per earlier stop it could have been boarded
-    /// at instead, the stations it would have passed from there that the chain
-    /// had not been at, and the arrival up to which boarding it there would
-    /// still have been listed. A connection passing none of one stop's
-    /// stations and reaching every stop by then is that detour.
+    /// a station or reaches a stop late: the chain's stop (index into
+    /// `presence`) where it is left, the first of the stops reached from
+    /// there on, and per earlier stop it could have been boarded at instead,
+    /// the stations it would have passed from there that the chain had not
+    /// been at, the arrival up to which boarding it there would still have
+    /// been listed and that stop's least remaining time. A connection passing
+    /// none of one stop's stations, reaching every stop by then and (with
+    /// `--forward-only`) leaving the train where less remains is that detour.
     detour_unless: Vec<(usize, Vec<Unless>)>,
     /// Every connection found once; deepening by changes revisits shorter ones.
     found: HashSet<Vec<Step>>,
@@ -879,9 +883,6 @@ impl Search<'_> {
                 }
             };
             let deferred = !unless.is_empty();
-            if deferred {
-                self.detour_unless.push((self.presence.len(), unless));
-            }
 
             let first = self.rides == 0;
             match self.presence.last_mut() {
@@ -906,6 +907,9 @@ impl Search<'_> {
             let mut latest = departure;
             // The stop each station passed leads to.
             let reached = self.presence.len();
+            if deferred {
+                self.detour_unless.push((reached, unless));
+            }
             for (alight, call) in calls.iter().enumerate().skip(board.0.saturating_add(1)) {
                 let alight = CallIdx(alight);
                 let seen = self.visited.get_mut(call.station)?;
@@ -976,11 +980,16 @@ impl Search<'_> {
     /// there, also an earlier one, there or where the walk led, but only for
     /// a connection arriving within the travel time limit from leaving the
     /// origin for it. Either way only one leaving the origin within the
-    /// window counts, as the search lists no other. `None` if it is a detour
-    /// whatever follows (arriving by `deadline`); otherwise, per earlier stop
-    /// it is a detour from unless the rest of the chain passes one or arrives
-    /// later, the stations the train passes from there that the chain has not
-    /// been at (none: no detour) and the latest arrival boarding there allows.
+    /// window counts, as the search lists no other. With `--forward-only`,
+    /// only one whose ride from the earlier stop reduces the best case too
+    /// counts, as the search lists no other: where the least remaining time
+    /// there is below that of where the chain boards, wherever the chain
+    /// leaves the train; otherwise only where it does so below the earlier
+    /// stop's. `None` if it is a detour whatever follows (arriving by
+    /// `deadline`); otherwise, per earlier stop it is a detour from unless the
+    /// rest of the chain passes one or arrives later, the stations the train
+    /// passes from there that the chain has not been at (none: no detour),
+    /// the latest arrival boarding there allows and its least remaining time.
     fn detour(
         &self,
         earlier_calls: &[Call],
@@ -1011,10 +1020,13 @@ impl Search<'_> {
                 // It may leave the origin earlier than the chain and take
                 // longer: listed only if within the limit.
                 let by = leaves.map_or(DateTime::<Utc>::MAX_UTC, |l| checked::later_or_max(l, self.max_duration));
-                if stations.is_empty() && by >= deadline {
+                let remaining = *self.lower_bound.get(p.station)?;
+                // Wherever the chain leaves the train, riding there from the earlier stop is progress too.
+                let forward = !self.limits.forward_only || remaining >= *self.lower_bound.get(here.station)?;
+                if stations.is_empty() && by >= deadline && forward {
                     return Ok(None);
                 }
-                unless.push((stations, by));
+                unless.push((stations, by, remaining));
             }
             worst = worst.min(p.slack_out.unwrap_or(TimeDelta::MAX));
         }
@@ -1059,13 +1071,17 @@ impl Search<'_> {
     /// elsewhere (Ludwigshafen Mitte instead of Ludwigshafen Hbf), unless it
     /// is a detour after all: it passes none of the stations boarding a train
     /// earlier would have, and reaches every stop from there in time for that
-    /// connection to be listed. After a change missed by up to `missed_by`, a
-    /// stop may be reached later than the destination.
+    /// connection to be listed (with `--forward-only`, also leaving the train
+    /// where that connection may). After a change missed by up to
+    /// `missed_by`, a stop may be reached later than the destination.
     fn record(&mut self) -> Result<()> {
-        for (from, unless) in &self.detour_unless {
-            let latest = self.presence.get(*from..).into_iter().flatten().filter_map(|p| p.latest).max();
-            for (stations, by) in unless {
-                let mut passed = latest.is_some_and(|l| l > *by);
+        for (left, unless) in &self.detour_unless {
+            // The stop boarded at before `left`, if pushed, has no `latest`.
+            let latest = self.presence.get(*left..).into_iter().flatten().filter_map(|p| p.latest).max();
+            let left = self.presence.get(*left).with_context(|| format!("the chain has no stop {left}"))?.station;
+            let remaining = *self.lower_bound.get(left)?;
+            for (stations, by, earlier) in unless {
+                let mut passed = latest.is_some_and(|l| l > *by) || (self.limits.forward_only && remaining >= *earlier);
                 for &s in stations {
                     passed |= self.visited.get(s)?.is_some();
                 }

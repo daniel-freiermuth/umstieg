@@ -223,7 +223,8 @@ command line logs nothing unless `RUST_LOG` is set.
      leave, and from where the connection boarding it there would still pass
      no station twice and be listed (leaving the origin within the window;
      after a walk from the origin, boarding there or where the walk led may
-     leave the origin earlier, but then must still keep to the travel time)
+     leave the origin earlier, but then must still keep to the travel time;
+     with `--forward-only`, its ride from there must reduce the best case too)
      — and never after leaving the origin before the same train
      (`--keep-detours` disables). Arriving at Hamburg Hbf 11:51 and
      taking the RE7 to Schleswig (11 min change) for the RJ that leaves Hamburg
