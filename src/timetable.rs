@@ -1209,9 +1209,14 @@ async fn swedish(
         let idx = boarded.get(sig).copied().or_else(|| stations.by_key.get(&format!("tv:{sig}")).copied());
         if let Some(idx) = idx {
             // Trafikverket announces every train: an hour its board has any
-            // covers all classes, whatever class another feed gives a train.
+            // covers all classes, whatever class another feed gives a train,
+            // unless the board lists a train whose run was not fetched (a
+            // junction's commuter trains): that hour covers none.
+            let all = |s: &trafikverket::Seen| ProductClass::ALL.map(|class| (s.planned, class));
+            let unfed: Vec<_> = seen.iter().filter(|s| !known.contains(&s.run)).flat_map(all).collect();
+            let unfed = Coverage::of(&unfed);
             let entries: Vec<(DateTime<Utc>, ProductClass)> =
-                seen.iter().flat_map(|s| ProductClass::ALL.map(|class| (s.planned, class))).collect();
+                seen.iter().flat_map(all).filter(|&(t, class)| !unfed.covers(t, class)).collect();
             coverage.push((idx, Coverage::of(&entries)));
         }
     }

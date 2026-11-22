@@ -2495,14 +2495,16 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     assert_eq!(sj.calls[2].arrival, Some(Time { planned: at("09:27"), actual: at("09:30") }));
     let route = &found.trips.iter().find(|(t, ..)| t.label == "SJ Regional 319").unwrap().1;
     assert_eq!(route, &HashSet::from(["Göteborg C", "Lessebo", "Emmaboda", "Nybro"].map(str::to_owned)));
-    // The boards' stations cover every class in the hours they list trains.
+    // The boards' stations cover every class in the hours they list trains,
+    // but for an hour with a train whose run is not fetched (Pendeltåg 8000).
     let emmaboda = index_of(&stations, "Emmaboda");
     let mut covered: Vec<&str> = found.coverage.iter().map(|(i, _)| stations.list[i.0].name.as_str()).collect();
     covered.sort_unstable();
     let boarded = ["Alvesta", "Emmaboda", "Göteborg Centralstation", "Karlshamns resecentrum", "Karlskrona C", "Nybro"];
     assert_eq!(covered, boarded);
     let (_, at_emmaboda) = found.coverage.iter().find(|(i, _)| *i == emmaboda).unwrap();
-    assert!([LongDistance, Regional, SBahn].iter().all(|&c| at_emmaboda.covers(at("09:40"), c)));
+    assert!([LongDistance, Regional, SBahn].iter().all(|&c| at_emmaboda.covers(at("08:30"), c)));
+    assert!([LongDistance, Regional, SBahn].iter().all(|&c| !at_emmaboda.covers(at("09:40"), c)));
     assert!(!at_emmaboda.covers(at("12:40"), Regional), "an hour without trains");
 
     // Transitous's SJ Regional 319: on to Kalmar (unknown to Trafikverket's
@@ -2582,6 +2584,41 @@ async fn junction_boards_cover_nothing_when_their_runs_fail() {
     let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips, false);
     let kt = trips.iter().find(|t| t.label == "Krösatågen 7200").expect("the Transitous train");
     assert_eq!(calls_of(kt).len(), 2);
+}
+
+#[tokio::test]
+async fn junction_boards_cover_no_hour_of_their_unfetched_commuter_runs() {
+    let world = tv_world();
+    let url = crate::testkit::serve_trafikverket(&world).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let mut stations = Stations::default();
+    let origin = stations.intern(Sighting {
+        name: "Göteborg Centralstation",
+        position: Some(north(GOTEBORG, 50.0)),
+        ..Sighting::default()
+    });
+    let destination = stations.intern(Sighting {
+        name: "Karlshamns resecentrum",
+        position: Some(north(KARLSHAMN, 450.0)),
+        ..Sighting::default()
+    });
+    let corridor = HashMap::from([(origin, (at("06:00"), at("07:00"))), (destination, (at("06:30"), at("11:00")))]);
+    let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
+    let found =
+        swedish(&tv, &unused_motis(), &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings)
+            .await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // Emmaboda's commuter train (Pendeltåg 8000) is on its board but its run
+    // is not fetched: Transitous's copy, whatever its class, keeps its stops.
+    let (emmaboda, nybro) = (index_of(&stations, "Emmaboda"), index_of(&stations, "Nybro"));
+    let boards: Boards = found.coverage.into_iter().map(|(idx, coverage)| (idx, (Vec::new(), coverage))).collect();
+    for class in [SBahn, Regional] {
+        let motis = motis_trip("Pendeltåg 8000", Some(class), &[(emmaboda.0, "", "09:45"), (nybro.0, "10:00", "")]);
+        let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips.clone(), false);
+        let pt = trips.iter().find(|t| t.label == "Pendeltåg 8000").expect("the Transitous train");
+        assert_eq!(calls_of(pt).len(), 2, "{class:?}");
+    }
 }
 
 #[tokio::test]
