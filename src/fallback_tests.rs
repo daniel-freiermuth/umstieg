@@ -208,10 +208,7 @@ fn a_change_the_plan_does_not_have_is_an_error() {
 fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
     // Tram to the stop outside the station, walk 8 min, ICE 1; missing ICE 1
     // leaves the later ICE 3 from the station, which the tram stop doesn't serve.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
@@ -233,11 +230,8 @@ fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
 #[test]
 fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
     // The walk goes both ways: from Hbf the tram is found again behind a walk back.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("Hbf", "Zentrum", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -258,10 +252,7 @@ fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
 fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
     // ICE 1 missed at 09:00: the window from Hbf ends at 11:01, but walking
     // from Zentrum at 10:57 still catches ICE 5 at 11:05.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("ICE 5", &[("Hbf", "", "11:05"), ("Ziel", "12:05", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -282,12 +273,9 @@ fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
 fn after_a_change_with_a_walk_fallbacks_walk_only_from_where_the_train_arrived() {
     // Fallbacks are shown from Zentrum: one walking from Hbf to the bus
     // station or back to Zentrum would be drawn and listed as a walk from Zentrum.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("Hbf", "Zentrum", 8);
     b.walk("Hbf", "ZOB", 3);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
     b.trip("BUS 7", &[("ZOB", "", "09:06"), ("Ziel", "10:10", "")]);
     b.trip("STR 9", &[("Zentrum", "", "11:05"), ("Ziel", "11:40", "")]);
@@ -309,10 +297,7 @@ fn after_a_change_with_a_walk_fallbacks_walk_only_from_where_the_train_arrived()
 #[test]
 fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() {
     // RE 6 calls at Zentrum, then at Hbf: boarded at Zentrum, it is one fallback.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("RE 6", &[("Zentrum", "", "09:20"), ("Hbf", "09:24", "09:25"), ("Ziel", "10:30", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:40"), ("Ziel", "10:40", "")]);
     b.trip("ICE 7", &[("Hbf", "", "09:50"), ("Ziel", "10:50", "")]);
@@ -337,6 +322,16 @@ fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() 
     );
 }
 
+/// STR 4 from Dorf arriving at Zentrum at `str4_arrives`, the 8-minute walk
+/// to Hbf, ICE 1 from there: the timetable `walked_change` rides.
+fn walked_change_world(str4_arrives: &str) -> Builder {
+    let mut b = Builder::new();
+    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", str4_arrives, "")]);
+    b.walk("Zentrum", "Hbf", 8);
+    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    b
+}
+
 /// STR 4 to Zentrum, the walk to Hbf, ICE 1 from there.
 fn walked_change(tt: &Timetable) -> Chain {
     let named = |s: StationIdx, name: &str| tt.stations[s.0].name == name;
@@ -353,10 +348,7 @@ fn walked_change(tt: &Timetable) -> Chain {
 #[test]
 fn after_a_change_with_a_walk_a_fallback_from_the_other_station_names_it() {
     // Listed under the change at Zentrum: ICE 3 leaves Hbf, STR 9 Zentrum.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
     let tt = b.build("Dorf", "Ziel");
@@ -369,11 +361,8 @@ fn after_a_change_with_a_walk_a_fallback_from_the_other_station_names_it() {
 #[test]
 fn after_a_change_with_a_walk_a_fallback_riding_back_to_walk_on_is_no_second_one() {
     // RB 8 back to Zentrum, then the walk to W for a bus, is that bus from Zentrum again.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("Zentrum", "W", 3);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("RB 8", &[("Hbf", "", "09:03"), ("Zentrum", "09:07", "")]);
     b.trip("BUS 1", &[("W", "", "09:20"), ("Ziel", "10:40", "")]);
     b.trip("BUS 2", &[("W", "", "09:30"), ("Ziel", "10:50", "")]);
@@ -396,10 +385,7 @@ fn after_a_change_with_a_walk_a_fallback_riding_back_to_walk_on_is_no_second_one
 fn after_a_change_with_a_walk_a_ride_back_to_a_train_past_the_window_stays() {
     // RB 8 leaves Hbf within the window; STR 9 leaves Zentrum after it, so
     // the search from Zentrum doesn't list it.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("RB 8", &[("Hbf", "", "10:58"), ("Zentrum", "11:02", "")]);
     b.trip("STR 9", &[("Zentrum", "", "11:05"), ("Ziel", "11:40", "")]);
     let tt = b.build("Dorf", "Ziel");
@@ -413,11 +399,8 @@ fn after_a_change_with_a_walk_a_ride_back_to_a_train_past_the_window_stays() {
 
 /// The walked change, a walk from Zentrum to W, and BUS 5 calling at W, then at Hbf.
 fn bus_through_w_and_hbf(w: &str, hbf: &str, ziel: &str) -> Vec<String> {
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("Zentrum", "W", 3);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("BUS 5", &[("W", "", w), ("Hbf", hbf, hbf), ("Ziel", ziel, "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -447,10 +430,7 @@ fn after_a_change_with_a_walk_a_train_at_hbf_right_after_the_missed_one_stays() 
 #[test]
 fn after_a_change_with_a_walk_a_fallback_riding_through_is_no_second_one() {
     // RB 8 to S, then STR 9 through Zentrum: from there it is STR 9 from Zentrum again.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("RB 8", &[("Hbf", "", "09:03"), ("S", "09:08", "")]);
     b.trip("STR 9", &[("S", "", "09:14"), ("Zentrum", "09:20", "09:20"), ("Ziel", "10:40", "")]);
     b.trip("BUS 1", &[("Zentrum", "", "09:30"), ("Ziel", "10:50", "")]);
@@ -467,10 +447,7 @@ fn after_a_change_with_a_walk_a_fallback_riding_through_is_no_second_one() {
 #[test]
 fn after_a_change_with_a_walk_a_fallback_riding_back_is_no_second_one() {
     // RB 8 back to Zentrum for STR 9 is STR 9 from Zentrum again.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("RB 8", &[("Hbf", "", "09:03"), ("Zentrum", "09:07", "")]);
     b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
     b.trip("BUS 1", &[("Zentrum", "", "09:30"), ("Ziel", "10:50", "")]);
@@ -487,10 +464,7 @@ fn after_a_change_with_a_walk_a_fallback_riding_back_is_no_second_one() {
 #[test]
 fn after_a_change_with_a_walk_a_train_calling_at_hbf_first_is_boarded_there() {
     // RE 6 leaves Hbf at 09:02, right after ICE 1; at Zentrum, 09:06, it is out of reach from Hbf.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("RE 6", &[("Hbf", "", "09:02"), ("Zentrum", "09:06", "09:06"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -504,11 +478,8 @@ fn after_a_change_with_a_walk_a_train_calling_at_hbf_first_is_boarded_there() {
 #[test]
 fn after_a_change_with_a_walk_the_same_trains_changed_elsewhere_stay_two_fallbacks() {
     // X to S, then Y: boarded at S with 2 minutes, or at T after a walk with 7.
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("S", "T", 3);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("X", &[("Zentrum", "", "09:10"), ("S", "09:30", "")]);
     b.trip("Y", &[("S", "", "09:32"), ("T", "09:40", "09:40"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
@@ -547,10 +518,7 @@ fn fallbacks_of_a_missed_change_leave_after_the_arrival() {
 /// from its arrival on, and where the walk leads from the arrival plus the walk.
 #[test]
 fn fallbacks_of_a_missed_change_with_a_walk_leave_once_at_either_station() {
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:55+10", "")]); // 09:05, at Hbf 09:13
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:55+10"); // STR 4 at 09:05, at Hbf 09:13
     b.trip("RE 5", &[("Zentrum", "", "09:07"), ("Ziel", "10:20", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:15"), ("Ziel", "10:15", "")]);
     b.trip("ICE 9", &[("Hbf", "", "09:40"), ("Ziel", "10:40", "")]);
@@ -567,10 +535,7 @@ fn fallbacks_of_a_missed_change_with_a_walk_leave_once_at_either_station() {
 /// leave where the train arrived before the walk would have ended.
 #[test]
 fn the_network_of_a_missed_change_with_a_walk_holds_its_fallbacks_from_the_arrival() {
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:55+10", "")]); // 09:05, at Hbf 09:13
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:55+10"); // STR 4 at 09:05, at Hbf 09:13
     b.trip("RE 5", &[("Zentrum", "", "09:07"), ("Ziel", "10:20", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
@@ -628,10 +593,7 @@ fn every_change_on_the_network_gets_its_fallbacks() {
 /// Hbf within the walk's length after ICE 1, so only the search from Hbf finds it.
 #[test]
 fn a_change_with_a_walk_gets_the_fallbacks_from_both_stations() {
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
+    let mut b = walked_change_world("08:30");
     b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
@@ -657,11 +619,8 @@ fn a_change_with_a_walk_gets_the_fallbacks_from_both_stations() {
 /// against 33m + 1h) for RE S walked to from Zentrum.
 #[test]
 fn a_change_with_a_walk_sends_from_where_the_train_leaves_what_walks_first_too() {
-    let mut b = Builder::new();
-    b.trip("STR 4", &[("Dorf", "", "08:00"), ("Zentrum", "08:30", "")]);
-    b.walk("Zentrum", "Hbf", 8);
+    let mut b = walked_change_world("08:30");
     b.walk("Hbf", "W", 3);
-    b.trip("ICE 1", &[("Hbf", "", "09:00"), ("Ziel", "10:00", "")]);
     b.trip("BUS F", &[("W", "", "09:10"), ("Ziel", "09:40", "")]);
     b.trip("RE S", &[("Hbf", "", "09:20"), ("Ziel", "11:00", "")]);
     let tt = b.build("Dorf", "Ziel");
