@@ -234,6 +234,12 @@ fn stop(kind: &str, name: &str, id: &str) -> Value {
     json!({ "type": kind, "name": name, "id": id, "lat": 49.46, "lon": 8.17 })
 }
 
+fn with_modes(name: &str, id: &str, modes: &[&str]) -> Value {
+    let mut s = stop("STOP", name, id);
+    s["modes"] = json!(modes);
+    s
+}
+
 #[tokio::test]
 async fn stop_retries_spellings_until_the_place_words_match() {
     let fake = Arc::new(Fake::default());
@@ -317,11 +323,6 @@ fn unaccented_drops_accents_and_folds_the_rest() {
 #[tokio::test]
 async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() {
     let fake = Arc::new(Fake::default());
-    let with_modes = |name: &str, id: &str, modes: &[&str]| {
-        let mut s = stop("STOP", name, id);
-        s["modes"] = json!(modes);
-        s
-    };
     fake.geocode(
         "Berlin Südkreuz",
         json!([
@@ -346,11 +347,6 @@ async fn stop_prefers_where_trains_call_over_a_coach_stop_named_train_station() 
 async fn stop_ignores_connecting_words_missing_from_stop_names() {
     // Transitous' answers of 2026-10-30, abridged: the geocoder ranks queries with "am", "an der" badly.
     let fake = Arc::new(Fake::default());
-    let with_modes = |name: &str, id: &str, modes: &[&str]| {
-        let mut s = stop("STOP", name, id);
-        s["modes"] = json!(modes);
-        s
-    };
     let main_hbf = |name: &str| with_modes(name, "main-hbf", &["LONG_DISTANCE", "SUBURBAN"]);
     let main_sued = || with_modes("Frankfurt (Main) Süd", "main-sued", &["LONG_DISTANCE", "SUBURBAN"]);
     for text in ["Frankfurt am Main Hbf", "Frankfurt am Main Hauptbahnhof"] {
@@ -393,11 +389,6 @@ async fn only_a_station_may_leave_out_the_connecting_words() {
     // Transitous' answers of 2026-10-31, abridged: without "an der", "am", "im" the
     // qualifier fits bus, U-Bahn and ride-sharing stops that name it by chance.
     let fake = Arc::new(Fake::default());
-    let with_modes = |name: &str, id: &str, modes: &[&str]| {
-        let mut s = stop("STOP", name, id);
-        s["modes"] = json!(modes);
-        s
-    };
     let rrz = || with_modes("Mülheim Rhein-Ruhr-Zentrum", "rrz", &["SUBWAY", "BUS"]);
     let immenstadt = || with_modes("Immenstadt i. Allgäu,", "amarillo", &[]);
     fake.geocode("Mülheim Ruhr Hbf", json!([with_modes("Mülheim Hauptbahnhof", "hbf", &["REGIONAL_RAIL"])]))
@@ -422,11 +413,6 @@ async fn only_a_station_may_leave_out_the_connecting_words() {
 async fn a_station_without_the_connecting_words_names_only_the_place() {
     // Transitous' answers of 2026-10-31, abridged: other stations name the qualifier too.
     let fake = Arc::new(Fake::default());
-    let with_modes = |name: &str, id: &str, modes: &[&str]| {
-        let mut s = stop("STOP", name, id);
-        s["modes"] = json!(modes);
-        s
-    };
     let steinheim = || with_modes("Hanau-Steinheim (Main) Bahnhof", "steinheim", &["SUBURBAN"]);
     let hanau = || json!([with_modes("Hanau Hauptbahnhof", "hanau", &["LONG_DISTANCE"]), steinheim()]);
     fake.geocode(
@@ -451,11 +437,6 @@ async fn a_stop_the_typed_name_finds_is_kept() {
     // Transitous' answers of 2026-10-31, abridged: without the connecting words the
     // geocoder names the same stops differently ("Rottenburg (Neckar)").
     let fake = Arc::new(Fake::default());
-    let with_modes = |name: &str, id: &str, modes: &[&str]| {
-        let mut s = stop("STOP", name, id);
-        s["modes"] = json!(modes);
-        s
-    };
     let biberach = &["HIGHSPEED_RAIL", "REGIONAL_RAIL"];
     fake.geocode(
         "Rottenburg am Neckar",
