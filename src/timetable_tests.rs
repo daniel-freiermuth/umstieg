@@ -160,6 +160,11 @@ fn stop(name: &str, arrival: &str, departure: &str) -> Place {
     place(name, Some(name), arrival, departure)
 }
 
+/// A queried end of a journey, without a position.
+fn end(name: &str) -> Stop {
+    Stop { id: name.to_owned(), name: name.to_owned(), position: None }
+}
+
 fn leg(mode: Mode, trip_id: Option<&str>, places: Vec<Place>, start: &str, end: &str) -> Leg {
     let mut places = places.into_iter();
     let from = places.next().expect("leg has a start");
@@ -3217,7 +3222,6 @@ async fn without_db_or_trafikverket_copies_of_a_train_from_two_feeds_become_one(
     // Without boards, copies are matched by train number: the same number at
     // about the same time at a station both list.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let re = |name, weinheim| -> Service {
         let stops = vec![("Mannheim Hbf", "", "08:00"), ("Weinheim", weinheim, weinheim), ("Frankfurt", "09:00", "")];
         (Mode::RegionalRail, name, Some("4711"), stops)
@@ -3273,7 +3277,6 @@ async fn without_db_or_trafikverket_copies_of_an_u_bahn_run_from_two_feeds_becom
     // EFA and Transitous both give an U-Bahn's run its line's number (U4:
     // "40004"), shared by every run of the line.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let u4 = |departs, arrives| -> Service {
         (
             Mode::Subway,
@@ -3311,7 +3314,6 @@ async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_o
     // EFA is asked from the origin to a hub and on from there, so its rides
     // end or start at H where Transitous' copy of the train passes through.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let re = |stops: &[(&'static str, &'static str, &'static str)]| -> Service {
         (Mode::RegionalRail, "RE 60", Some("4711"), stops.to_vec())
     };
@@ -3466,7 +3468,6 @@ async fn a_trip_id_names_a_train_number_only_in_the_feeds_part_of_a_trains_id() 
     // and tripCode, Transitous' date and time. Only a numberless train's own
     // trip in Transitous' id ("…_FLX10-1240-0744…") can name its number.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let ice_515 = (
         "efa:ddb:98X42:W:H:j26:26:20261024",
         (
@@ -3550,7 +3551,6 @@ async fn polish_trains_sharing_a_digit_of_their_numbers_stay_apart() {
     // PKP Intercity's ids carry a date and a suffix
     // ("…_pl-PKP-Intercity_2026-11-02_17004-5"): neither names another train.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let train = |mode, number, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
         (mode, number, Some(number), stops.to_vec())
     };
@@ -3646,7 +3646,6 @@ fn runs_sharing_a_number() -> [(&'static str, Leg, Leg); 3] {
 #[tokio::test]
 async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
     for (what, a, b) in runs_sharing_a_number() {
         let (from, to) = (end(&a.from.name), end(&b.to.name));
@@ -3695,7 +3694,6 @@ async fn efa_ice_273() -> Vec<Itinerary> {
 #[tokio::test]
 async fn efa_trains_named_by_category_match_by_that_number_only_without_db_or_trafikverket() {
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let transitous = |h: (&'static str, &'static str), d| {
         let stops = [("O", "", "08:00"), ("H", h.0, h.1), ("D", d, "")];
         Itinerary {
@@ -3737,7 +3735,6 @@ async fn without_db_or_trafikverket_a_copy_merges_into_the_first_train_of_its_nu
     // EFA's ride ends at H, 10 minutes off Transitous' copies there, so it
     // can't take them; the copies from two of Transitous' feeds are one train.
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let through = [("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")];
     let itineraries = [
         ("efa:vrn:x:H:j26:515:20261024", "RE 60", &[("O", "", "08:00"), ("H", "08:30", "")][..]),
@@ -3866,7 +3863,6 @@ const SERVICE_IDS: [(&str, &str); 3] = [
 #[tokio::test]
 async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
     let motis = unused_motis();
-    let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
     // Feeds number U-Bahn, tram and bus runs by their line ("40004" for every
     // U4), or not at all.
