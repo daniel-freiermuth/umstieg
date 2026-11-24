@@ -1,11 +1,13 @@
 # cargo-mutants: CI gates pull requests on the mutants in their diff
-# (`just mutants-diff`); `just mutants` runs everything. A missed mutant fails;
-# a timeout counts as caught (the mutant made a test hang).
+# (`just mutants-diff`); `just mutants` runs everything. A missed mutant fails,
+# and so does a timeout: the gate can't tell a hang from a test too slow to finish.
 test_tool = "nextest"
 exclude_globs = ["src/*_tests.rs", "src/testkit.rs"]
-# Stop at the first failing test: otherwise a mutant a unit test already
-# caught waits for a property test it sent into a loop, and times out.
-additional_cargo_test_args = ["--max-fail=1:immediate"]
+# Fail fast, end-to-end tests last: see the mutants profile in .config/nextest.toml.
+additional_cargo_test_args = ["--profile=mutants"]
+# Floor under the auto-set test timeout (20s locally on a 2s baseline), so a
+# mutant caught on a loaded CI runner isn't reported as a timeout.
+minimum_test_timeout = 60
 # Equivalent mutants: same results, at most slower. Each with why.
 exclude_re = [
   # Re-offering an equal value never settles the scan (earliest_arrival,
@@ -17,6 +19,11 @@ exclude_re = [
   'replace > with < in shortest_paths$',
   # Pushes a second entry with the same departure instead of overwriting; lookups take the last one.
   'replace match guard last\.0 == r\.departure with false in fastest_journeys',
+  # settle with `||` repeats a pass that reports changes forever (a chunk with a
+  # zero-time ride in fastest_journeys), and otherwise until a pass changes
+  # nothing, which leaves the same profiles: an equal goal is no improvement and
+  # an equal profile entry returns early. The mutant only hangs.
+  'enumerate\.rs:\d+:\d+: replace && with \|\| in settle$',
   # Recomputes fastest_with(missed_by <= 0), or the search for the fastest with
   # it: the same or a stricter search that already found nothing.
   'replace match guard limits\.missed_by > TimeDelta::zero\(\) with true in enumerate_reporting$',

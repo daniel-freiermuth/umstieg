@@ -38,15 +38,15 @@ coverage:
     cargo llvm-cov report --summary-only
     cd web && bun test --coverage
 
-# Mutation testing: a missed mutant fails; exit code 3 (only timeouts, i.e. the
-# mutant made a test hang) counts as caught. All Rust mutants (about an hour):
+# Mutation testing: only exit 0 passes; a missed mutant (2), a timeout (3) or a
+# failed baseline (4) fails. All Rust mutants (about an hour):
 mutants:
-    cargo mutants --no-shuffle || [ $? -eq 3 ]
+    cargo mutants --no-shuffle
 
 # Only the Rust mutants in lines changed since `base` (what CI gates PRs on).
 mutants-diff base="origin/main":
     mkdir -p target && git diff "{{base}}..." > target/mutants.diff
-    cargo mutants --no-shuffle --in-diff target/mutants.diff || [ $? -eq 3 ]
+    cargo mutants --no-shuffle --in-diff target/mutants.diff
 
 # All mutants of the web helper modules (the DOM scripts aren't mutated).
 web-mutants:

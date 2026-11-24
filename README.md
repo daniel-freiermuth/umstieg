@@ -370,8 +370,9 @@ Pull requests also pass a mutation gate (`.github/workflows/mutants.yml`),
 informed by the diff: a mutant — a small change like `<` → `<=` — in a line the
 PR changes that no test notices fails the PR; untouched code doesn't count.
 Rust: `just mutants-diff` (cargo-mutants; `just mutants` runs all, about an
-hour); a mutant that makes a test hang counts as caught, and equivalent mutants
-are excluded with their reason in `.cargo/mutants.toml`. Web: `just
+hour); a mutant that makes a test hang (a timeout) fails too, and equivalent
+mutants, hanging ones included, are excluded with their reason in
+`.cargo/mutants.toml`. Web: `just
 web-mutants-diff` (Stryker on the helper modules, not the DOM scripts; `just
 web-mutants` runs all of them); equivalent mutants carry a `// Stryker disable
 next-line` comment saying why. Stryker mutates in place (restoring
