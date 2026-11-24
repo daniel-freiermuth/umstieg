@@ -451,6 +451,118 @@ describe("the best connections", () => {
     ).toEqual([]);
   });
 
+  test("a change missed by a little goes back in time: what is found before it can't prune it", () => {
+    // Train 1 arrives at 119; trains 2 and 3, missing their change by 4, at 118
+    // with a negative buffer. Neither beats the other, whichever is found first.
+    const direct = ride(1, [
+      [0, 0],
+      [9, 119],
+    ]);
+    const missed = [
+      ride(2, [
+        [0, 0],
+        [1, 120],
+      ]),
+      ride(3, [
+        [1, 116],
+        [9, 118],
+      ]),
+    ];
+    const both = ["2:0>1@0 3:1>9@116", "1:0>9@0"];
+    expect([search([direct, ...missed]), search([...missed, direct])]).toEqual([both, both]);
+    // Two changes missed: train 3 boarded at 113, before train 1 arrives at 1 less a missed change.
+    const chain = [
+      ride(1, [
+        [0, 0],
+        [1, 120],
+      ]),
+      ride(2, [
+        [1, 116],
+        [2, 117],
+      ]),
+      ride(3, [
+        [2, 113],
+        [9, 130],
+      ]),
+    ];
+    expect(search(chain, [{ kind: "ride", trip: 3, from: 2, at: 113 * M, to: 9, until: 130 * M }])).toEqual([
+      "1:0>1@0 2:1>2@116 3:2>9@113",
+    ]);
+  });
+
+  test("with many changes allowed, what can't go back far enough in time is still cut off early", () => {
+    // Train 1 leaves 0 at 50 for 9 at 60. Three locals per stop from 0 to 9,
+    // the first all at 50: 3^9 ways along, each later and changing more. No
+    // train runs back towards 0, so none of them can arrive by 60.
+    const express = ride(1, [
+      [0, 50],
+      [9, 60],
+    ]);
+    const locals = [...Array(9).keys()].flatMap((s) =>
+      [0, 1, 2].map((k) =>
+        ride(10 + 3 * s + k, [
+          [s, s === 0 ? 50 : 50 + 10 * s + k],
+          [s + 1, 55 + 10 * s + k],
+        ]),
+      ),
+    );
+    const pieces = [express, ...locals];
+    const { found, complete } = bestThrough(
+      pieces,
+      pieces.map((_, i) => i),
+      10,
+      limits({ maxChanges: 15 }),
+      [],
+      200,
+    );
+    expect([found.map(show), complete]).toEqual([["1:0>9@50"], true]);
+  });
+
+  test("riding back and forth, each change missed a little, goes back in time only as far as stations allow", () => {
+    // Train 1 leaves 0 at 50 for 9 at 60. Twenty locals leave 0 at 50 too and
+    // reach 1 from 61 on; trains shuttle between 1 and 2 every minute, one
+    // minute each way. Back and forth between 1 and 2, each change missed by
+    // 4, would reach 1 by 45 for train 2 to 9 at 40, but a connection is at 1
+    // and 2 once: none of the locals gets anywhere.
+    const locals = [...Array(20).keys()].map((k) =>
+      ride(10 + k, [
+        [0, 50],
+        [1, 61 + k],
+      ]),
+    );
+    const shuttles = [...Array(200).keys()].flatMap((m) => [
+      ride(100 + 2 * m, [
+        [1, m],
+        [2, m + 1],
+      ]),
+      ride(101 + 2 * m, [
+        [2, m],
+        [1, m + 1],
+      ]),
+    ]);
+    const pieces = [
+      ride(1, [
+        [0, 50],
+        [9, 60],
+      ]),
+      ride(2, [
+        [1, 40],
+        [9, 45],
+      ]),
+      ...locals,
+      ...shuttles,
+    ];
+    const { found, complete } = bestThrough(
+      pieces,
+      pieces.map((_, i) => i),
+      10,
+      limits({ maxChanges: 15 }),
+      [],
+      200,
+    );
+    expect([found.map(show), complete]).toEqual([["1:0>9@50"], true]);
+  });
+
   test("walks: from the origin before the first train, after a train, to the destination", () => {
     const pieces = [
       walk(0, 5, 4, 26),

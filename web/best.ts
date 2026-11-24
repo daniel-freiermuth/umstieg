@@ -249,6 +249,139 @@ export function isDetour(
   return false;
 }
 
+/** The earliest arrival at the destination and earliest step from a station, both lower bounds. */
+type Reach = (station: number, at: number, behind: number, boardings: number) => [arrival: number, step: number];
+
+// Stryker disable all: pruning only, the same found without it.
+/**
+ * Lower bounds for a partial connection at `station` at `at` with `boardings`
+ * trains still to board, having ridden in from the stop `behind` (-1 after a
+ * walk): when it can reach the destination and when it can take any further
+ * step. Each train boarded may leave up to `missedBy` before the connection
+ * gets there, so both may lie before `at`. Bounds by the same moves as the
+ * search, keeping of its other rules only that a train boarded never passes
+ * the stop ridden in from (been there): so a connection never does better, and
+ * riding back and forth between stations, missing each change a little,
+ * doesn't lower the bounds once more with every train still to board.
+ */
+function reach(
+  departures: ReadonlyMap<number, readonly [Run, number, number][]>,
+  walks: ReadonlyMap<number, ReadonlyMap<number, number>>,
+  destination: number,
+  missedBy: number,
+  maxBoardings: number,
+): Reach {
+  // Per station and stop ridden in from (-1: any), its departures' bounds when
+  // boarded, as the least from each departure on.
+  type Level = Map<number, Map<number, [arrival: Float64Array, step: Float64Array]>>;
+  const position = new Map<Run, Int32Array>();
+  for (const list of departures.values())
+    list.forEach(([run, k], i) => {
+      const at = position.get(run) ?? new Int32Array(run.calls.length).fill(-1);
+      position.set(run, at);
+      at[k] = i;
+    });
+  // Per station, the stops rides come in from; per run, where it last calls at each station.
+  const behinds = new Map<number, Set<number>>();
+  const lastStop = new Map<Run, Map<number, number>>();
+  for (const run of position.keys()) {
+    const last = new Map<number, number>();
+    run.calls.forEach((c, j) => {
+      last.set(c.station, j);
+      const before = run.calls[j - 1];
+      if (before && c.arr !== null) behinds.set(c.station, (behinds.get(c.station) ?? new Set()).add(before.station));
+    });
+    lastStop.set(run, last);
+  }
+  const boarded = (level: Level | undefined, station: number, at: number, behind: number): [number, number] => {
+    const list = departures.get(station);
+    const tables = level?.get(station);
+    const bounds = tables?.get(behind) ?? tables?.get(-1);
+    if (!list || !bounds) return [Infinity, Infinity];
+    let lo = 0,
+      hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (item(list, mid)[2] < at - missedBy) lo = mid + 1;
+      else hi = mid;
+    }
+    return [bounds[0][lo] ?? Infinity, bounds[1][lo] ?? Infinity];
+  };
+  const from = (level: Level | undefined, station: number, at: number, behind: number): [number, number] => {
+    let [arrival, step] = boarded(level, station, at, behind);
+    if (station === destination) arrival = Math.min(arrival, at);
+    step = Math.min(step, at);
+    for (const [to, d] of walks.get(station) ?? []) {
+      const [a, s] = boarded(level, to, at + d, -1);
+      arrival = Math.min(arrival, a, to === destination ? at + d : Infinity);
+      step = Math.min(step, s);
+    }
+    return [arrival, step];
+  };
+  // levels[b]: with b trains still to board; the last one also for more.
+  const levels: (Level | undefined)[] = [undefined];
+  for (let b = 1; b <= maxBoardings; b++) {
+    const prev = levels[b - 1];
+    const level: Level = new Map();
+    for (const [station, list] of departures) {
+      const tables = new Map<number, [Float64Array, Float64Array]>();
+      for (const behind of [-1, ...(behinds.get(station) ?? [])])
+        tables.set(behind, [
+          new Float64Array(list.length).fill(Infinity),
+          new Float64Array(list.length).fill(Infinity),
+        ]);
+      level.set(station, tables);
+    }
+    for (const [run, at] of position) {
+      // The bounds from getting off at each stop, and at any from there on.
+      const off = run.calls.map((c, j): [number, number] => {
+        if (c.arr === null) return [Infinity, Infinity];
+        const [a, s] = from(prev, c.station, c.arr, run.calls[j - 1]?.station ?? -1);
+        return [a, Math.min(s, c.dep ?? Infinity)];
+      });
+      const rest = [...off];
+      for (let j = rest.length - 2; j >= 0; j--) {
+        const [a, s] = item(rest, j),
+          [na, ns] = item(rest, j + 1);
+        rest[j] = [Math.min(a, na), Math.min(s, ns)];
+      }
+      const last = lastStop.get(run);
+      run.calls.forEach((c, i) => {
+        const p = at[i] ?? -1;
+        if (p < 0 || c.dep === null) return;
+        for (const [behind, bounds] of level.get(c.station) ?? []) {
+          let [arrival, step] = rest[i + 1] ?? [Infinity, Infinity];
+          // Up to the stop behind, if the train calls there later.
+          if ((last?.get(behind) ?? -1) > i) {
+            arrival = step = Infinity;
+            for (let j = i + 1; item(run.calls, j).station !== behind; j++) {
+              const [a, s] = item(off, j);
+              arrival = Math.min(arrival, a);
+              step = Math.min(step, s);
+            }
+          }
+          bounds[0][p] = arrival;
+          bounds[1][p] = Math.min(step, c.dep);
+        }
+      });
+    }
+    let same = prev !== undefined;
+    for (const [station, tables] of level)
+      for (const [behind, [a, s]] of tables) {
+        for (let i = a.length - 2; i >= 0; i--) {
+          a[i] = Math.min(a[i] ?? Infinity, a[i + 1] ?? Infinity);
+          s[i] = Math.min(s[i] ?? Infinity, s[i + 1] ?? Infinity);
+        }
+        const p = prev?.get(station)?.get(behind);
+        same &&= p !== undefined && a.every((x, i) => x === p[0][i]) && s.every((x, i) => x === p[1][i]);
+      }
+    if (same) break;
+    levels.push(level);
+  }
+  return (station, at, behind, boardings) => from(levels[Math.min(boardings, levels.length - 1)], station, at, behind);
+}
+// Stryker restore all
+
 /**
  * The best connections (none beaten on departure, arrival, changes and worst
  * buffer) meeting every need, latest departure first, and whether the search
@@ -351,19 +484,31 @@ function search(
   };
   // Pruning only, so none of it changes what is found: nothing found yet beats
   // whatever the partial connection can become, and no need tied to a time
-  // already past (allowing a missed change) is left unmet.
+  // already past is left unmet. Both by the bounds of `reach`, which let every
+  // train still to board leave up to missedBy before the connection gets there.
   // Stryker disable all: pruning only, the same found without it.
-  const hopeless = (ready: number): boolean => {
+  // Every train boarded is left at a station not visited yet: no more of them than such stations.
+  const places = new Set([limits.origin, ...runs.flatMap((r) => r.calls.map((c) => c.station))]);
+  for (const [a, to] of walks) for (const b of [a, ...to.keys()]) places.add(b);
+  const bounds =
+    every && needs.length === 0
+      ? null
+      : reach(departures, walks, limits.destination, limits.missedBy, Math.min(limits.maxChanges + 1, places.size));
+  const hopeless = (station: number, ready: number): boolean => {
+    // Before the first train the times are not fixed yet: a walk from the origin starts when it leaves.
+    if (rides === 0 || !bounds) return false;
+    const last = steps[steps.length - 1];
+    const behind = last?.kind === "ride" ? item(last.calls, last.calls.length - 2).station : -1;
+    const seen = steps.reduce((n, s) => n + (s.kind === "walk" ? 1 : s.calls.length - 1), 1);
+    const [arrival, step] = bounds(station, ready, behind, Math.min(limits.maxChanges + 1 - rides, places.size - seen));
     const bound: Key = {
       dep: leave,
-      arr: ready,
+      arr: arrival,
       changes: rides - 1,
       slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER),
     };
     if (!every && found.some((f) => beats(keyOf(f), bound))) return true;
-    // Before the first train the times are not fixed yet: a walk from the origin starts when it leaves.
-    if (rides === 0) return false;
-    return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
+    return needs.some((n) => (needTime(n) ?? Infinity) < step && !meets(steps, n));
   };
   // Stryker restore all
 
@@ -378,7 +523,7 @@ function search(
       return;
     }
     // Stryker disable next-line ConditionalExpression: pruning only.
-    if (hopeless(ready)) return;
+    if (hopeless(station, ready)) return;
     // From the origin a walk to a nearby station first; later one after a train.
     if (!walked)
       for (const [to, d] of walks.get(station) ?? []) {
