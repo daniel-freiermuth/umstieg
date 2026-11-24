@@ -204,124 +204,6 @@ fn a_change_the_plan_does_not_have_is_an_error() {
     assert_eq!(err, "the connection has no change 1");
 }
 
-#[test]
-fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
-    // Tram to the stop outside the station, walk 8 min, ICE 1; missing ICE 1
-    // leaves the later ICE 3 from the station, which the tram stop doesn't serve.
-    let mut b = walked_change_world("08:30");
-    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
-    b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
-    let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
-    // ICE 2 leaves within the walk's length after ICE 1, yet the traveller is at Hbf.
-    assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05")), ("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
-}
-
-#[test]
-fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
-    // The walk goes both ways: from Hbf the tram is found again behind a walk back.
-    let mut b = walked_change_world("08:30");
-    b.walk("Hbf", "Zentrum", 8);
-    b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
-    let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| f.line.clone()).collect();
-    assert_eq!(found.len(), 1, "{found:?}");
-}
-
-#[test]
-fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
-    // ICE 1 missed at 09:00: the window from Hbf ends at 11:01, but walking
-    // from Zentrum at 10:57 still catches ICE 5 at 11:05.
-    let mut b = walked_change_world("08:30");
-    b.trip("ICE 5", &[("Hbf", "", "11:05"), ("Ziel", "12:05", "")]);
-    let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
-    assert_eq!(found, [("ICE 5 Hbf-Ziel".to_owned(), at("12:05"))]);
-}
-
-#[test]
-fn after_a_change_with_a_walk_fallbacks_walk_only_from_where_the_train_arrived() {
-    // Fallbacks are shown from Zentrum: one walking from Hbf to the bus
-    // station or back to Zentrum would be drawn and listed as a walk from Zentrum.
-    let mut b = walked_change_world("08:30");
-    b.walk("Hbf", "Zentrum", 8);
-    b.walk("Hbf", "ZOB", 3);
-    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
-    b.trip("BUS 7", &[("ZOB", "", "09:06"), ("Ziel", "10:10", "")]);
-    b.trip("STR 9", &[("Zentrum", "", "11:05"), ("Ziel", "11:40", "")]);
-    let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
-    assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05"))]);
-}
-
-#[test]
-fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() {
-    // RE 6 calls at Zentrum, then at Hbf: boarded at Zentrum, it is one fallback.
-    let mut b = walked_change_world("08:30");
-    b.trip("RE 6", &[("Zentrum", "", "09:20"), ("Hbf", "09:24", "09:25"), ("Ziel", "10:30", "")]);
-    b.trip("ICE 3", &[("Hbf", "", "09:40"), ("Ziel", "10:40", "")]);
-    b.trip("ICE 7", &[("Hbf", "", "09:50"), ("Ziel", "10:50", "")]);
-    let tt = b.build("Dorf", "Ziel");
-    let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
-    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
-    assert_eq!(
-        summaries(&tt, &fallbacks.for_change(&chain, 0).unwrap()),
-        expect(&[
-            ("RE 6 Zentrum-Ziel", "10:30"),
-            ("ICE 3 Hbf-Ziel", "10:40"),
-            ("RE 6 Zentrum-Hbf / ICE 3 Hbf-Ziel", "10:40"),
-        ])
-    );
-}
-
 /// STR 4 from Dorf arriving at Zentrum at `str4_arrives`, the 8-minute walk
 /// to Hbf, ICE 1 from there: the timetable `walked_change` rides.
 fn walked_change_world(str4_arrives: &str) -> Builder {
@@ -343,6 +225,89 @@ fn walked_change(tt: &Timetable) -> Chain {
             ride(tt, "ICE 1", "Hbf", "Ziel"),
         ],
     }
+}
+
+#[test]
+fn after_a_change_with_a_walk_fallbacks_also_leave_from_where_the_walk_led() {
+    // Tram to the stop outside the station, walk 8 min, ICE 1; missing ICE 1
+    // leaves the later ICE 3 from the station, which the tram stop doesn't serve.
+    let mut b = walked_change_world("08:30");
+    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
+    b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
+    // ICE 2 leaves within the walk's length after ICE 1, yet the traveller is at Hbf.
+    assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05")), ("ICE 3 Hbf-Ziel".to_owned(), at("10:30"))]);
+}
+
+#[test]
+fn after_a_change_with_a_walk_a_fallback_is_listed_once() {
+    // The walk goes both ways: from Hbf the tram is found again behind a walk back.
+    let mut b = walked_change_world("08:30");
+    b.walk("Hbf", "Zentrum", 8);
+    b.trip("STR 9", &[("Zentrum", "", "09:20"), ("Ziel", "10:40", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| f.line.clone()).collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn after_a_change_with_a_walk_a_fallback_walked_to_at_the_window_end_stays() {
+    // ICE 1 missed at 09:00: the window from Hbf ends at 11:01, but walking
+    // from Zentrum at 10:57 still catches ICE 5 at 11:05.
+    let mut b = walked_change_world("08:30");
+    b.trip("ICE 5", &[("Hbf", "", "11:05"), ("Ziel", "12:05", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
+    assert_eq!(found, [("ICE 5 Hbf-Ziel".to_owned(), at("12:05"))]);
+}
+
+#[test]
+fn after_a_change_with_a_walk_fallbacks_walk_only_from_where_the_train_arrived() {
+    // Fallbacks are shown from Zentrum: one walking from Hbf to the bus
+    // station or back to Zentrum would be drawn and listed as a walk from Zentrum.
+    let mut b = walked_change_world("08:30");
+    b.walk("Hbf", "Zentrum", 8);
+    b.walk("Hbf", "ZOB", 3);
+    b.trip("ICE 2", &[("Hbf", "", "09:05"), ("Ziel", "10:05", "")]);
+    b.trip("BUS 7", &[("ZOB", "", "09:06"), ("Ziel", "10:10", "")]);
+    b.trip("STR 9", &[("Zentrum", "", "11:05"), ("Ziel", "11:40", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    let found: Vec<_> = fallbacks.for_change(&chain, 0).unwrap().iter().map(|f| summary(&tt, f)).collect();
+    assert_eq!(found, [("ICE 2 Hbf-Ziel".to_owned(), at("10:05"))]);
+}
+
+#[test]
+fn after_a_change_with_a_walk_a_train_calling_at_both_stations_is_listed_once() {
+    // RE 6 calls at Zentrum, then at Hbf: boarded at Zentrum, it is one fallback.
+    let mut b = walked_change_world("08:30");
+    b.trip("RE 6", &[("Zentrum", "", "09:20"), ("Hbf", "09:24", "09:25"), ("Ziel", "10:30", "")]);
+    b.trip("ICE 3", &[("Hbf", "", "09:40"), ("Ziel", "10:40", "")]);
+    b.trip("ICE 7", &[("Hbf", "", "09:50"), ("Ziel", "10:50", "")]);
+    let tt = b.build("Dorf", "Ziel");
+    let net = Network::new(&tt).unwrap();
+    let chain = walked_change(&tt);
+    let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
+    assert_eq!(
+        summaries(&tt, &fallbacks.for_change(&chain, 0).unwrap()),
+        expect(&[
+            ("RE 6 Zentrum-Ziel", "10:30"),
+            ("ICE 3 Hbf-Ziel", "10:40"),
+            ("RE 6 Zentrum-Hbf / ICE 3 Hbf-Ziel", "10:40"),
+        ])
+    );
 }
 
 #[test]
@@ -598,14 +563,7 @@ fn a_change_with_a_walk_gets_the_fallbacks_from_both_stations() {
     b.trip("ICE 3", &[("Hbf", "", "09:30"), ("Ziel", "10:30", "")]);
     let tt = b.build("Dorf", "Ziel");
     let net = Network::new(&tt).unwrap();
-    let walk = FootpathIdx(tt.footpaths.iter().position(|f| tt.stations[f.from.0].name == "Zentrum").unwrap());
-    let chain = Chain {
-        steps: vec![
-            ride(&tt, "STR 4", "Dorf", "Zentrum"),
-            Step::Walk { footpath: walk },
-            ride(&tt, "ICE 1", "Hbf", "Ziel"),
-        ],
-    };
+    let chain = walked_change(&tt);
     let mut fallbacks = Fallbacks::new(&net, MIN_TRANSFER, UTC);
     let all = fallbacks.for_network(&crate::usable::of_chains(&tt, [&chain]), TimeDelta::minutes(5)).unwrap();
     let shown: Vec<String> = all.iter().map(|c| show(&tt, &c.steps)).collect();
