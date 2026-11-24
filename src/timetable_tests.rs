@@ -2378,7 +2378,7 @@ async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
 /// Stand-in stations around Emmaboda (positions as on the map, roughly).
 const GOTEBORG: (f64, f64) = (57.709, 11.974);
 
-/// Transitous where it is never asked: Trafikverket has the trains.
+/// Transitous where it is never asked: the test supplies the trains another way.
 fn unused_motis() -> crate::motis::Motis {
     crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap()
 }
@@ -2988,7 +2988,7 @@ async fn the_build_says_whether_trafikverket_trains_are_in_it() {
     let world = tv_world();
     let url = crate::testkit::serve_trafikverket(&world).await;
     let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let located = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
         let mut p = stop(name, arrival, departure);
         (p.lat, p.lon) = (Some(position.0), Some(position.1));
@@ -3188,7 +3188,7 @@ async fn when_trafikverket_runs_fail_the_transitous_trains_in_sweden_stay() {
     };
     let url = crate::testkit::serve(axum::Router::new().fallback(forward)).await;
     let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let located = |name: &str, position: (f64, f64), arrival: &str, departure: &str| {
         let mut p = stop(name, arrival, departure);
         (p.lat, p.lon) = (Some(position.0), Some(position.1));
@@ -3216,7 +3216,7 @@ async fn when_trafikverket_runs_fail_the_transitous_trains_in_sweden_stay() {
 async fn without_db_or_trafikverket_copies_of_a_train_from_two_feeds_become_one() {
     // Without boards, copies are matched by train number: the same number at
     // about the same time at a station both list.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let re = |name, weinheim| -> Service {
         let stops = vec![("Mannheim Hbf", "", "08:00"), ("Weinheim", weinheim, weinheim), ("Frankfurt", "09:00", "")];
@@ -3272,7 +3272,7 @@ async fn without_db_or_trafikverket_copies_of_a_train_from_two_feeds_become_one(
 async fn without_db_or_trafikverket_copies_of_an_u_bahn_run_from_two_feeds_become_one_and_its_next_run_stays_apart() {
     // EFA and Transitous both give an U-Bahn's run its line's number (U4:
     // "40004"), shared by every run of the line.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let u4 = |departs, arrives| -> Service {
         (
@@ -3310,7 +3310,7 @@ async fn without_db_or_trafikverket_copies_of_an_u_bahn_run_from_two_feeds_becom
 async fn without_db_or_trafikverket_copies_merge_without_losing_a_stop_or_half_of_one() {
     // EFA is asked from the origin to a hub and on from there, so its rides
     // end or start at H where Transitous' copy of the train passes through.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let re = |stops: &[(&'static str, &'static str, &'static str)]| -> Service {
         (Mode::RegionalRail, "RE 60", Some("4711"), stops.to_vec())
@@ -3465,7 +3465,7 @@ async fn a_trip_id_names_a_train_number_only_in_the_feeds_part_of_a_trains_id() 
     // Ids are full of digits that are no train numbers: EFA's line id, year
     // and tripCode, Transitous' date and time. Only a numberless train's own
     // trip in Transitous' id ("…_FLX10-1240-0744…") can name its number.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let ice_515 = (
         "efa:ddb:98X42:W:H:j26:26:20261024",
@@ -3549,7 +3549,7 @@ async fn polish_trains_sharing_a_digit_of_their_numbers_stay_apart() {
     // pl-Polish-Trains numbers its trains in pairs ("RL 97114/5"), and
     // PKP Intercity's ids carry a date and a suffix
     // ("…_pl-PKP-Intercity_2026-11-02_17004-5"): neither names another train.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let train = |mode, number, stops: &[(&'static str, &'static str, &'static str)]| -> Service {
         (mode, number, Some(number), stops.to_vec())
@@ -3645,7 +3645,7 @@ fn runs_sharing_a_number() -> [(&'static str, Leg, Leg); 3] {
 
 #[tokio::test]
 async fn without_db_or_trafikverket_runs_sharing_a_number_stay_apart() {
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
     for (what, a, b) in runs_sharing_a_number() {
@@ -3694,7 +3694,7 @@ async fn efa_ice_273() -> Vec<Itinerary> {
 
 #[tokio::test]
 async fn efa_trains_named_by_category_match_by_that_number_only_without_db_or_trafikverket() {
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let transitous = |h: (&'static str, &'static str), d| {
         let stops = [("O", "", "08:00"), ("H", h.0, h.1), ("D", d, "")];
@@ -3736,7 +3736,7 @@ async fn efa_trains_named_by_category_match_by_that_number_only_without_db_or_tr
 async fn without_db_or_trafikverket_a_copy_merges_into_the_first_train_of_its_number_that_takes_it() {
     // EFA's ride ends at H, 10 minutes off Transitous' copies there, so it
     // can't take them; the copies from two of Transitous' feeds are one train.
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let through = [("O", "", "08:00"), ("H", "08:40", "08:42"), ("D", "09:10", "")];
     let itineraries = [
@@ -3865,7 +3865,7 @@ const SERVICE_IDS: [(&str, &str); 3] = [
 
 #[tokio::test]
 async fn without_db_or_trafikverket_services_sharing_times_at_stations_stay_apart() {
-    let motis = crate::motis::Motis::new("http://127.0.0.1:9", "umstieg-test").unwrap();
+    let motis = unused_motis();
     let end = |name: &str| Stop { id: name.to_owned(), name: name.to_owned(), position: None };
     let mut merged = Vec::new();
     // Feeds number U-Bahn, tram and bus runs by their line ("40004" for every
