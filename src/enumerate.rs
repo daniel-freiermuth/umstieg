@@ -299,6 +299,12 @@ pub fn shortest_paths<W: Ord + Copy>(
     Ok(best)
 }
 
+/// Runs `pass` once, then again while it reports a change if `repeat`.
+fn settle(repeat: bool, mut pass: impl FnMut() -> Result<bool>) -> Result<()> {
+    while pass()? && repeat {}
+    Ok(())
+}
+
 /// Duration of the fastest real journey from each station to the destination,
 /// waits and walks included, over all departures in the timetable (profile
 /// connection scan). Any change time is allowed, as in the enumeration.
@@ -389,15 +395,13 @@ pub fn fastest_journeys(tt: &Timetable) -> Result<PerStation<Option<TimeDelta>>>
         // Rides taking no time (squeezed live times) can lead onto each other
         // in any order: repeat until settled.
         let instant = same_time.iter().any(|r| r.arrival == r.departure);
-        loop {
+        settle(instant, || {
             let mut changed = false;
             for r in same_time {
                 changed |= scan(r)?;
             }
-            if !(changed && instant) {
-                break;
-            }
-        }
+            Ok(changed)
+        })?;
     }
     // Walking to a station and leaving from there by train (one walk, as
     // between trains: never two in a row).
