@@ -1,0 +1,13 @@
+# Profile cargo-mutants runs the tests with (.cargo/mutants.toml).
+[profile.mutants]
+# Stop at the first failing test: otherwise a mutant a unit test already
+# caught waits for a property test it sent into a loop, and times out.
+fail-fast = { max-fail = 1, terminate = "immediate" }
+
+# The end-to-end tests last: a mutant that sends a search into a loop (say,
+# request times past the end of the window) would otherwise hold every test
+# slot until the timeout, before the unit test that catches it in
+# milliseconds gets a slot.
+[[profile.mutants.overrides]]
+filter = 'test(/^e2e_tests::/)'
+priority = -100
