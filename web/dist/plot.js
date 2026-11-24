@@ -447,6 +447,115 @@ function isDetour(presence2, earlier, dep, minTransfer) {
   }
   return false;
 }
+function reach(departures, walks, destination, missedBy, maxBoardings) {
+  const position = new Map;
+  for (const list of departures.values())
+    list.forEach(([run, k], i) => {
+      const at = position.get(run) ?? new Int32Array(run.calls.length).fill(-1);
+      position.set(run, at);
+      at[k] = i;
+    });
+  const behinds = new Map;
+  const lastStop = new Map;
+  for (const run of position.keys()) {
+    const last = new Map;
+    run.calls.forEach((c, j) => {
+      last.set(c.station, j);
+      const before = run.calls[j - 1];
+      if (before && c.arr !== null)
+        behinds.set(c.station, (behinds.get(c.station) ?? new Set).add(before.station));
+    });
+    lastStop.set(run, last);
+  }
+  const boarded = (level, station, at, behind) => {
+    const list = departures.get(station);
+    const tables = level?.get(station);
+    const bounds = tables?.get(behind) ?? tables?.get(-1);
+    if (!list || !bounds)
+      return [Infinity, Infinity];
+    let lo = 0, hi = list.length;
+    while (lo < hi) {
+      const mid = lo + hi >> 1;
+      if (item(list, mid)[2] < at - missedBy)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return [bounds[0][lo] ?? Infinity, bounds[1][lo] ?? Infinity];
+  };
+  const from = (level, station, at, behind) => {
+    let [arrival, step] = boarded(level, station, at, behind);
+    if (station === destination)
+      arrival = Math.min(arrival, at);
+    step = Math.min(step, at);
+    for (const [to, d] of walks.get(station) ?? []) {
+      const [a, s] = boarded(level, to, at + d, -1);
+      arrival = Math.min(arrival, a, to === destination ? at + d : Infinity);
+      step = Math.min(step, s);
+    }
+    return [arrival, step];
+  };
+  const levels = [undefined];
+  for (let b = 1;b <= maxBoardings; b++) {
+    const prev = levels[b - 1];
+    const level = new Map;
+    for (const [station, list] of departures) {
+      const tables = new Map;
+      for (const behind of [-1, ...behinds.get(station) ?? []])
+        tables.set(behind, [
+          new Float64Array(list.length).fill(Infinity),
+          new Float64Array(list.length).fill(Infinity)
+        ]);
+      level.set(station, tables);
+    }
+    for (const [run, at] of position) {
+      const off = run.calls.map((c, j) => {
+        if (c.arr === null)
+          return [Infinity, Infinity];
+        const [a, s] = from(prev, c.station, c.arr, run.calls[j - 1]?.station ?? -1);
+        return [a, Math.min(s, c.dep ?? Infinity)];
+      });
+      const rest = [...off];
+      for (let j = rest.length - 2;j >= 0; j--) {
+        const [a, s] = item(rest, j), [na, ns] = item(rest, j + 1);
+        rest[j] = [Math.min(a, na), Math.min(s, ns)];
+      }
+      const last = lastStop.get(run);
+      run.calls.forEach((c, i) => {
+        const p = at[i] ?? -1;
+        if (p < 0 || c.dep === null)
+          return;
+        for (const [behind, bounds] of level.get(c.station) ?? []) {
+          let [arrival, step] = rest[i + 1] ?? [Infinity, Infinity];
+          if ((last?.get(behind) ?? -1) > i) {
+            arrival = step = Infinity;
+            for (let j = i + 1;item(run.calls, j).station !== behind; j++) {
+              const [a, s] = item(off, j);
+              arrival = Math.min(arrival, a);
+              step = Math.min(step, s);
+            }
+          }
+          bounds[0][p] = arrival;
+          bounds[1][p] = Math.min(step, c.dep);
+        }
+      });
+    }
+    let same = prev !== undefined;
+    for (const [station, tables] of level)
+      for (const [behind, [a, s]] of tables) {
+        for (let i = a.length - 2;i >= 0; i--) {
+          a[i] = Math.min(a[i] ?? Infinity, a[i + 1] ?? Infinity);
+          s[i] = Math.min(s[i] ?? Infinity, s[i + 1] ?? Infinity);
+        }
+        const p = prev?.get(station)?.get(behind);
+        same &&= p !== undefined && a.every((x, i) => x === p[0][i]) && s.every((x, i) => x === p[1][i]);
+      }
+    if (same)
+      break;
+    levels.push(level);
+  }
+  return (station, at, behind, boardings) => from(levels[Math.min(boardings, levels.length - 1)], station, at, behind);
+}
 function bestThrough(pieces, network, stations, limits, needs, maxNodes = 400000) {
   return search(pieces, network, stations, limits, needs, maxNodes, false);
 }
@@ -515,18 +624,27 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
     else if (!found.some((f) => beats(keyOf(f), k)))
       found = [...found.filter((f) => !beats(k, keyOf(f))), c];
   };
-  const hopeless = (ready) => {
+  const places = new Set([limits.origin, ...runs.flatMap((r) => r.calls.map((c) => c.station))]);
+  for (const [a, to] of walks)
+    for (const b of [a, ...to.keys()])
+      places.add(b);
+  const bounds = every && needs.length === 0 ? null : reach(departures, walks, limits.destination, limits.missedBy, Math.min(limits.maxChanges + 1, places.size));
+  const hopeless = (station, ready) => {
+    if (rides === 0 || !bounds)
+      return false;
+    const last = steps[steps.length - 1];
+    const behind = last?.kind === "ride" ? item(last.calls, last.calls.length - 2).station : -1;
+    const seen = steps.reduce((n, s) => n + (s.kind === "walk" ? 1 : s.calls.length - 1), 1);
+    const [arrival, step] = bounds(station, ready, behind, Math.min(limits.maxChanges + 1 - rides, places.size - seen));
     const bound = {
       dep: leave,
-      arr: ready,
+      arr: arrival,
       changes: rides - 1,
       slack: Math.min(slack ?? ENOUGH_BUFFER, ENOUGH_BUFFER)
     };
     if (!every && found.some((f) => beats(keyOf(f), bound)))
       return true;
-    if (rides === 0)
-      return false;
-    return needs.some((n) => (needTime(n) ?? Infinity) < ready - limits.missedBy && !meets(steps, n));
+    return needs.some((n) => (needTime(n) ?? Infinity) < step && !meets(steps, n));
   };
   const explore = (station, ready, deadline, walked, lead) => {
     if (++nodes > maxNodes) {
@@ -537,7 +655,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
       record2(ready);
       return;
     }
-    if (hopeless(ready))
+    if (hopeless(station, ready))
       return;
     if (!walked)
       for (const [to, d] of walks.get(station) ?? []) {
@@ -1119,7 +1237,7 @@ function network(pieces, base, chains, visible) {
     entry(foot, a[2], () => []).push([b[2], b[0] - a[0]]);
     entry(footBack, b[2], () => []).push([a[2], b[0] - a[0]]);
   }
-  const reach = (src) => {
+  const reach2 = (src) => {
     const ea = new Map, ld = new Map;
     for (const [s, t] of src.at) {
       early(ea, foot, s, t);
@@ -1231,7 +1349,7 @@ function network(pieces, base, chains, visible) {
     const cut = [...ea].some(([x, there]) => (waitsAt.get(x) ?? []).some(([from, to]) => from < there && there <= to && !atLeast(ld.get(x), there))) || [...ld].some(([x, by]) => (waitsAt.get(x) ?? []).some(([from, to]) => from <= by && by < to && !atMost(ea.get(x), by)));
     return `${String(station)}:${String(ahead)}:${String(behind)}${cut ? `@${String(t)}` : ""}`;
   };
-  return { rides: all, stays, waits, walks, chainsAt, touching, reach, moment };
+  return { rides: all, stays, waits, walks, chainsAt, touching, reach: reach2, moment };
 }
 
 // picks.ts
@@ -1239,12 +1357,12 @@ function narrow(picks) {
   if (picks.length === 0)
     return null;
   const reaches = picks.map((p) => p.reach).filter((r) => r !== null);
-  const reach = reaches.length ? {
+  const reach2 = reaches.length ? {
     key: picks.map((p) => p.reach?.key ?? p.id).join("|"),
     segments: intersectReach(reaches.map((r) => r.segments))
   } : null;
   const needs = picks.flatMap((p) => p.need === null ? [] : [p.need]);
-  return { info: picks.map((p) => p.info).join(" + "), needs, reach };
+  return { info: picks.map((p) => p.info).join(" + "), needs, reach: reach2 };
 }
 function pinAfter(chains, pinned) {
   if (chains.length === 1)
@@ -1449,7 +1567,7 @@ function buildModel() {
     });
   }
   for (const [s, { y, spans }] of stays) {
-    let reach = null;
+    let reach2 = null;
     for (const [from, to] of runsOf(spans))
       targets.push({
         pts: [
@@ -1462,8 +1580,8 @@ function buildModel() {
           const waiting = here.some((w) => w.trip === undefined);
           const parts = [waiting ? "waiting" : null, ...trains.map((tr) => `standing: ${item(D.trips, tr)}`)].filter((x) => x !== null);
           const key = moment(s, t);
-          const r = reach?.key === key ? reach : { key, segments: closure({ at: [[s, t]] }) };
-          reach = r;
+          const r = reach2?.key === key ? reach2 : { key, segments: closure({ at: [[s, t]] }) };
+          reach2 = r;
           const trip = trains.length === 1 && !waiting ? trains[0] : undefined;
           return {
             id: `stay:${String(s)}:${String(from)}`,
@@ -1883,7 +2001,7 @@ function refresh() {
   const strong = [pinned, preview].filter((i) => i !== null);
   const soft = new Set, faded = new Set;
   const pv = previewOf(hoverTarget);
-  const reach = pv ? pv.reach : hoverTarget?.reach ?? candidates?.reach ?? null;
+  const reach2 = pv ? pv.reach : hoverTarget?.reach ?? candidates?.reach ?? null;
   const reachFaded = !hoverTarget?.reach && strong.length > 0;
   if (pv)
     pv.chains.forEach((i) => soft.add(i));
@@ -1901,12 +2019,12 @@ function refresh() {
       if (!soft.has(i))
         (strong.length || pv ? faded : soft).add(i);
     });
-  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach !== null);
+  svg.classList.toggle("focus", strong.length > 0 || soft.size > 0 || faded.size > 0 || reach2 !== null);
   const key = JSON.stringify([
     strong,
     [...soft].sort((a, b) => a - b),
     [...faded].sort((a, b) => a - b),
-    reach?.key,
+    reach2?.key,
     reachFaded
   ]);
   if (key !== view.overlayKey) {
@@ -1926,8 +2044,8 @@ function refresh() {
     const pieces = (chains) => new Set([...chains].flatMap((i) => item(D.chains, i).pieces).filter((pi) => !shown.has(pi)));
     const bright = pieces(soft);
     bright.forEach((pi) => shown.add(pi));
-    if (reach && reachFaded) {
-      for (const [pi, ...cut] of reach.segments)
+    if (reach2 && reachFaded) {
+      for (const [pi, ...cut] of reach2.segments)
         if (!shown.has(pi))
           draw(pi, "soft faded", ...cut);
     }
@@ -1935,14 +2053,14 @@ function refresh() {
       draw(pi, "soft faded");
     for (const pi of bright)
       draw(pi, "soft");
-    if (reach && !reachFaded) {
-      for (const [pi, ...cut] of reach.segments)
+    if (reach2 && !reachFaded) {
+      for (const [pi, ...cut] of reach2.segments)
         if (!shown.has(pi))
           draw(pi, "soft", ...cut);
     }
     for (const pi of mine)
       draw(pi, "strong");
-    const touched = reach ? touchedBy(reach.segments) : null;
+    const touched = reach2 ? touchedBy(reach2.segments) : null;
     for (const [s, els] of view.names)
       for (const e of els)
         e.classList.toggle("out", touched?.has(s) === false);
