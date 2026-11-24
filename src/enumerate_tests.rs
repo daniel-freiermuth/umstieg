@@ -278,13 +278,18 @@ fn walks_between_and_after_trains_but_never_two_in_a_row() {
     );
 }
 
-#[test]
-fn walk_into_the_destination_counts_towards_travel_time() {
+/// RE 1 straight to D in 60 min, or RE 2 to C and a 21-minute walk: one minute slower.
+fn direct_or_walk() -> Timetable {
     let mut b = Builder::new();
     b.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
     b.trip("RE 2", &[("A", "", "08:00"), ("C", "08:40", "")]);
     b.walk("C", "D", 21);
-    let tt = b.build("A", "D");
+    b.build("A", "D")
+}
+
+#[test]
+fn walk_into_the_destination_counts_towards_travel_time() {
+    let tt = direct_or_walk();
     for (extra, expected) in [(0, &["RE 1 A-D"][..]), (1, &["RE 1 A-D", "RE 2 A-C / walk C-D"])] {
         let limits = Limits { extra_time: min(extra), ..limits(&tt, "08:00", "08:00") };
         assert_eq!(listed(&tt, &limits), sorted(expected), "extra {extra}");
@@ -293,11 +298,7 @@ fn walk_into_the_destination_counts_towards_travel_time() {
 
 #[test]
 fn extreme_limits_saturate_instead_of_overflowing() {
-    let mut b = Builder::new();
-    b.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
-    b.trip("RE 2", &[("A", "", "08:00"), ("C", "08:40", "")]);
-    b.walk("C", "D", 21);
-    let tt = b.build("A", "D");
+    let tt = direct_or_walk();
     let limits = Limits {
         depart_until: DateTime::<Utc>::MAX_UTC,
         max_changes: usize::MAX,
@@ -313,11 +314,7 @@ fn extreme_limits_saturate_instead_of_overflowing() {
 
 #[test]
 fn a_walk_too_long_to_end_is_never_taken() {
-    let mut b = Builder::new();
-    b.trip("RE 1", &[("A", "", "08:00"), ("D", "09:00", "")]);
-    b.trip("RE 2", &[("A", "", "08:00"), ("C", "08:40", "")]);
-    b.walk("C", "D", 21);
-    let mut tt = b.build("A", "D");
+    let mut tt = direct_or_walk();
     for fp in &mut tt.footpaths {
         fp.duration = TimeDelta::MAX;
     }
