@@ -132,6 +132,14 @@ fn labels(trips: &[Trip]) -> Vec<&str> {
     trips.iter().map(|t| t.label.as_str()).collect()
 }
 
+/// (station, arrival, departure) of one call.
+type CallTimes = (usize, Option<Time>, Option<Time>);
+
+/// [`CallTimes`] per call of each trip.
+fn call_times(trips: &[Trip]) -> Vec<Vec<CallTimes>> {
+    trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect()
+}
+
 /// `p` moved `m` metres north.
 fn north(p: (f64, f64), m: f64) -> (f64, f64) {
     (p.0 + m / 111_194.93, p.1)
@@ -1126,8 +1134,7 @@ fn motis_stops_of_a_db_train_turned_short_go_where_it_runs() {
         ],
     );
     let trips = finish(merge(&stations, &b, raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [
@@ -1154,8 +1161,7 @@ fn a_db_train_turned_short_where_no_board_says_so_runs_up_to_its_new_start() {
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [
@@ -1185,8 +1191,7 @@ fn a_db_train_turned_short_where_no_board_says_so_ends_where_its_changed_route_d
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [
@@ -1215,7 +1220,7 @@ fn a_db_train_turned_short_without_a_boarded_new_start_isnt_ridden_past_its_new_
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
     assert_eq!(
-        trips.first().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect::<Vec<_>>()),
+        call_times(&trips).into_iter().next(),
         Some(vec![(0, None, time("08:00")), (1, time("08:10"), None)]),
         "A to B still runs"
     );
@@ -1247,8 +1252,7 @@ fn a_db_train_turned_short_without_a_boarded_new_start_runs_again_from_its_next_
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [
@@ -1272,8 +1276,7 @@ fn a_db_train_only_cut_short_ends_at_its_new_end() {
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(calls, [vec![(0, None, time("08:00")), (1, time("08:10"), None)]], "nothing runs after B");
 }
 
@@ -1293,8 +1296,7 @@ fn a_db_train_only_cut_short_without_a_board_at_its_new_end_ends_where_its_chang
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:15", "08:16"), (3, "08:20", "08:21"), (4, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(calls, [vec![(0, None, time("08:00")), (1, time("08:10"), time("08:11"))]], "nothing runs after B");
 }
 
@@ -1469,8 +1471,7 @@ fn a_db_train_only_cut_short_where_its_changed_route_ends_back_where_it_started_
     visits[2].1.arrival.as_mut().expect("arrives").cancelled = true;
     visits[2].1.arrival.as_mut().expect("arrives").planned_path = ["B", "A", "B"].map(str::to_owned).to_vec();
     let trips = finish(merge(&stations, &boards(visits), raw(Vec::new()), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [vec![(1, None, time("08:00")), (0, time("08:10"), time("08:11"))]],
@@ -1495,8 +1496,7 @@ fn a_db_train_starting_late_doesnt_run_before_its_new_start() {
         &[(0, "", "08:00"), (1, "08:10", "08:11"), (2, "08:20", "08:21"), (3, "08:30", "")],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("re", motis)]), Vec::new(), false));
-    let calls: Vec<Vec<_>> =
-        trips.iter().map(|t| t.calls.iter().map(|c| (c.station.0, c.arrival, c.departure)).collect()).collect();
+    let calls = call_times(&trips);
     assert_eq!(
         calls,
         [vec![(2, None, time("08:21")), (3, time("08:30"), None)]],
