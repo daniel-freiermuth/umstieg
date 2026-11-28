@@ -590,9 +590,12 @@ pub async fn build(
                 }
             }
             sweden_from_transitous = found.from_transitous;
-            // The list is fetched (and kept) by now, if there is one.
-            if let Ok(list) = tv.stations().await {
-                stations.name_by_trafikverket(&list, ends);
+            // The list is fetched (and kept) by now, if there is one; where
+            // `swedish` needs it, a failure is already a warning, so here
+            // it's only logged.
+            match tv.stations().await {
+                Ok(list) => stations.name_by_trafikverket(&list, ends),
+                Err(e) => tracing::warn!("Trafikverket stations for naming: {e:#}"),
             }
             found.trips
         }

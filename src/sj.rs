@@ -340,16 +340,21 @@ pub fn swedish_ends(query: &Query, itineraries: &[Itinerary]) -> Option<(Start, 
 
 /// SJ's connections between the search's Swedish ends, as rough routes; none
 /// if the route doesn't pass through Sweden. Positions come from
-/// Trafikverket's station list where there is one.
+/// Trafikverket's station list where there is one; failing to get it leaves
+/// the stops without positions and adds a warning.
 pub async fn rough(
     sj: &Sj,
     tv: Option<&trafikverket::Trafikverket>,
     query: &Query,
     itineraries: &[Itinerary],
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<Itinerary>> {
     let Some(((from, lo, hi), to)) = swedish_ends(query, itineraries) else { return Ok(Vec::new()) };
     let stations = match tv {
-        Some(tv) => tv.stations().await.unwrap_or_default(),
+        Some(tv) => tv.stations().await.unwrap_or_else(|e| {
+            warnings.push(format!("Trafikverket stations for SJ positions: {e:#}"));
+            std::sync::Arc::default()
+        }),
         None => std::sync::Arc::default(),
     };
     let mut found = Vec::new();
