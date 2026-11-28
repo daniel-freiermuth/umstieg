@@ -40,9 +40,10 @@ fn a_failing_search_exits_with_its_error() {
 
 #[test]
 fn serve_listens_until_stopped() {
-    let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+    // Port 0: the server picks a free port and logs it; a port picked here and
+    // freed for it could be taken by a parallel test in between.
     let mut server = Command::new(env!("CARGO_BIN_EXE_umstieg"))
-        .args(["serve", "--addr", &addr.to_string(), "--api", &failing_server()])
+        .args(["serve", "--addr", "127.0.0.1:0", "--api", &failing_server()])
         .env_clear()
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -50,10 +51,13 @@ fn serve_listens_until_stopped() {
     let mut started = String::new();
     BufReader::new(server.stderr.take().unwrap()).read_line(&mut started).unwrap();
     // The startup line is logged at info, which the server shows without RUST_LOG.
-    assert!(
-        started.contains(" INFO ") && started.ends_with(&format!("route planner on http://{addr}/\n")),
-        "{started}"
-    );
+    assert!(started.contains(" INFO "), "{started}");
+    let addr: std::net::SocketAddr = started
+        .split_once("route planner on http://")
+        .and_then(|(_, url)| url.strip_suffix("/\n"))
+        .and_then(|addr| addr.parse().ok())
+        .unwrap_or_else(|| panic!("{started}"));
+    assert_ne!(addr.port(), 0, "the port it listens on: {started}");
 
     let mut socket = std::net::TcpStream::connect(addr).unwrap();
     socket.write_all(b"GET / HTTP/1.1\r\nHost: umstieg\r\nConnection: close\r\n\r\n").unwrap();
