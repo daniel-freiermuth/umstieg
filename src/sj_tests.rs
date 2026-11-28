@@ -316,18 +316,37 @@ async fn sj_is_asked_once_per_day_and_route_with_its_key() {
 async fn rough_routes_from_sj_only_through_sweden() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let sj = Sj::new(&fake(log.clone(), false).await, "umstieg-test").unwrap();
-    let found = rough(&sj, None, &query("se-Trafiklab_740000002", "se-Trafiklab_740000073"), &[]).await.unwrap();
+    let mut warnings = Vec::new();
+    let sweden = query("se-Trafiklab_740000002", "se-Trafiklab_740000073");
+    let found = rough(&sj, None, &sweden, &[], &mut warnings).await.unwrap();
     // 06:00–08:00: the 06:04 and the 07:00.
     assert_eq!(found.len(), 2);
-    let german = rough(&sj, None, &query("de-DELFI_a", "de-DELFI_b"), &[]).await.unwrap();
+    let german = rough(&sj, None, &query("de-DELFI_a", "de-DELFI_b"), &[], &mut warnings).await.unwrap();
     assert!(german.is_empty() && sj.request_count() == 2, "not asked");
+    assert!(warnings.is_empty(), "{warnings:?}");
 }
 
 #[tokio::test]
 async fn a_refusal_is_an_error() {
     let sj = Sj::new(&fake(Arc::default(), true).await, "umstieg-test").unwrap();
-    let e = rough(&sj, None, &query("se-Trafiklab_740000002", "se-Trafiklab_740000073"), &[]).await.unwrap_err();
+    let sweden = query("se-Trafiklab_740000002", "se-Trafiklab_740000073");
+    let e = rough(&sj, None, &sweden, &[], &mut Vec::new()).await.unwrap_err();
     assert!(format!("{e:#}").contains("403"), "{e:#}");
+}
+
+#[tokio::test]
+async fn without_trafikverket_s_stations_the_routes_come_unplaced_with_a_warning() {
+    let sj = Sj::new(&fake(Arc::default(), false).await, "umstieg-test").unwrap();
+    let refusing = Router::new().fallback(|| async { (StatusCode::FORBIDDEN, "no") });
+    let tv = trafikverket::Trafikverket::new(&testkit::serve(refusing).await, "key", "umstieg-test").unwrap();
+    let mut warnings = Vec::new();
+    let sweden = query("se-Trafiklab_740000002", "se-Trafiklab_740000073");
+    let found = rough(&sj, Some(&tv), &sweden, &[], &mut warnings).await.unwrap();
+    assert_eq!(found.len(), 2);
+    let places = found.iter().flat_map(|i| &i.legs).flat_map(|l| [&l.from, &l.to]);
+    assert!(places.clone().all(|p| p.lat.is_none() && p.lon.is_none()));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("Trafikverket stations for SJ positions: ") && warnings[0].contains("403"));
 }
 
 #[test]

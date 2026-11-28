@@ -587,7 +587,8 @@ async fn with_sj(
         return false;
     }
     events(Event::Stage("Asking SJ for connections through Sweden"));
-    match ticking(sj::rough(sj, feeds.tv.as_ref(), query, &rough.itineraries), events, asked).await {
+    let found = sj::rough(sj, feeds.tv.as_ref(), query, &rough.itineraries, &mut rough.warnings);
+    match ticking(found, events, asked).await {
         Ok(found) => {
             let any = !found.is_empty();
             rough.itineraries.extend(found);
