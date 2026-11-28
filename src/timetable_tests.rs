@@ -1699,10 +1699,64 @@ fn a_db_train_cancelled_at_every_board_call_isnt_ridden_between_its_boards() {
         ],
     );
     let trips = finish(merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+    // Past B it starts again, at C at the earliest: a train of its own.
     assert_eq!(
         calls_numbered(&trips, 774),
-        [vec![(0, false), (1, false), (2, true), (3, true), (4, true), (5, true), (6, false), (7, false)]]
+        [vec![(0, false), (1, false), (2, true), (3, true), (4, true), (5, true)], vec![(6, false), (7, false)]]
     );
+}
+
+#[test]
+fn a_db_train_cancelled_at_every_board_call_isnt_ridden_across_its_boards() {
+    use crate::enumerate::{Limits, Network, enumerate};
+    // As above, with boards at A and B: the train runs neither into its first
+    // board nor out of its last, so nobody rides it from X, before them, to
+    // C, past them. With A's board alone, a stop cancelled both ways is only
+    // skipped (`board_trip`): the train is ridden through it.
+    let two: &[(usize, &str, &str)] = &[(2, "08:00", "08:02"), (5, "09:00", "09:02")];
+    for (boarded, expected) in [(two, &[][..]), (&two[..1], &["ICE 774 X-C"])] {
+        let mut visits =
+            path_after(run("1-774", "ICE 774", Some(LongDistance), boarded), 2, &["G", "H", "B", "C", "D"]);
+        visits[0].1.arrival.as_mut().expect("arrives").planned_path = vec!["O".to_owned(), "X".to_owned()];
+        for (_, v) in &mut visits {
+            for e in [&mut v.arrival, &mut v.departure].into_iter().flatten() {
+                e.cancelled = true;
+            }
+        }
+        let motis = motis_trip(
+            "ICE 774",
+            Some(LongDistance),
+            &[
+                (0, "", "06:00"),
+                (1, "07:00", "07:01"),
+                (2, "08:00", "08:02"),
+                (3, "08:20", "08:21"),
+                (4, "08:40", "08:41"),
+                (5, "09:00", "09:02"),
+                (6, "10:00", "10:01"),
+                (7, "11:00", ""),
+            ],
+        );
+        let mut b = Builder::new();
+        b.stations = ["O", "X", "A", "G", "H", "B", "C", "D"].iter().map(|&n| station(n, Some(n))).collect();
+        b.trips = finish(merge(&b.stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false));
+        let tt = b.build("X", "C");
+        let limits = Limits {
+            origin: tt.origin,
+            depart_from: at("07:00"),
+            depart_until: at("07:05"),
+            max_changes: 5,
+            extra_time: TimeDelta::hours(12),
+            min_transfer: TimeDelta::minutes(5),
+            missed_by: TimeDelta::zero(),
+            keep_detours: false,
+            forward_only: false,
+            max_nodes: 1_000_000,
+        };
+        let found = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
+        let shown: Vec<String> = found.chains.iter().map(|c| crate::testkit::show(&tt, &c.steps)).collect();
+        assert_eq!(shown, expected, "boards {boarded:?}");
+    }
 }
 
 #[test]

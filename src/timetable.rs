@@ -1974,14 +1974,23 @@ fn merge(
     // before the new start on its changed route (a station DB doesn't know
     // only by MOTIS' name for it), else at the departure whose changed route
     // that is; failing that, the first train keeps every stop before the new
-    // start; starting late, there is none.
+    // start; starting late, there is none. A train cancelled at each of its
+    // board calls, two at least, runs neither into the first nor out of the
+    // last: it starts again at the earliest at the next stop past the last
+    // (from a copy). One board call cancelled both ways is a stop skipped.
     let mut split = Vec::with_capacity(trips.len());
     for (i, mut trip) in trips.into_iter().enumerate() {
+        let board = trip.calls.iter().filter(|c| c.from_board);
+        let cancelled = board.clone().count() > 1 && board.clone().all(|c| c.cancelled);
+        let last_board = cancelled.then(|| board.filter_map(Call::planned).max()).flatten();
+        let restarted = last_board
+            .and_then(|last| trip.calls.iter().filter_map(Call::planned).filter(|&t| t > last).min())
+            .map(|start| (None, start, None));
         let gaps = gaps.get(i).map_or(&[][..], Vec::as_slice);
-        if !gaps.is_empty() {
+        if !gaps.is_empty() || restarted.is_some() {
             trip.calls.sort_by_key(Call::planned);
         }
-        for (end, start, ends_at) in gaps {
+        for (end, start, ends_at) in gaps.iter().chain(&restarted) {
             let start = *start;
             let end = end.or_else(|| {
                 let (departed, path) = ends_at.as_ref()?;
