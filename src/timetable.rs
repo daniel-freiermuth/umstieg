@@ -1094,11 +1094,16 @@ fn tv_station<'a>(
     near.or_else(|| swedish.clone().find(|s| db::station_key(&s.name) == db::station_key(name)))
 }
 
-/// Board hours from `lo` to `hi` widened by `BOARD_MARGIN`, at most `MAX_HOURS_PER_STATION`.
+/// Board hours from `lo` to `hi` widened by `BOARD_MARGIN`, at most `MAX_HOURS_PER_STATION`:
+/// whole hours as `hours` gives DB's, since what a board lists covers its hours.
 fn board_span(lo: DateTime<Utc>, hi: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
-    let from = checked::earlier_or_min(lo, BOARD_MARGIN);
+    let hour = TimeDelta::hours(1);
+    let start = checked::earlier_or_min(lo, BOARD_MARGIN);
+    let from = start.duration_trunc(hour).unwrap_or(start);
+    let end = checked::later_or_max(hi, BOARD_MARGIN);
+    let end = end.duration_trunc(hour).map_or(end, |t| checked::later_or_max(t, hour));
     let longest = TimeDelta::hours(i64::try_from(MAX_HOURS_PER_STATION).unwrap_or(i64::MAX));
-    let until = checked::later_or_max(hi, BOARD_MARGIN).min(checked::later_or_max(from, longest));
+    let until = end.min(checked::later_or_max(from, longest));
     (from, until)
 }
 
