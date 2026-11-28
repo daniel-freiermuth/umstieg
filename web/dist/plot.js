@@ -1416,10 +1416,8 @@ function atHeights(picks, pieces, heights) {
     const spot = p.spot;
     if (spot !== undefined && "piece" in spot) {
       const { raw } = item(pieces, spot.piece);
-      const [first, last] = [p.raw[0], p.raw[p.raw.length - 1]];
-      const from = raw.findIndex(([t, s]) => t === first?.[0] && s === first[1]);
-      const to = from < 0 ? -1 : raw.findIndex(([t, s], k) => k > from && t === last?.[0] && s === last[1]);
-      return { ...p, pts: to < 0 ? [] : stretch(raw, heights, from, to) };
+      const call = (c) => raw.findIndex(([t, s]) => t === c?.[0] && s === c[1]);
+      return { ...p, pts: stretch(raw, heights, call(p.raw[0]), call(p.raw[p.raw.length - 1])) };
     }
     return {
       ...p,
@@ -1448,7 +1446,9 @@ function stretch(raw, heights, from, to) {
   };
   for (let n = 1;n < drawn.length; n++) {
     const a = item(drawn, n - 1), b = item(drawn, n);
-    if (b.k <= from || a.k >= to)
+    if (b.k <= from)
+      continue;
+    if (a.k >= to)
       continue;
     push(a.k < from ? on(a.pt, b.pt, item(raw, from)[0]) : a.pt);
     push(b.k > to ? on(a.pt, b.pt, item(raw, to)[0]) : b.pt);

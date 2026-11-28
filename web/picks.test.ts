@@ -141,12 +141,35 @@ describe("atHeights", () => {
     ]);
   });
 
+  test("a picked stretch starting at a stop the new metric has no height for starts on the line before it", () => {
+    const ride = stretch([15, 1], [20, 2]);
+    expect(drawn(atHeights([ride], [piece([10, 0], [15, 1], [20, 2])], [10, null, 0])[0])).toEqual([
+      [15, 5],
+      [20, 0],
+    ]);
+  });
+
+  test("a picked stretch the line no longer runs along is left out", () => {
+    // A has no height in the new metric, and the line starts at B.
+    const ride = stretch([0, 0], [10, 1]);
+    expect(atHeights([ride], [piece([0, 0], [10, 1], [20, 2])], [null, 20, 0])[0]?.pts).toEqual([]);
+  });
+
+  test("a picked stretch ending at a stop with no height in a hop that takes no time ends where that hop starts", () => {
+    // A at 0 → B at 10 → X at 10 → C at 10, picked A → X, X now without a height.
+    const ride = stretch([0, 0], [10, 2]);
+    expect(drawn(atHeights([ride], [piece([0, 0], [10, 1], [10, 2], [10, 3])], [30, 20, null, 0])[0])).toEqual([
+      [0, 30],
+      [10, 20],
+    ]);
+  });
+
   test("a picked stretch keeps to its stops where the next or last hop takes no time", () => {
     // A at 0 → B at 10 → C at 10 → D at 20: B → C is a hop of its own.
     const line = piece([0, 0], [10, 1], [10, 2], [20, 3]);
     const heights = [30, 20, 10, 0];
-    const [ab, bc, cd] = atHeights(
-      [stretch([0, 0], [10, 1]), stretch([10, 1], [10, 2]), stretch([10, 2], [20, 3])],
+    const [ab, bc, cd, ac] = atHeights(
+      [stretch([0, 0], [10, 1]), stretch([10, 1], [10, 2]), stretch([10, 2], [20, 3]), stretch([0, 0], [10, 2])],
       [line],
       heights,
     );
@@ -161,6 +184,12 @@ describe("atHeights", () => {
     expect(drawn(cd)).toEqual([
       [10, 10],
       [20, 0],
+    ]);
+    // Picked where B had no height: A → C, now through B.
+    expect(drawn(ac)).toEqual([
+      [0, 30],
+      [10, 20],
+      [10, 10],
     ]);
   });
 
