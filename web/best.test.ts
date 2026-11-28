@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type Call,
   type Connection,
   type Limits,
   type Need,
+  type Presence,
   type Step,
   type Stretch,
   ENOUGH_BUFFER,
@@ -412,6 +414,31 @@ describe("the best connections", () => {
     expect(search(net)).toEqual(["4:0>6@1 2:6>2@8 1:2>9@30", "5:0>7@0 1:7>9@8"]);
   });
 
+  test("boarding a train where the connection starts is a detour only leaving the origin within the window", () => {
+    // Walk 0 to 5 (1 min), train 1 from 5 at 29 to 6, train 2 on to 9; train 2 calls at 5 at 45,
+    // leaving the origin at 44: after the window (until 30), so no detour there. Train 3 to 5 for
+    // train 2 leaves earlier, arriving as late: beaten.
+    const net = [
+      walk(0, 5, 1),
+      ride(1, [
+        [5, 29],
+        [6, 40],
+      ]),
+      ride(2, [
+        [5, 45],
+        [6, 50, 50],
+        [9, 60],
+      ]),
+      ride(3, [
+        [0, 20],
+        [5, 35],
+      ]),
+    ];
+    expect(search(net, [], { until: 30 * M })).toEqual(["walk 0>5@28 1:5>6@29 2:6>9@50"]);
+    // Within the window, train 2 from 5 is listed itself and beats both.
+    expect(search(net, [], { until: 50 * M })).toEqual(["walk 0>5@44 2:5>9@45"]);
+  });
+
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
     // Boarded at its second call, 0: what it passes counts from there.
     const ice = (cancelled: number[]): Stretch[] => [
@@ -807,36 +834,41 @@ describe("isDetour", () => {
     arrival: number | null,
     since: number,
     slackOut: number | null = null,
-  ): { station: number; arrival: number | null; since: number; slackOut: number | null } => ({
-    station,
-    arrival,
-    since,
-    slackOut,
-  });
-  const calls = (...stops: [number, number][]): ReturnType<typeof callsOf> =>
-    stops.map(([station, dep]) => ({ station, arr: dep, dep }));
+    starts: number | null = null,
+  ): Presence => ({ station, arrival, since, slackOut, starts });
+  const calls = (...stops: [number, number][]): Call[] => stops.map(([station, dep]) => ({ station, arr: dep, dep }));
   test("nothing to compare at the start", () => {
-    expect(isDetour([], calls([0, 5]), 10, 3)).toBe(false);
-    expect(isDetour([at(0, null, 5)], calls([0, 5]), 10, 3)).toBe(false);
+    expect(isDetour([], calls([0, 5]), 10, 3, Infinity)).toBe(false);
+    expect(isDetour([at(0, null, 5)], calls([0, 5]), 10, 3, Infinity)).toBe(false);
   });
   test("at the origin any later departure of the train counts", () => {
     // At 0 since 5 (the first train), now at 1 (arrived 20) boarding at 30 a train that left 0 at 8.
-    expect(isDetour([at(0, null, 5, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(true);
-    expect(isDetour([at(0, null, 9, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(false);
+    expect(isDetour([at(0, null, 5, 10), at(1, 20, 20)], calls([0, 8]), 30, 3, Infinity)).toBe(true);
+    expect(isDetour([at(0, null, 9, 10), at(1, 20, 20)], calls([0, 8]), 30, 3, Infinity)).toBe(false);
     // Leaving as the connection does: the same train, so boarding it later is a detour.
-    expect(isDetour([at(0, null, 8, 10), at(1, 20, 20)], calls([0, 8]), 30, 3)).toBe(true);
+    expect(isDetour([at(0, null, 8, 10), at(1, 20, 20)], calls([0, 8]), 30, 3, Infinity)).toBe(true);
+  });
+  test("where it starts the connection only leaving the origin within the window", () => {
+    // Boarded at 0 a walk of 2 from the origin: the train's call at 8 leaves the origin at 6.
+    const stops = [at(0, null, 5, 10, 2), at(1, 20, 20)];
+    expect([6, 5].map((until) => isDetour(stops, calls([0, 8]), 30, 3, until))).toEqual([true, false]);
   });
   test("elsewhere only if catchable comfortably, with at least the detour's worst buffer", () => {
     // At 2 from 40 (left again 9 minutes later), now at 3 (arrived 50), boarding at 52: the
     // detour's worst buffer is 2. The train left 2 at 45 (5 minutes there) or 43 (3) or 42 (2).
     const stops = [at(0, null, 0, 0), at(2, 40, 40, 9), at(3, 50, 50)];
-    expect([45, 43, 42, 39].map((d) => isDetour(stops, calls([2, d]), 52, 3))).toEqual([true, true, false, false]);
+    expect([45, 43, 42, 39].map((d) => isDetour(stops, calls([2, d]), 52, 3, Infinity))).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ]);
     // Boarding at 57 here (7 minutes), 6 at 2 before: at 2 it must have been at least 6.
     const roomy = [at(0, null, 0, 0), at(2, 40, 40, 6), at(3, 50, 50)];
-    expect([46, 45].map((d) => isDetour(roomy, calls([2, d]), 57, 3))).toEqual([true, false]);
+    expect([46, 45].map((d) => isDetour(roomy, calls([2, d]), 57, 3, Infinity))).toEqual([true, false]);
     // Every change since counts: a 1-minute one at 3 on the way from 2 to 4.
     const tight = [at(0, null, 0, 0), at(2, 40, 40, 9), at(3, 50, 50, 1), at(4, 60, 60)];
-    expect(isDetour(tight, calls([2, 45]), 70, 3)).toBe(true);
+    expect(isDetour(tight, calls([2, 45]), 70, 3, Infinity)).toBe(true);
   });
 });
 
@@ -1022,20 +1054,23 @@ function everyConnection(pieces: Stretch[], l: Limits): Step[][] {
 
 /** The server's detour rule over a whole connection, its presences built from the path. */
 function detour(path: Step[], pieces: Stretch[], l: Limits): boolean {
-  const stops = new Map<number, ReturnType<typeof callsOf>>();
+  const stops = new Map<number, Call[]>();
   for (const p of pieces)
     if (p.kind === "ride" && p.trip !== null) stops.set(p.trip, [...(stops.get(p.trip) ?? []), ...callsOf(p.raw)]);
-  const at: Parameters<typeof isDetour>[0][number][] = [];
+  const at: Presence[] = [];
   let rides = 0;
+  // The walk from the origin before the first train.
+  let lead = 0;
   for (const s of path) {
     if (s.kind === "walk") {
       const d = s.end - s.start;
-      if (rides === 0)
+      if (rides === 0) {
+        lead = d;
         at.push(
-          { station: l.origin, arrival: null, since: l.from, slackOut: null },
-          { station: s.to, arrival: l.from + d, since: l.from + d, slackOut: null },
+          { station: l.origin, arrival: null, since: l.from, slackOut: null, starts: 0 },
+          { station: s.to, arrival: l.from + d, since: l.from + d, slackOut: null, starts: d },
         );
-      else at.push({ station: s.to, arrival: s.end, since: s.end, slackOut: null });
+      } else at.push({ station: s.to, arrival: s.end, since: s.end, slackOut: null, starts: null });
       continue;
     }
     const board = s.calls[0],
@@ -1044,11 +1079,11 @@ function detour(path: Step[], pieces: Stretch[], l: Limits): boolean {
       arr = alight?.arr ?? null;
     if (!board || !alight || dep === null || arr === null) return true;
     const earlier = (stops.get(s.trip) ?? []).filter((c) => (c.dep ?? c.arr ?? Infinity) < dep);
-    if (isDetour(at, earlier, dep, l.minTransfer)) return true;
+    if (isDetour(at, earlier, dep, l.minTransfer, l.until)) return true;
     const here = at[at.length - 1];
     if (rides > 0 && here) here.slackOut = here.arrival === null ? null : dep - here.arrival;
-    else at.push({ station: board.station, arrival: null, since: dep, slackOut: null });
-    at.push({ station: alight.station, arrival: arr, since: arr, slackOut: null });
+    else at.push({ station: board.station, arrival: null, since: dep, slackOut: null, starts: lead });
+    at.push({ station: alight.station, arrival: arr, since: arr, slackOut: null, starts: null });
     rides++;
   }
   return false;

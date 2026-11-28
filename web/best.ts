@@ -210,7 +210,7 @@ interface Run {
 }
 
 /** A station the connection stopped at, for the detour rule (as the server's search keeps it). */
-interface Presence {
+export interface Presence {
   station: number;
   /** Arrival; null at the origin. */
   arrival: number | null;
@@ -218,6 +218,8 @@ interface Presence {
   since: number;
   /** Buffer of the change made here, once the next train is chosen. */
   slackOut: number | null;
+  /** Where a train boarded starts the connection (the origin, or where the walk from it leads): the walk from the origin before it. */
+  starts: number | null;
 }
 
 /**
@@ -225,13 +227,15 @@ interface Presence {
  * presence) is a detour if the train called earlier (`earlier`) at a station
  * the connection stopped at before, catchable there comfortably and with at
  * least the buffer the detour's changes leave. At the origin any later
- * departure of the train counts.
+ * departure of the train counts. Boarded where it starts the connection, it
+ * leaves the origin a walk before: only within the window (until `until`).
  */
 export function isDetour(
   presence: readonly Presence[],
   earlier: readonly Call[],
   dep: number,
   minTransfer: number,
+  until: number,
 ): boolean {
   const here = presence[presence.length - 1];
   if (!here) return false;
@@ -239,7 +243,8 @@ export function isDetour(
   for (let i = presence.length - 2; i >= 0; i--) {
     const p = item(presence, i);
     const caught = earlier.find((c) => c.station === p.station)?.dep ?? null;
-    if (caught !== null && caught >= p.since) {
+    // Boarding where it starts the connection, it leaves the origin a walk before the train: listed only within the window.
+    if (caught !== null && caught >= p.since && (p.starts === null || caught - p.starts <= until)) {
       if (p.arrival === null) return true;
       const direct = caught - p.arrival;
       if (direct >= minTransfer && direct >= Math.min(worst, p.slackOut ?? Infinity)) return true;
@@ -541,8 +546,8 @@ function search(
         steps.push({ kind: "walk", from: station, to, start, end });
         // The origin, where a train calling there too is boarded instead, and where the walk leads.
         const marks: Presence[] =
-          deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null }] : [];
-        marks.push({ station: to, arrival: end, since: end, slackOut: null });
+          deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null, starts: 0 }] : [];
+        marks.push({ station: to, arrival: end, since: end, slackOut: null, starts: deadline === null ? d : null });
         presence.push(...marks);
         // The walk's length counts against the departure only before the first train.
         explore(to, end, deadline, true, d);
@@ -567,13 +572,13 @@ function search(
       }
       const all = tripCalls.get(run.trip) ?? [];
       const before = all.slice(0, all.indexOf(item(run.calls, k)));
-      if (!limits.keepDetours && isDetour(presence, before, dep, limits.minTransfer)) continue;
+      if (!limits.keepDetours && isDetour(presence, before, dep, limits.minTransfer, limits.until)) continue;
       const saved = { leave, slack };
       const here = presence[presence.length - 1];
       const first = rides === 0;
       // The change made here, for detour checks further on; at the origin
       // (or where a walk from it led), the first train's departure.
-      if (first || !here) presence.push({ station, arrival: null, since: dep, slackOut: null });
+      if (first || !here) presence.push({ station, arrival: null, since: dep, slackOut: null, starts: lead });
       else here.slackOut = here.arrival === null ? null : dep - here.arrival;
       if (first) {
         leave = dep - lead;
@@ -600,7 +605,7 @@ function search(
         const lb = limits.lowerBound;
         if (lb && !((lb[c.station] ?? Infinity) < (lb[station] ?? -Infinity))) continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
-        presence.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
+        presence.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null, starts: null });
         explore(c.station, c.arr, limit, false, 0);
         presence.pop();
         steps.pop();

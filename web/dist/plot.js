@@ -428,7 +428,7 @@ function presence(steps) {
   }
   return out;
 }
-function isDetour(presence2, earlier, dep, minTransfer) {
+function isDetour(presence2, earlier, dep, minTransfer, until) {
   const here = presence2[presence2.length - 1];
   if (!here)
     return false;
@@ -436,7 +436,7 @@ function isDetour(presence2, earlier, dep, minTransfer) {
   for (let i = presence2.length - 2;i >= 0; i--) {
     const p = item(presence2, i);
     const caught = earlier.find((c) => c.station === p.station)?.dep ?? null;
-    if (caught !== null && caught >= p.since) {
+    if (caught !== null && caught >= p.since && (p.starts === null || caught - p.starts <= until)) {
       if (p.arrival === null)
         return true;
       const direct = caught - p.arrival;
@@ -674,8 +674,8 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         const end = start + d;
         visited[to] = 1;
         steps.push({ kind: "walk", from: station, to, start, end });
-        const marks = deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null }] : [];
-        marks.push({ station: to, arrival: end, since: end, slackOut: null });
+        const marks = deadline === null ? [{ station, arrival: null, since: limits.from, slackOut: null, starts: 0 }] : [];
+        marks.push({ station: to, arrival: end, since: end, slackOut: null, starts: deadline === null ? d : null });
         presence2.push(...marks);
         explore(to, end, deadline, true, d);
         presence2.length -= marks.length;
@@ -704,13 +704,13 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
       }
       const all = tripCalls.get(run.trip) ?? [];
       const before = all.slice(0, all.indexOf(item(run.calls, k)));
-      if (!limits.keepDetours && isDetour(presence2, before, dep, limits.minTransfer))
+      if (!limits.keepDetours && isDetour(presence2, before, dep, limits.minTransfer, limits.until))
         continue;
       const saved = { leave, slack };
       const here = presence2[presence2.length - 1];
       const first = rides === 0;
       if (first || !here)
-        presence2.push({ station, arrival: null, since: dep, slackOut: null });
+        presence2.push({ station, arrival: null, since: dep, slackOut: null, starts: lead });
       else
         here.slackOut = here.arrival === null ? null : dep - here.arrival;
       if (first) {
@@ -737,7 +737,7 @@ function search(pieces, network, stations, limits, needs, maxNodes, every) {
         if (lb && !((lb[c.station] ?? Infinity) < (lb[station] ?? -Infinity)))
           continue;
         steps.push({ kind: "ride", trip: run.trip, calls: run.calls.slice(k, j + 1), passes: [...through] });
-        presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null });
+        presence2.push({ station: c.station, arrival: c.arr, since: c.arr, slackOut: null, starts: null });
         explore(c.station, c.arr, limit, false, 0);
         presence2.pop();
         steps.pop();
