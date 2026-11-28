@@ -270,6 +270,13 @@ fn app(api: &str) -> Arc<App> {
     Arc::new(App::new(1, endpoints, || Ok(crate::keys::Keys::default()), 1).unwrap())
 }
 
+/// `app`, dropping a finished search's unfetched sketch after `kept`.
+fn app_keeping_sketch(api: &str, kept: Duration) -> Arc<App> {
+    let mut app = Arc::into_inner(app(api)).unwrap();
+    app.sketch_kept = kept;
+    Arc::new(app)
+}
+
 async fn get_page(app: &Arc<App>, uri: &str) -> (StatusCode, HashMap<String, String>, String) {
     let response = router(app.clone()).oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
     let status = response.status();
@@ -488,6 +495,21 @@ async fn a_finished_searchs_sketch_goes_with_the_first_status_saying_so() {
     assert_eq!((&status["done"], &status["sketch"]), (&json!(true), &json!([{"kind": "asked_train", "trip": 1}])));
     assert_eq!(sketch_from(&app, "/job/1/status?sketch=0").await, json!([]), "handed out: gone");
     assert_eq!(lock(&app.jobs)[&1].sketch, []);
+}
+
+#[tokio::test]
+async fn a_finished_searchs_sketch_nobody_fetches_is_dropped_after_a_while() {
+    let (api, _) = stand_in(json!([])).await;
+    let app = app_keeping_sketch(&api, Duration::from_millis(50));
+    let mut running = job(None);
+    running.sketch = vec![crate::sketch::Item::AskedTrain { trip: 0 }];
+    lock(&app.jobs).insert(1, running);
+    let args = parse(&params(&[("from", "Nowhere"), ("to", "B"), ("at", "2026-11-03T08:00")])).unwrap();
+    crate::cache::TEST_ROOT.scope(app.cache_root.clone(), super::run(app.clone(), 1, args)).await;
+    assert_eq!(lock(&app.jobs)[&1].sketch.len(), 1, "kept for the page a while");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(lock(&app.jobs)[&1].sketch, []);
+    assert!(lock(&app.jobs)[&1].result.is_some(), "the result stays");
 }
 
 #[tokio::test]
