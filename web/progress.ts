@@ -380,10 +380,11 @@ function take(it: Item, t: number): void {
 let running = false;
 let last = 0;
 function frame(t: number): void {
-  const dt = Math.min(100, t - last);
+  // A frame's timestamp can precede the clock read when it was asked for.
+  const dt = Math.max(0, Math.min(100, t - last));
   last = t;
-  // A poll's items, spread over the time until the next.
-  budget += rate * dt;
+  // A poll's items, spread over the time until the next; all at once when calm.
+  budget = calm ? queue.length - queued : budget + rate * dt;
   while (queued < queue.length && budget >= 1) {
     const it = queue[queued++];
     if (it) take(it, t);
@@ -431,7 +432,7 @@ function wake(): void {
 function enqueue(items: readonly Item[]): void {
   if (items.length === 0) return;
   queue.push(...items);
-  rate = calm ? Infinity : (queue.length - queued) / SPREAD_MS;
+  rate = (queue.length - queued) / SPREAD_MS;
   wake();
 }
 /** Called once every received item is drawn and the timetable has moved onto its heights. */
@@ -475,10 +476,21 @@ async function poll(): Promise<void> {
     return;
   }
   if ("plot" in then) {
-    // What is still being drawn first: at most a poll's spread and the timetable's move.
-    afterDrawn = () => {
+    // What is still being drawn first: at most a poll's spread and the
+    // timetable's move. A hidden page draws nothing (no frames), so it loads
+    // the plot at once, and a drawing page within that time at the latest.
+    let reloading = false;
+    const reload = (): void => {
+      if (reloading) return;
+      reloading = true;
       location.reload();
     };
+    if (document.hidden) {
+      reload();
+      return;
+    }
+    afterDrawn = reload;
+    setTimeout(reload, SPREAD_MS + MORPH_MS + 500);
     wake();
     return;
   }

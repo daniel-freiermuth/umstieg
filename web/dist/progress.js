@@ -576,9 +576,9 @@ function take(it, t) {
 var running = false;
 var last = 0;
 function frame(t) {
-  const dt = Math.min(100, t - last);
+  const dt = Math.max(0, Math.min(100, t - last));
   last = t;
-  budget += rate * dt;
+  budget = calm ? queue.length - queued : budget + rate * dt;
   while (queued < queue.length && budget >= 1) {
     const it = queue[queued++];
     if (it)
@@ -633,7 +633,7 @@ function enqueue(items) {
   if (items.length === 0)
     return;
   queue.push(...items);
-  rate = calm ? Infinity : (queue.length - queued) / SPREAD_MS;
+  rate = (queue.length - queued) / SPREAD_MS;
   wake();
 }
 var afterDrawn = null;
@@ -669,9 +669,19 @@ async function poll() {
     return;
   }
   if ("plot" in then) {
-    afterDrawn = () => {
+    let reloading = false;
+    const reload = () => {
+      if (reloading)
+        return;
+      reloading = true;
       location.reload();
     };
+    if (document.hidden) {
+      reload();
+      return;
+    }
+    afterDrawn = reload;
+    setTimeout(reload, SPREAD_MS + MORPH_MS + 500);
     wake();
     return;
   }

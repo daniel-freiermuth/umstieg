@@ -28,6 +28,9 @@ use crate::{page, plot};
 
 /// Finished searches kept for their result pages.
 const KEEP_JOBS: usize = 20;
+/// How long a finished search's sketch waits for its progress page to fetch
+/// the rest (it polls every second) before it is dropped unfetched.
+const SKETCH_KEPT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Options not in the form: text output only, or chosen on the plot page itself
 /// (metric). The services (`Endpoints`) aren't search options at all.
 const NOT_IN_FORM: [&str; 9] =
@@ -93,6 +96,8 @@ struct App {
     endpoints: Endpoints,
     /// The API keys, read when a search starts.
     keys: fn() -> Result<Keys>,
+    /// See [`SKETCH_KEPT`].
+    sketch_kept: std::time::Duration,
     /// The cache root of the test that made the app, for its searches.
     #[cfg(test)]
     cache_root: std::path::PathBuf,
@@ -108,6 +113,7 @@ impl App {
             motis: Motis::new(&endpoints.api, &endpoints.user_agent())?,
             endpoints,
             keys,
+            sketch_kept: SKETCH_KEPT,
             #[cfg(test)]
             cache_root: crate::cache::root().unwrap_or_default(),
         })
@@ -423,6 +429,14 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     if let Some(job) = lock(&app.jobs).get_mut(&id) {
         job.result = Some(result);
     }
+    // A page closed during the search never fetches the rest of its sketch.
+    let (app, kept) = (app.clone(), app.sketch_kept);
+    tokio::spawn(async move {
+        tokio::time::sleep(kept).await;
+        if let Some(job) = lock(&app.jobs).get_mut(&id) {
+            job.sketch = Vec::new();
+        }
+    });
 }
 
 /// The search's progress; `?sketch=N`: its sketch items from the `N`th on.
