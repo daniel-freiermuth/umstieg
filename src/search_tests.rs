@@ -1,7 +1,7 @@
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::Europe::Berlin;
-use chrono_tz::UTC;
 use clap::Parser;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use super::{
     Endpoints, Event, Report, SearchArgs, check_via_ids, dated_at, extra_time, machine_zone, parse_time_in,
@@ -10,9 +10,12 @@ use super::{
 use crate::enumerate::{self, Limits, Network};
 use crate::testkit::{self, Builder, at};
 use crate::timetable::{CallIdx, StationIdx, TripIdx};
+use crate::zone::berlin;
 
-fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+const UTC: &TimeZone = &TimeZone::UTC;
+
+fn utc(y: i16, mo: i8, d: i8, h: i8, mi: i8) -> Timestamp {
+    UTC.to_timestamp(date(y, mo, d).at(h, mi, 0, 0)).unwrap()
 }
 
 #[test]
@@ -28,7 +31,7 @@ fn formats_are_read_in_the_given_zone() {
         ("2026-12-01", utc(2026, 11, 30, 23, 0)), // date only: midnight
     ];
     for (at, want) in cases {
-        assert_eq!(parse_time_in(Some(at), Berlin, now).unwrap(), want, "{at}");
+        assert_eq!(parse_time_in(Some(at), &berlin(), now).unwrap(), want, "{at}");
     }
 }
 
@@ -36,25 +39,25 @@ fn formats_are_read_in_the_given_zone() {
 fn today_is_the_date_in_the_zone_not_in_utc() {
     // 23:30 UTC on the 24th is already the 25th in Berlin.
     let now = utc(2026, 10, 24, 23, 30);
-    assert_eq!(parse_time_in(Some("09:00"), Berlin, now).unwrap(), utc(2026, 10, 25, 8, 0));
+    assert_eq!(parse_time_in(Some("09:00"), &berlin(), now).unwrap(), utc(2026, 10, 25, 8, 0));
     assert_eq!(parse_time_in(Some("09:00"), UTC, now).unwrap(), utc(2026, 10, 24, 9, 0));
 }
 
 #[test]
 fn missing_or_empty_is_now() {
     let now = utc(2026, 10, 24, 10, 7);
-    assert_eq!(parse_time_in(None, Berlin, now).unwrap(), now);
-    assert_eq!(parse_time_in(Some(""), Berlin, now).unwrap(), now);
+    assert_eq!(parse_time_in(None, &berlin(), now).unwrap(), now);
+    assert_eq!(parse_time_in(Some(""), &berlin(), now).unwrap(), now);
 }
 
 #[test]
 fn dst_gap_is_an_error_and_the_repeated_hour_takes_the_first() {
     let now = utc(2026, 10, 24, 10, 0);
     // Clocks jump 02:00 → 03:00 on 2026-03-29: 02:30 never happens.
-    let err = parse_time_in(Some("2026-03-29 02:30"), Berlin, now).unwrap_err();
+    let err = parse_time_in(Some("2026-03-29 02:30"), &berlin(), now).unwrap_err();
     assert!(err.to_string().contains("does not exist in Europe/Berlin"), "{err}");
     // 02:30 happens twice on 2026-10-25; the earlier one (CEST) counts.
-    assert_eq!(parse_time_in(Some("2026-10-25 02:30"), Berlin, now).unwrap(), utc(2026, 10, 25, 0, 30));
+    assert_eq!(parse_time_in(Some("2026-10-25 02:30"), &berlin(), now).unwrap(), utc(2026, 10, 25, 0, 30));
 }
 
 #[test]
@@ -63,7 +66,7 @@ fn now_in_the_repeated_hour_is_dated_as_that_moment() {
     // 00:30 UTC is the first 02:30 on 2026-10-25 (CEST), 01:30 UTC the second (CET).
     for now in [utc(2026, 10, 25, 0, 30), utc(2026, 10, 25, 1, 30)] {
         let at = dated_at(&args, now).unwrap();
-        assert_eq!(parse_time_in(Some(&at), Berlin, now).unwrap(), now, "{at}");
+        assert_eq!(parse_time_in(Some(&at), &berlin(), now).unwrap(), now, "{at}");
     }
     assert_eq!(dated_at(&args, utc(2026, 10, 25, 0, 30)).unwrap(), "2026-10-25T02:30");
 }
@@ -72,7 +75,7 @@ fn now_in_the_repeated_hour_is_dated_as_that_moment() {
 fn invalid_input_is_an_error_naming_the_formats() {
     let now = utc(2026, 10, 24, 10, 0);
     for at in ["25:00", "8 Uhr", "2026-02-30 10:00", "24.10.2026 06:30", "2026-10-24 06:30:00", "tomorrow"] {
-        let err = parse_time_in(Some(at), Berlin, now).unwrap_err().to_string();
+        let err = parse_time_in(Some(at), &berlin(), now).unwrap_err().to_string();
         assert!(err.contains("cannot parse") && err.contains("YYYY-MM-DD HH:MM"), "{at}: {err}");
     }
 }
@@ -92,10 +95,10 @@ fn the_user_agent_names_umstieg_its_version_and_the_contact() {
 
 #[test]
 fn extra_hours_become_whole_seconds_none_if_negative() {
-    assert_eq!(extra_time(1.5).unwrap(), TimeDelta::minutes(90));
-    assert_eq!(extra_time(-2.0).unwrap(), TimeDelta::zero());
+    assert_eq!(extra_time(1.5).unwrap(), SignedDuration::from_mins(90));
+    assert_eq!(extra_time(-2.0).unwrap(), SignedDuration::ZERO);
     // The largest accepted value is just under 10¹² seconds.
-    assert_eq!(extra_time(277_777_777.0).unwrap(), TimeDelta::seconds(999_999_997_200));
+    assert_eq!(extra_time(277_777_777.0).unwrap(), SignedDuration::from_secs(999_999_997_200));
 }
 
 #[test]
@@ -120,19 +123,40 @@ fn search_args(argv: &[&str]) -> SearchArgs {
 
 #[test]
 fn the_time_zone_is_a_zone_name() {
-    assert_eq!(search_args(&["A", "C", "--time-zone", "Asia/Kolkata"]).time_zone, Some(chrono_tz::Asia::Kolkata));
-    assert_eq!(search_args(&["A", "C"]).time_zone, None, "the machine's");
-    for zone in ["CEST", "+02:00", "europe/berlin ", ""] {
+    let zone = search_args(&["A", "C", "--time-zone", "Asia/Kolkata"]).time_zone.unwrap();
+    assert_eq!(zone.iana_name(), Some("Asia/Kolkata"));
+    assert!(search_args(&["A", "C"]).time_zone.is_none(), "the machine's");
+    // Names the tzdb directory has but the plot page's Intl can't show times in.
+    let unusable = ["Etc/Unknown", "Factory", "posixrules", "localtime", "posix/Europe/Berlin", "right/Europe/Berlin"];
+    for zone in ["CEST", "+02:00", "europe/berlin ", ""].into_iter().chain(unusable) {
         let err = time_zone(zone).unwrap_err();
         assert!(err.ends_with("is not a time zone name such as Europe/Berlin"), "{zone}: {err}");
     }
 }
 
 #[test]
+fn names_the_system_tzdb_lacks_come_from_the_bundled_one() {
+    if testkit::in_child() {
+        // Browsers name zones by legacy links ("Asia/Calcutta") that Debian's
+        // and Ubuntu's default tzdata leave out; this tzdb has Berlin only.
+        assert!(TimeZone::get("Asia/Calcutta").is_err(), "the test's tzdb lacks it");
+        assert_eq!(time_zone("Asia/Calcutta").unwrap().iana_name(), Some("Asia/Calcutta"));
+        assert_eq!(time_zone("Europe/Berlin").unwrap().iana_name(), Some("Europe/Berlin"));
+        assert!(time_zone("Factory").is_err(), "still only names the plot page can show");
+        return;
+    }
+    let tzdir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tzdir.path().join("Europe")).unwrap();
+    std::fs::copy("/usr/share/zoneinfo/Europe/Berlin", tzdir.path().join("Europe/Berlin")).unwrap();
+    let test = "search::tests::names_the_system_tzdb_lacks_come_from_the_bundled_one";
+    testkit::rerun_with_env(test, &[("TZDIR", tzdir.path().as_os_str())]);
+}
+
+#[test]
 fn the_machine_zone_is_tz_else_the_system_s() {
     const EXPECT: &str = "UMSTIEG_TEST_EXPECT";
     if testkit::in_child() {
-        let got = machine_zone().map_or_else(|_| "error".to_owned(), |zone| zone.name().to_owned());
+        let got = machine_zone().map_or_else(|_| "error".to_owned(), |zone| zone.iana_name().unwrap().to_owned());
         assert_eq!(got, std::env::var(EXPECT).unwrap());
         return;
     }
@@ -145,10 +169,13 @@ fn the_machine_zone_is_tz_else_the_system_s() {
     run(Some("America/New_York"), "America/New_York");
     run(Some(":Asia/Kolkata"), "Asia/Kolkata");
     run(Some("/usr/share/zoneinfo/Europe/Berlin"), "Europe/Berlin");
+    // A POSIX rule has no name to show the plot page's times in.
     run(Some("CET-1CEST"), "error");
-    if let Ok(system) = iana_time_zone::get_timezone() {
-        run(None, &system);
-        run(Some(""), &system);
+    // An empty TZ is UTC, as for the C library.
+    run(Some(""), "UTC");
+    if let Ok(link) = std::fs::read_link("/etc/localtime") {
+        let link = link.to_string_lossy();
+        run(None, link.split_once("zoneinfo/").map_or(&*link, |(_, name)| name));
     }
 }
 
@@ -158,16 +185,16 @@ fn report(tt: crate::timetable::Timetable) -> String {
 }
 
 /// [`report`], the planner's first answer leaving and arriving then.
-fn report_with(tt: crate::timetable::Timetable, planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>) -> String {
+fn report_with(tt: crate::timetable::Timetable, planner_first: Option<(Timestamp, Timestamp)>) -> String {
     let args = search_args(&["A", "C"]);
     let limits = Limits {
         origin: tt.origin,
         depart_from: at("08:00"),
         depart_until: at("09:00"),
         max_changes: args.max_changes,
-        extra_time: TimeDelta::hours(1),
-        min_transfer: TimeDelta::zero(),
-        missed_by: TimeDelta::minutes(5),
+        extra_time: SignedDuration::from_hours(1),
+        min_transfer: SignedDuration::ZERO,
+        missed_by: SignedDuration::from_mins(5),
         keep_detours: false,
         forward_only: false,
         max_nodes: args.max_nodes,
@@ -190,10 +217,10 @@ fn report_with(tt: crate::timetable::Timetable, planner_first: Option<(DateTime<
         requests: "0 Transitous requests".to_owned(),
         with_db: false,
         with_sj: false,
-        zone: UTC,
+        zone: TimeZone::UTC,
         time: at("08:00"),
         depart_until: at("09:00"),
-        min_transfer: TimeDelta::zero(),
+        min_transfer: SignedDuration::ZERO,
         plot: None,
     };
     let (stages, _) = tokio::sync::mpsc::unbounded_channel();
@@ -300,8 +327,8 @@ async fn sj_adds_rough_routes_only_through_sweden_and_its_failures_are_warnings(
     let query = |from: &str, to: &str| crate::rough::Query {
         origin: stop(from),
         destination: stop(to),
-        time: DateTime::parse_from_rfc3339("2026-10-30T06:00:00+01:00").unwrap().to_utc(),
-        window: TimeDelta::hours(2),
+        time: "2026-10-30T06:00:00+01:00".parse().unwrap(),
+        window: SignedDuration::from_hours(2),
         vias: Vec::new(),
         auto_hubs: 0,
     };
@@ -338,14 +365,14 @@ fn the_drawn_network_holds_the_fallbacks_too() {
     let re3 = b.trip("RE 3", &[("B", "", "09:30"), ("C", "10:30", "")]);
     let tt = b.build("A", "C");
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = crate::fallback::Fallbacks::new(&net, TimeDelta::minutes(5), UTC);
+    let mut fallbacks = crate::fallback::Fallbacks::new(&net, SignedDuration::from_mins(5), UTC);
     let chain = enumerate::Chain {
         steps: vec![
             enumerate::Step::Ride { trip: re1, board: CallIdx(0), alight: CallIdx(1) },
             enumerate::Step::Ride { trip: re2, board: CallIdx(0), alight: CallIdx(1) },
         ],
     };
-    let drawn = super::drawn(&tt, &[chain], &mut fallbacks, TimeDelta::minutes(5)).unwrap();
+    let drawn = super::drawn(&tt, &[chain], &mut fallbacks, SignedDuration::from_mins(5)).unwrap();
     let trips: Vec<TripIdx> = drawn.rides.iter().map(|r| r.trip).collect();
     assert_eq!(trips, [re1, re2, re3]);
 }

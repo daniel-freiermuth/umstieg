@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::TimeDelta;
-use chrono_tz::Europe::Berlin;
-use chrono_tz::UTC;
+use jiff::SignedDuration;
+use jiff::tz::TimeZone;
 use serde_json::Value;
 
 use super::{Builder, Metric, Plot, heights, render};
@@ -10,8 +9,10 @@ use crate::enumerate::{self, Chain, Limits, Network, Step};
 use crate::fallback::Fallbacks;
 use crate::testkit::{self, at, embedded_json};
 use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx, meters};
+use crate::zone::berlin;
 
-const MIN: TimeDelta = TimeDelta::minutes(5);
+const MIN: SignedDuration = SignedDuration::from_mins(5);
+const UTC: &TimeZone = &TimeZone::UTC;
 
 fn ride(trip: TripIdx, board: usize, alight: usize) -> Step {
     Step::Ride { trip, board: CallIdx(board), alight: CallIdx(alight) }
@@ -23,7 +24,7 @@ fn station(tt: &Timetable, name: &str) -> StationIdx {
 
 /// A piece point: (unix minutes, station).
 fn pt(tt: &Timetable, hhmm: &str, name: &str) -> (i64, StationIdx) {
-    (at(hhmm).timestamp().div_euclid(60), station(tt, name))
+    (at(hhmm).as_second().div_euclid(60), station(tt, name))
 }
 
 fn builder(tt: &Timetable) -> Builder<'_> {
@@ -360,9 +361,9 @@ fn bounds() -> super::Bounds {
     super::Bounds {
         depart_from: at("07:00"),
         depart_until: at("09:00"),
-        max_duration: TimeDelta::hours(5),
+        max_duration: SignedDuration::from_hours(5),
         max_changes: 3,
-        missed_by: TimeDelta::minutes(5),
+        missed_by: SignedDuration::from_mins(5),
         keep_detours: false,
         lower_bound: None,
     }
@@ -387,9 +388,9 @@ fn chains(net: &Network<'_>) -> Vec<enumerate::Group> {
         depart_from: at("07:00"),
         depart_until: at("09:00"),
         max_changes: 3,
-        extra_time: TimeDelta::hours(5),
+        extra_time: SignedDuration::from_hours(5),
         min_transfer: MIN,
-        missed_by: TimeDelta::zero(),
+        missed_by: SignedDuration::ZERO,
         keep_detours: false,
         forward_only: false,
         max_nodes: 1_000_000,
@@ -401,7 +402,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
     let net = Network::new(tt)?;
     let groups = chains(&net);
     // Shown in Berlin, whatever the stations' zones (here none).
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: bounds(),
         usable: &crate::usable::Usable::default(),
@@ -410,7 +411,7 @@ fn render_data(tt: &Timetable, metric: Metric) -> anyhow::Result<Value> {
         groups: &groups,
         metric,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: Some("/?from=A&to=C".to_owned()),
         details_url: None,
         progress: &|_, _| {},
@@ -427,14 +428,14 @@ fn with_forward_only_the_page_gets_the_least_remaining_times_the_enumeration_kep
     let tt = located();
     let net = Network::new(&tt).unwrap();
     // A, B, C, X: here ICE 1 then RE 2, RE 2, there, Bus 3 on.
-    let mins = |m: [i64; 4]| m.map(|m| Some(TimeDelta::minutes(m))).to_vec();
+    let mins = |m: [i64; 4]| m.map(|m| Some(SignedDuration::from_mins(m))).to_vec();
     assert_eq!(net.lower_bound, mins([110, 50, 0, 89]).into_iter().collect());
     // Completing stops after the enumeration can lower the timetable's bounds;
     // the page keeps to those the enumeration used, as given, not to its own.
     let mut used = mins([120, 50, 0, 89]);
     used[3] = None;
     let groups = chains(&net);
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: super::Bounds { lower_bound: Some(used.into_iter().collect()), ..bounds() },
         usable: &crate::usable::Usable::default(),
@@ -443,7 +444,7 @@ fn with_forward_only_the_page_gets_the_least_remaining_times_the_enumeration_kep
         groups: &groups,
         metric: Metric::Axis,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: None,
         details_url: None,
         progress: &|_, _| {},
@@ -459,7 +460,7 @@ fn only_a_served_plot_links_its_logo_to_a_new_search() {
     let groups = chains(&net);
     for back in [None, Some("/?from=A&to=C".to_owned())] {
         let served = back.is_some();
-        let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+        let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
         let plot = Plot {
             bounds: bounds(),
             usable: &crate::usable::Usable::default(),
@@ -468,7 +469,7 @@ fn only_a_served_plot_links_its_logo_to_a_new_search() {
             groups: &groups,
             metric: Metric::Axis,
             min_transfer: MIN,
-            zone: Berlin,
+            zone: berlin(),
             back,
             details_url: None,
             progress: &|_, _| {},
@@ -492,7 +493,7 @@ fn rendered_data_is_consistent() {
     assert_eq!(data["title"], "A → C");
     assert_eq!(data["tz"], "Europe/Berlin", "the zone of the plot's time axis");
     // The page's own search keeps to the search's limits: unix minutes, minutes.
-    let minutes = |hhmm: &str| at(hhmm).timestamp().div_euclid(60);
+    let minutes = |hhmm: &str| at(hhmm).as_second().div_euclid(60);
     assert_eq!(
         data["limits"],
         serde_json::json!({
@@ -562,7 +563,7 @@ fn rendered_data_is_consistent() {
     assert_eq!(fallback["at"], "B");
     let first = &pieces[indexes(&fallback["pieces"])[0]];
     assert_eq!(first["kind"], "wait");
-    assert_eq!(first["pts"][0], serde_json::json!([at("09:10").timestamp().div_euclid(60), station(&tt, "B")]));
+    assert_eq!(first["pts"][0], serde_json::json!([at("09:10").as_second().div_euclid(60), station(&tt, "B")]));
     assert_eq!(first["warn"], false);
 }
 
@@ -576,7 +577,7 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
     let net = Network::new(&tt).unwrap();
     // Listed although missed by four minutes (`--missed-by`).
     let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1)] }]).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: bounds(),
         usable: &crate::usable::Usable::default(),
@@ -585,7 +586,7 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
         groups: &groups,
         metric: Metric::RemainingTime,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: None,
         details_url: None,
         progress: &|_, _| {},
@@ -599,7 +600,7 @@ fn a_missed_changes_fallback_waits_from_the_arrival() {
         (Some("wait"), Some("6m at B after the missed train"))
     );
     // From when the traveller is at B, not from RE 2's departure at 09:00.
-    let from = serde_json::json!([at("09:04").timestamp().div_euclid(60), station(&tt, "B")]);
+    let from = serde_json::json!([at("09:04").as_second().div_euclid(60), station(&tt, "B")]);
     assert_eq!(first["pts"][0], from);
 }
 
@@ -615,7 +616,7 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
     let net = Network::new(&tt).unwrap();
     let walk = Step::Walk { footpath: FootpathIdx(0) };
     let groups = enumerate::group(&tt, vec![Chain { steps: vec![ride(tram, 0, 1), walk, ride(ice, 0, 1)] }]).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: bounds(),
         usable: &crate::usable::Usable::default(),
@@ -624,7 +625,7 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
         groups: &groups,
         metric: Metric::RemainingTime,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: None,
         details_url: None,
         progress: &|_, _| {},
@@ -639,7 +640,7 @@ fn a_missed_walked_changes_fallbacks_wait_from_when_the_traveller_is_where_they_
             (first["info"].as_str().unwrap().to_owned(), first["pts"][0].clone())
         })
         .collect();
-    let from = |time: &str, name: &str| serde_json::json!([at(time).timestamp().div_euclid(60), station(&tt, name)]);
+    let from = |time: &str, name: &str| serde_json::json!([at(time).as_second().div_euclid(60), station(&tt, name)]);
     // At H from the arrival plus the walk; at B from the arrival.
     assert_eq!(
         waits,
@@ -660,7 +661,7 @@ fn groups_name_their_first_and_last_trip_which_a_label_shared_by_runs_of_a_line_
     let net = Network::new(&tt).unwrap();
     let chains = [early, late].map(|tram| Chain { steps: vec![ride(tram, 0, 1), ride(ice, 0, 1)] });
     let groups = enumerate::group(&tt, chains.into()).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: bounds(),
         usable: &crate::usable::Usable::default(),
@@ -669,7 +670,7 @@ fn groups_name_their_first_and_last_trip_which_a_label_shared_by_runs_of_a_line_
         groups: &groups,
         metric: Metric::RemainingTime,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: None,
         details_url: None,
         progress: &|_, _| {},
@@ -705,8 +706,8 @@ fn time_heights_are_rounded_to_hundredths() {
     let mut tt = b.build("A", "C");
     // 10 min 20 s.
     let arrival = tt.trips[0].calls[1].arrival.as_mut().unwrap();
-    arrival.actual += TimeDelta::seconds(20);
-    arrival.planned += TimeDelta::seconds(20);
+    arrival.actual += SignedDuration::from_secs(20);
+    arrival.planned += SignedDuration::from_secs(20);
     let data = render_data(&tt, Metric::FastestReal).unwrap();
     assert_eq!(data["metrics"][1]["heights"][tt.origin.0], 10.33);
     // Remaining ride time counts whole minutes, as the plot draws them.
@@ -743,7 +744,7 @@ fn drawing_reports_the_connections_done() {
     let tt = located();
     let net = Network::new(&tt).unwrap();
     let groups = chains(&net);
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let reports = std::sync::Mutex::new(Vec::new());
     let progress = |done, total| reports.lock().unwrap().push((done, total));
     let plot = Plot {
@@ -756,7 +757,7 @@ fn drawing_reports_the_connections_done() {
         min_transfer: MIN,
         back: None,
         details_url: Some("/job/1/chains".to_owned()),
-        zone: Berlin,
+        zone: berlin(),
         progress: &progress,
     };
     let rendered = render(&net, &mut fallbacks, &plot).unwrap();
@@ -783,7 +784,7 @@ fn the_network_is_drawn_from_what_the_connections_use() {
         ],
     );
     let net = Network::new(&tt).unwrap();
-    let mut fallbacks = Fallbacks::new(&net, MIN, Berlin);
+    let mut fallbacks = Fallbacks::new(&net, MIN, &berlin());
     let plot = Plot {
         bounds: bounds(),
         usable: &used,
@@ -792,7 +793,7 @@ fn the_network_is_drawn_from_what_the_connections_use() {
         groups: &[],
         metric: Metric::RemainingTime,
         min_transfer: MIN,
-        zone: Berlin,
+        zone: berlin(),
         back: None,
         details_url: None,
         progress: &|_, _| {},

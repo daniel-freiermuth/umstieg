@@ -7,7 +7,7 @@
 //! stops in between: for the display; the search has run already.
 
 use anyhow::{Context, Result};
-use chrono::TimeDelta;
+use jiff::SignedDuration;
 
 use crate::enumerate::{Chain, Step};
 use crate::motis::{Leg, Motis};
@@ -16,11 +16,11 @@ use crate::timetable::{CallIdx, Timetable, TripIdx};
 /// Trains looked up per search: two requests each, Transitous is volunteer-run.
 pub const MAX_TRAINS: usize = 20;
 /// Known calls this far apart hide stops worth asking for.
-const GAP: TimeDelta = TimeDelta::minutes(20);
+const GAP: SignedDuration = SignedDuration::from_mins(20);
 /// Departures asked for at a station: enough for a busy hub's few minutes.
 const DEPARTURES: usize = 30;
 /// Same train in both feeds: departures this close at the same station.
-const SAME_TIME: TimeDelta = TimeDelta::minutes(2);
+const SAME_TIME: SignedDuration = SignedDuration::from_mins(2);
 
 /// Trains ridden in `chains` known only from DB boards, with known calls at
 /// least `GAP` apart: the widest gaps first, at most `MAX_TRAINS`.
@@ -35,7 +35,7 @@ pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<TripIdx> {
         .collect();
     trips.sort_unstable();
     trips.dedup();
-    let mut gapped: Vec<(TimeDelta, TripIdx)> = trips
+    let mut gapped: Vec<(SignedDuration, TripIdx)> = trips
         .into_iter()
         .filter_map(|i| {
             let trip = tt.trip(i).ok()?;
@@ -44,7 +44,7 @@ pub fn wanted(tt: &Timetable, chains: &[Chain]) -> Vec<TripIdx> {
             }
             let calls = &trip.calls;
             let times: Vec<_> = calls.iter().filter_map(|c| c.arrival.or(c.departure).map(|t| t.planned)).collect();
-            let gap = times.windows(2).filter_map(|w| Some(w.get(1)?.signed_duration_since(*w.first()?))).max()?;
+            let gap = times.windows(2).filter_map(|w| Some(w.get(1)?.duration_since(*w.first()?))).max()?;
             (gap >= GAP).then_some((gap, i))
         })
         .collect();
@@ -67,11 +67,11 @@ pub async fn lookup(motis: &Motis, tt: &Timetable, trip: TripIdx) -> Result<Opti
         tracing::debug!(train = t.label, "no departure at a station Transitous has an id for");
         return Ok(None);
     };
-    let from = departure.checked_sub_signed(SAME_TIME).context("departure out of range")?;
+    let from = departure.checked_sub(SAME_TIME).ok().context("departure out of range")?;
     let found = motis.departures(&stop, from, DEPARTURES).await?.into_iter().find(|st| {
         let at = st.place.scheduled_departure.or(st.place.departure);
         let names = [st.trip_short_name.as_deref(), st.display_name.as_deref(), Some(st.trip_id.as_str())];
-        at.is_some_and(|at| at.signed_duration_since(departure).abs() <= SAME_TIME)
+        at.is_some_and(|at| at.duration_since(departure).abs() <= SAME_TIME)
             && t.numbers.iter().any(|&n| names.into_iter().flatten().any(|name| mentions(name, n)))
     });
     let Some(st) = found else {

@@ -20,6 +20,7 @@ mod text;
 mod timetable;
 mod trafikverket;
 mod usable;
+mod zone;
 
 #[cfg(test)]
 mod e2e_tests;

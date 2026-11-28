@@ -154,7 +154,7 @@ fn legs_and_places_from_a_real_answer() {
     let ice = legs.iter().find(|l| l.label() == "ICE 772").unwrap();
     assert_eq!((ice.class(), ice.train_number()), (Some(ProductClass::LongDistance), Some(772)));
     assert_eq!(ice.duration(), ice.end_time - ice.start_time);
-    assert!(ice.duration() > TimeDelta::hours(4));
+    assert!(ice.duration() > SignedDuration::from_hours(4));
     // Station ids: the parent station where the feed has one, else the stop.
     assert_eq!(ice.from.station_id(), Some("de-DELFI_de:08222:2417"));
     assert_ne!(ice.from.stop_id.as_deref(), ice.from.station_id());
@@ -591,7 +591,7 @@ async fn plans_are_asked_once_then_cached_on_disk() {
     let fake = Arc::new(Fake::default());
     fake.on("/api/v5/plan", 200, None, PLAN);
     let motis = client(&fake).await;
-    let window = TimeDelta::hours(1);
+    let window = SignedDuration::from_hours(1);
     let first = motis.plan("from", "to", at("06:00"), window).await.unwrap();
     assert_eq!(first.len(), 6);
     let (_, query) = fake.log.lock().unwrap()[0].clone();
@@ -605,7 +605,7 @@ async fn plans_are_asked_once_then_cached_on_disk() {
     assert_eq!(motis.request_count(), 1);
 
     motis.plan("from", "to", at("07:00"), window).await.unwrap();
-    motis.plan("from", "to", at("06:00"), TimeDelta::hours(2)).await.unwrap();
+    motis.plan("from", "to", at("06:00"), SignedDuration::from_hours(2)).await.unwrap();
     assert_eq!(fake.requests(), 3, "other times and windows are other queries");
 
     // A new client (another run) against the same server reads the disk cache.
@@ -653,11 +653,11 @@ async fn server_errors_are_not_retried() {
     let fake = Arc::new(Fake::default());
     fake.on("/api/v5/plan", 500, None, "boom").on("/api/v5/plan", 200, None, PLAN);
     let motis = client(&fake).await;
-    let error = motis.plan("a", "b", at("06:00"), TimeDelta::hours(1)).await.unwrap_err().to_string();
+    let error = motis.plan("a", "b", at("06:00"), SignedDuration::from_hours(1)).await.unwrap_err().to_string();
     assert!(error.contains("500"), "{error}");
     assert_eq!(fake.requests(), 1);
     // The failure isn't cached: asking again reaches the (now working) server.
-    assert_eq!(motis.plan("a", "b", at("06:00"), TimeDelta::hours(1)).await.unwrap().len(), 6);
+    assert_eq!(motis.plan("a", "b", at("06:00"), SignedDuration::from_hours(1)).await.unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -697,12 +697,12 @@ async fn plans_draw_their_trains_also_from_the_cache() {
     fake.on("/api/v5/plan", 200, None, PLAN);
     let (sketch, drawn) = testkit::recording();
     let motis = client(&fake).await.sketching(sketch);
-    let answer = motis.plan("from", "to", at("06:00"), TimeDelta::hours(1)).await.unwrap();
+    let answer = motis.plan("from", "to", at("06:00"), SignedDuration::from_hours(1)).await.unwrap();
     let trains = sketch::itineraries(&answer);
     let transit = answer.iter().flat_map(|i| &i.legs).filter(|l| l.is_transit()).count();
     assert_eq!((trains.len(), transit > 0), (transit, true), "one train per transit leg");
     assert_eq!(testkit::taken(&drawn), trains);
-    motis.plan("from", "to", at("06:00"), TimeDelta::hours(1)).await.unwrap();
+    motis.plan("from", "to", at("06:00"), SignedDuration::from_hours(1)).await.unwrap();
     assert_eq!(fake.requests(), 1);
     assert_eq!(testkit::taken(&drawn), trains, "a cached answer is drawn again");
 }
@@ -711,8 +711,8 @@ async fn plans_draw_their_trains_also_from_the_cache() {
 fn stop_time(trip: &str, name: &str, at_: (f64, f64), departure: &str, next: &[(&str, (f64, f64), &str)]) -> Value {
     let place = |name: &str, p: (f64, f64), arrival: Option<&str>, departure: Option<&str>| {
         json!({ "name": name, "lat": p.0, "lon": p.1,
-                "scheduledArrival": arrival.map(|t| at(t).to_rfc3339()),
-                "scheduledDeparture": departure.map(|t| at(t).to_rfc3339()) })
+                "scheduledArrival": arrival.map(|t| at(t).to_string()),
+                "scheduledDeparture": departure.map(|t| at(t).to_string()) })
     };
     json!({
         "place": place(name, at_, None, Some(departure)),
@@ -734,7 +734,7 @@ async fn onward_draws_the_station_asked_and_the_trains_leaving() {
     let motis = client(&fake).await.sketching(sketch);
     let legs = motis.onward(Some("stop"), None, at("07:30"), at("10:30")).await.unwrap();
     let place = Place { name: "Alvesta".to_owned(), at: (56.9, 14.55) };
-    let asked = Item::Asked { place, span: Some((at("07:30").timestamp(), at("10:30").timestamp())), seen: Vec::new() };
+    let asked = Item::Asked { place, span: Some((at("07:30").as_second(), at("10:30").as_second())), seen: Vec::new() };
     let mut expected = vec![asked];
     expected.extend(legs.iter().filter_map(sketch::train));
     assert_eq!(expected.len(), 3);
@@ -745,9 +745,9 @@ async fn onward_draws_the_station_asked_and_the_trains_leaving() {
 async fn a_trip_asked_for_draws_its_train() {
     let leg = json!({
         "mode": "REGIONAL_RAIL", "tripId": "t9",
-        "startTime": at("08:00").to_rfc3339(), "endTime": at("09:00").to_rfc3339(),
-        "from": { "name": "A", "lat": 50.0, "lon": 8.0, "departure": at("08:00").to_rfc3339() },
-        "to": { "name": "B", "lat": 51.0, "lon": 9.0, "arrival": at("09:00").to_rfc3339() },
+        "startTime": at("08:00").to_string(), "endTime": at("09:00").to_string(),
+        "from": { "name": "A", "lat": 50.0, "lon": 8.0, "departure": at("08:00").to_string() },
+        "to": { "name": "B", "lat": 51.0, "lon": 9.0, "arrival": at("09:00").to_string() },
     });
     let fake = Arc::new(Fake::default());
     fake.on("/api/v5/trip", 200, None, &json!({ "legs": [leg] }).to_string());
@@ -755,8 +755,8 @@ async fn a_trip_asked_for_draws_its_train() {
     let motis = client(&fake).await.sketching(sketch);
     motis.trip("t9").await.unwrap();
     let stops = vec![
-        sketch::Stop(50.0, 8.0, None, Some(at("08:00").timestamp())),
-        sketch::Stop(51.0, 9.0, Some(at("09:00").timestamp()), None),
+        sketch::Stop(50.0, 8.0, None, Some(at("08:00").as_second())),
+        sketch::Stop(51.0, 9.0, Some(at("09:00").as_second()), None),
     ];
     assert_eq!(testkit::taken(&drawn), [Item::Train { id: "t9".to_owned(), stops }]);
 }

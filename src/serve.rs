@@ -14,8 +14,8 @@ use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
-use chrono::Utc;
 use clap::{ArgAction, CommandFactory, Parser};
+use jiff::Timestamp;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
@@ -307,7 +307,7 @@ async fn search(
         Ok(args) => args,
         Err(error) => return form_page(&params, Some(&error)).into_response(),
     };
-    if let Some(link) = search::dated_at(&args, Utc::now()).and_then(|at| dated_link(&params, &at)) {
+    if let Some(link) = search::dated_at(&args, Timestamp::now()).and_then(|at| dated_link(&params, &at)) {
         return Redirect::to(&link).into_response();
     }
     let key = search_key(&params);

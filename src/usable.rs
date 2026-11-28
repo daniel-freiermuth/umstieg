@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::enumerate::{Chain, Step};
 use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx};
@@ -26,15 +26,15 @@ pub struct RideRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wait {
     pub station: StationIdx,
-    pub from: DateTime<Utc>,
-    pub to: DateTime<Utc>,
+    pub from: Timestamp,
+    pub to: Timestamp,
 }
 
 /// A walk taken on some connection, starting then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Walk {
     pub footpath: FootpathIdx,
-    pub start: DateTime<Utc>,
+    pub start: Timestamp,
 }
 
 /// Everything on some connection.
@@ -45,8 +45,8 @@ pub struct Usable {
     pub walks: Vec<Walk>,
 }
 
-fn time(s: Secs) -> DateTime<Utc> {
-    DateTime::from_timestamp(s, 0).unwrap_or(DateTime::<Utc>::MAX_UTC)
+fn time(s: Secs) -> Timestamp {
+    Timestamp::from_second(s).unwrap_or(Timestamp::MAX)
 }
 
 /// What `chains` use: their rides as runs of a train (split where none of
@@ -65,14 +65,14 @@ pub fn of_chains<'c>(tt: &Timetable, chains: impl IntoIterator<Item = &'c Chain>
             match *step {
                 Step::Walk { footpath } => {
                     let Ok(fp) = tt.footpath(footpath) else { continue };
-                    let at = here.map_or_else(|| start.timestamp(), |(_, t)| t);
+                    let at = here.map_or_else(|| start.as_second(), |(_, t)| t);
                     walks.push((footpath, at));
-                    here = here.map(|(_, t)| (fp.to, t.saturating_add(fp.duration.num_seconds())));
+                    here = here.map(|(_, t)| (fp.to, t.saturating_add(fp.duration.as_secs())));
                 }
                 Step::Ride { trip, board, alight } => {
                     let time = |k: CallIdx, departs: bool| {
                         let call = tt.call(trip, k).ok()?;
-                        if departs { call.departure_time() } else { call.arrival_time() }.map(|t| t.timestamp())
+                        if departs { call.departure_time() } else { call.arrival_time() }.map(Timestamp::as_second)
                     };
                     if let (Some((s, ready)), Some(dep)) = (here, time(board, true)) {
                         waits.push((s, ready.min(dep), ready.max(dep)));
@@ -100,7 +100,7 @@ pub fn of_chains<'c>(tt: &Timetable, chains: impl IntoIterator<Item = &'c Chain>
     waits.sort_unstable();
     for (station, a, b) in waits {
         match out.waits.last_mut() {
-            Some(w) if w.station == station && a <= w.to.timestamp() => w.to = w.to.max(time(b)),
+            Some(w) if w.station == station && a <= w.to.as_second() => w.to = w.to.max(time(b)),
             _ => out.waits.push(Wait { station, from: time(a), to: time(b) }),
         }
     }

@@ -26,7 +26,7 @@ exclude_re = [
   'enumerate\.rs:\d+:\d+: replace && with \|\| in settle$',
   # Recomputes fastest_with(missed_by <= 0), or the search for the fastest with
   # it: the same or a stricter search that already found nothing.
-  'replace match guard limits\.missed_by > TimeDelta::zero\(\) with true in enumerate_reporting$',
+  'replace match guard limits\.missed_by > SignedDuration::ZERO with true in enumerate_reporting$',
   'replace > with >= in enumerate_reporting$',
   # Lists again with the limit just used: the same list.
   'replace match guard f == fastest_duration with false in enumerate_reporting$',
@@ -40,9 +40,6 @@ exclude_re = [
   # by the deadline and, with --forward-only, leaves the train where less
   # remains than where it boards, so than at the earlier stop): same results, slower.
   "replace \\|\\| with && in Search<'_>::detour$",
-  # Only a nonzero b overflows, so b == 0 never decides the saturation side.
-  'replace < with <= in sum',
-  'replace > with >= in difference',
   # A cache file exactly ttl old to the nanosecond can't be produced.
   'replace < with <= in DiskCache::get_or_fetch',
   # Bearings from coordinates are never exactly SAME_DIRECTION_DEGREES apart.

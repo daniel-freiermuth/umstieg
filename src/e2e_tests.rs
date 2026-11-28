@@ -29,9 +29,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::Europe::Berlin;
 use clap::Parser;
+use jiff::civil::{Date, Time, date};
+use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
 
 use crate::db::Credentials;
@@ -252,28 +252,29 @@ fn motis_itineraries(from: &str, to: &str, regional: bool) -> Vec<Vec<&'static T
     answers.into_iter().find(|(f, t, _)| f.id == from && t.id == to).map(|(_, _, i)| i).unwrap_or_default()
 }
 
-fn day() -> NaiveDate {
-    NaiveDate::from_ymd_opt(2026, 11, 3).unwrap()
+fn day() -> Date {
+    date(2026, 11, 3)
 }
 
 /// 2026-11-03 at "HH:MM" Berlin time.
-fn berlin(hhmm: &str) -> DateTime<Utc> {
-    let time = NaiveTime::parse_from_str(hhmm, "%H:%M").unwrap();
-    Berlin.from_local_datetime(&day().and_time(time)).single().unwrap().with_timezone(&Utc)
+fn berlin(hhmm: &str) -> Timestamp {
+    let time = Time::strptime("%H:%M", hhmm).unwrap();
+    let local = crate::zone::berlin().to_ambiguous_timestamp(day().to_datetime(time));
+    local.unambiguous().unwrap()
 }
 
 /// (planned, actual) of "HH:MM" or "HH:MM+N"; `None` for "".
-fn planned_actual(s: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+fn planned_actual(s: &str) -> Option<(Timestamp, Timestamp)> {
     if s.is_empty() {
         return None;
     }
     let (planned, delay) = s.split_once('+').map_or((s, 0), |(p, d)| (p, d.parse().unwrap()));
     let planned = berlin(planned);
-    Some((planned, planned + TimeDelta::minutes(delay)))
+    Some((planned, planned + SignedDuration::from_mins(delay)))
 }
 
-fn iso(t: DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+fn iso(t: Timestamp) -> String {
+    crate::zone::utc_seconds(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +305,7 @@ fn motis_leg(train: &Train) -> Value {
         "mode": train.mode,
         "from": motis_place(first.0, "", first.2),
         "to": motis_place(last.0, last.1, ""),
-        "duration": (end - start).num_seconds(),
+        "duration": (end - start).as_secs(),
         "startTime": iso(start), "endTime": iso(end),
         "scheduledStartTime": iso(start), "scheduledEndTime": iso(end),
         "realTime": false,
@@ -326,7 +327,7 @@ fn motis_itinerary(trains: &[&Train]) -> Value {
     })
 }
 
-fn first_departure(trains: &[&Train]) -> DateTime<Utc> {
+fn first_departure(trains: &[&Train]) -> Timestamp {
     planned_actual(trains[0].stops[0].2).unwrap().0
 }
 
@@ -383,12 +384,12 @@ fn efa_tram_journey() -> Value {
 // ---------------------------------------------------------------------------
 // DB Timetables API
 
-fn db_time(t: DateTime<Utc>) -> String {
-    t.with_timezone(&Berlin).format("%y%m%d%H%M").to_string()
+fn db_time(t: Timestamp) -> String {
+    crate::zone::berlin().to_datetime(t).strftime("%y%m%d%H%M").to_string()
 }
 
-fn slot(t: DateTime<Utc>) -> String {
-    t.with_timezone(&Berlin).format("%y%m%d/%H").to_string()
+fn slot(t: Timestamp) -> String {
+    crate::zone::berlin().to_datetime(t).strftime("%y%m%d/%H").to_string()
 }
 
 /// The planned `<s>` of `run` at its `k`-th call.
@@ -547,8 +548,8 @@ async fn geocode(State(world): State<Arc<World>>, Query(q): Params) -> Response 
 /// Itineraries whose first train leaves in `[time, time + searchWindow]`.
 async fn plan(State(world): State<Arc<World>>, Query(q): Params) -> Response {
     let (from, to) = (&q["fromPlace"], &q["toPlace"]);
-    let time: DateTime<Utc> = q["time"].parse().unwrap();
-    let window = TimeDelta::seconds(q["searchWindow"].parse().unwrap());
+    let time: Timestamp = q["time"].parse().unwrap();
+    let window = SignedDuration::from_secs(q["searchWindow"].parse().unwrap());
     world.note(format!("motis plan {from} {to} {} {}", q["time"], q["searchWindow"]));
     let itineraries: Vec<Value> = motis_itineraries(from, to, world.regional)
         .iter()
@@ -589,9 +590,9 @@ async fn efa_trips(State(world): State<Arc<World>>, Query(q): Params) -> Respons
         return "<html><body>Wartungsarbeiten</body></html>".into_response();
     }
     assert_eq!(q["outputFormat"], "rapidJSON");
-    let asked = NaiveTime::parse_from_str(&q["itdTime"], "%H%M").unwrap();
-    let tram_runs = q["itdDate"] == day().format("%Y%m%d").to_string()
-        && asked <= NaiveTime::from_hms_opt(8, 5, 0).unwrap()
+    let asked = Time::strptime("%H%M", &q["itdTime"]).unwrap();
+    let tram_runs = q["itdDate"] == day().strftime("%Y%m%d").to_string()
+        && asked <= Time::constant(8, 5, 0, 0)
         && (from.as_str(), to.as_str()) == (EFA_ORIGIN, EFA_HUB);
     let journeys = if tram_runs { vec![efa_tram_journey()] } else { Vec::new() };
     axum::Json(json!({"version": "10.6", "journeys": journeys})).into_response()
@@ -876,8 +877,8 @@ async fn a_search_draws_its_ends_answers_timetable_and_the_trains_it_asks_about_
     let ends = Item::Ends {
         from: place(&AMSEL),
         to: place(&ZIELHAFEN),
-        depart_from: berlin("08:00").timestamp(),
-        depart_until: berlin("09:00").timestamp(),
+        depart_from: berlin("08:00").as_second(),
+        depart_until: berlin("09:00").as_second(),
     };
     assert_eq!(drawn[0], ends);
     let timetable = kinds.iter().position(|&k| k == "timetable").unwrap();
@@ -894,7 +895,7 @@ async fn a_search_draws_its_ends_answers_timetable_and_the_trains_it_asks_about_
     assert!(matches!(after.first(), Some(Item::Train { id, .. }) if id == FLX_1236.trip), "{after:?}");
     let bergstadt = index("Bergstadt Hbf");
     let leaves_at_0855 =
-        |t: usize| trains[t].iter().any(|c| c.0 == bergstadt && c.2 == Some(berlin("08:55").timestamp()));
+        |t: usize| trains[t].iter().any(|c| c.0 == bergstadt && c.2 == Some(berlin("08:55").as_second()));
     assert!(matches!(after.get(1), Some(&Item::AskedTrain { trip }) if leaves_at_0855(trip)), "{after:?} {trains:?}");
 }
 
@@ -1193,7 +1194,7 @@ async fn plot_embeds_every_connection_of_the_report() {
             .map(|i| &pieces[usize::try_from(i.as_u64().unwrap()).unwrap()])
             .collect()
     };
-    let minute = |hhmm: &str| json!(berlin(hhmm).timestamp().div_euclid(60));
+    let minute = |hhmm: &str| json!(berlin(hhmm).as_second().div_euclid(60));
     let point = |p: &Value| (p[0].clone(), names[usize::try_from(p[1].as_u64().unwrap()).unwrap()]);
 
     // Tram, walk, wait, ICE: the walk runs from the tram stop to the station in 8 minutes.

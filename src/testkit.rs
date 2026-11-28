@@ -11,20 +11,20 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use proptest::prelude::*;
 
 use crate::timetable::{Call, CallIdx, Footpath, Station, StationIdx, Time, Timetable, Trip, TripIdx};
 
 /// 2026-10-24 at "HH:MM" UTC.
-pub fn at(hhmm: &str) -> DateTime<Utc> {
+pub fn at(hhmm: &str) -> Timestamp {
     let (h, m) = hhmm.split_once(':').unwrap_or_else(|| panic!("bad time {hhmm:?}"));
-    let (h, m): (u32, u32) = (
+    let (h, m): (i64, i64) = (
         h.parse().unwrap_or_else(|_| panic!("bad hour in {hhmm:?}")),
         m.parse().unwrap_or_else(|_| panic!("bad minute in {hhmm:?}")),
     );
-    Utc.with_ymd_and_hms(2026, 10, 24, 0, 0, 0).single().unwrap_or_else(|| panic!("fixed date"))
-        + TimeDelta::minutes(i64::from(h * 60 + m))
+    "2026-10-24T00:00:00Z".parse::<Timestamp>().unwrap_or_else(|_| panic!("fixed date"))
+        + SignedDuration::from_mins(h * 60 + m)
 }
 
 /// "HH:MM" (on time) or "HH:MM+N" / "HH:MM-N" (N minutes late / early); "" is none.
@@ -37,7 +37,7 @@ pub fn time(s: &str) -> Option<Time> {
         (planned, delay.parse::<i64>().unwrap_or_else(|_| panic!("bad delay in {s:?}")))
     });
     let planned = at(planned);
-    Some(Time { planned, actual: planned + TimeDelta::minutes(delay) })
+    Some(Time { planned, actual: planned + SignedDuration::from_mins(delay) })
 }
 
 #[derive(Default)]
@@ -106,7 +106,7 @@ impl Builder {
     /// A walk of `minutes` from `from` to `to` (one way).
     pub fn walk(&mut self, from: &str, to: &str, minutes: i64) {
         let (from, to) = (self.station(from), self.station(to));
-        self.footpaths.push(Footpath { from, to, duration: TimeDelta::minutes(minutes) });
+        self.footpaths.push(Footpath { from, to, duration: SignedDuration::from_mins(minutes) });
     }
 
     pub fn build(mut self, origin: &str, destination: &str) -> Timetable {
@@ -348,19 +348,19 @@ pub fn timetable(spec: &Spec) -> Timetable {
         b.station(&format!("S{s}"));
     }
     for (k, (start, stops)) in spec.trips.iter().enumerate() {
-        let mut planned = at("08:00") + TimeDelta::minutes(*start);
+        let mut planned = at("08:00") + SignedDuration::from_mins(*start);
         let mut live = planned;
         let last = stops.len() - 1;
         let mut calls = Vec::new();
         for (i, stop) in stops.iter().enumerate() {
-            let mut time = |planned: DateTime<Utc>| {
-                live = live.max(planned + TimeDelta::minutes(stop.delay));
+            let mut time = |planned: Timestamp| {
+                live = live.max(planned + SignedDuration::from_mins(stop.delay));
                 Time { planned, actual: live }
             };
             let arrival = (i > 0).then(|| time(planned));
-            planned += TimeDelta::minutes(stop.dwell);
+            planned += SignedDuration::from_mins(stop.dwell);
             let departure = (i < last).then(|| time(planned));
-            planned += TimeDelta::minutes(stop.run);
+            planned += SignedDuration::from_mins(stop.run);
             let middle = i > 0 && i < last;
             calls.push(Call {
                 station: StationIdx(stop.station),
@@ -385,7 +385,7 @@ pub fn timetable(spec: &Spec) -> Timetable {
         b.footpaths.push(Footpath {
             from: StationIdx(from),
             to: StationIdx(to),
-            duration: TimeDelta::minutes(minutes),
+            duration: SignedDuration::from_mins(minutes),
         });
     }
     let destination = format!("S{}", spec.stations - 1);
@@ -476,7 +476,7 @@ async fn tv_answer(axum::extract::State(world): axum::extract::State<std::sync::
     let signature = tv_values(&body, "LocationSignature").into_iter().next();
     // A board's span: from the first time given, until the second.
     let span = tv_values(&body, "AdvertisedTimeAtLocation");
-    let parse = |k: usize| span.get(k).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.to_utc());
+    let parse = |k: usize| span.get(k).and_then(|t| t.parse::<Timestamp>().ok());
     let (from, until) = (parse(0), parse(1));
     if idents.is_empty() {
         note(format!("board {}", signature.clone().unwrap_or_default()));
@@ -499,7 +499,7 @@ async fn tv_answer(axum::extract::State(world): axum::extract::State<std::sync::
             let mut a = serde_json::json!({
                 "AdvertisedTrainIdent": run.ident, "ScheduledDepartureDateTime": TV_DATE,
                 "LocationSignature": sig, "ActivityType": activity,
-                "AdvertisedTimeAtLocation": t.planned.to_rfc3339(),
+                "AdvertisedTimeAtLocation": t.planned.to_string(),
                 "Canceled": false, "TrackAtLocation": "1",
                 "TypeOfTraffic": [{ "Code": "x", "Description": run.traffic }],
             });
@@ -507,7 +507,7 @@ async fn tv_answer(axum::extract::State(world): axum::extract::State<std::sync::
                 a["ProductInformation"] = serde_json::json!([{ "Code": "p", "Description": run.product }]);
             }
             if t.actual != t.planned {
-                a["EstimatedTimeAtLocation"] = serde_json::json!(t.actual.to_rfc3339());
+                a["EstimatedTimeAtLocation"] = serde_json::json!(t.actual.to_string());
             }
             a
         })

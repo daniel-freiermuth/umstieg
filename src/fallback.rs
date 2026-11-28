@@ -6,8 +6,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, TimeDelta, Utc};
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::checked;
 use crate::enumerate::{self, Chain, Limits, Network, Step};
@@ -16,8 +16,8 @@ use crate::timetable::{CallIdx, FootpathIdx, StationIdx, Timetable, TripIdx};
 use crate::usable::Usable;
 
 /// How long after a missed train fallbacks may leave, and how they're bounded.
-pub const WINDOW: TimeDelta = TimeDelta::hours(2);
-const EXTRA: TimeDelta = TimeDelta::hours(1);
+pub const WINDOW: SignedDuration = SignedDuration::from_hours(2);
+const EXTRA: SignedDuration = SignedDuration::from_hours(1);
 const CHANGES: usize = 3;
 const NODES: usize = 500_000;
 const SHOWN: usize = 3;
@@ -25,7 +25,7 @@ const SHOWN: usize = 3;
 pub struct Fallback {
     pub chain: Chain,
     /// Arrival at the destination: the planned one if the plan is rejoined.
-    pub lands: DateTime<Utc>,
+    pub lands: Timestamp,
     /// Index of the ride that is back on a train of the plan.
     pub rejoins_at: Option<usize>,
     /// One-line description, cut at the rejoin.
@@ -35,21 +35,21 @@ pub struct Fallback {
 /// Fallback connections per (station, earliest departure), computed once.
 pub struct Fallbacks<'n> {
     net: &'n Network<'n>,
-    min_transfer: TimeDelta,
+    min_transfer: SignedDuration,
     /// Where the fallbacks' times are shown in.
-    zone: Tz,
-    cache: HashMap<(StationIdx, DateTime<Utc>), Vec<Chain>>,
+    zone: TimeZone,
+    cache: HashMap<(StationIdx, Timestamp), Vec<Chain>>,
 }
 
 impl<'n> Fallbacks<'n> {
-    pub fn new(net: &'n Network<'n>, min_transfer: TimeDelta, zone: Tz) -> Self {
-        Self { net, min_transfer, zone, cache: HashMap::new() }
+    pub fn new(net: &'n Network<'n>, min_transfer: SignedDuration, zone: &TimeZone) -> Self {
+        Self { net, min_transfer, zone: zone.clone(), cache: HashMap::new() }
     }
 
     /// What leaves `station` after the `missed` train, once there at `ready`.
-    fn candidates(&mut self, station: StationIdx, missed: DateTime<Utc>, ready: DateTime<Utc>) -> Result<&[Chain]> {
+    fn candidates(&mut self, station: StationIdx, missed: Timestamp, ready: Timestamp) -> Result<&[Chain]> {
         let (net, min_transfer) = (self.net, self.min_transfer);
-        let after = checked::later(missed, TimeDelta::minutes(1), "departure after a missed train")?.max(ready);
+        let after = checked::later(missed, SignedDuration::from_mins(1), "departure after a missed train")?.max(ready);
         match self.cache.entry((station, after)) {
             Entry::Occupied(found) => Ok(found.into_mut()),
             Entry::Vacant(slot) => {
@@ -62,7 +62,7 @@ impl<'n> Fallbacks<'n> {
                     extra_time: EXTRA,
                     min_transfer,
                     // What to do once the change is missed: only what still works.
-                    missed_by: TimeDelta::zero(),
+                    missed_by: SignedDuration::ZERO,
                     keep_detours: false,
                     forward_only: false,
                     max_nodes: NODES,
@@ -76,7 +76,7 @@ impl<'n> Fallbacks<'n> {
     /// train's arrival, maybe a walk, then any later train there, or one
     /// missed by up to `missed_by`): with their stretches the page finds the
     /// fallbacks of connections it finds itself.
-    pub fn for_network(&mut self, network: &Usable, missed_by: TimeDelta) -> Result<Vec<Chain>> {
+    pub fn for_network(&mut self, network: &Usable, missed_by: SignedDuration) -> Result<Vec<Chain>> {
         let tt = self.net.tt;
         // Per station where trains leave: where trains arrived, and when.
         let mut ready: HashMap<StationIdx, Vec<Arrived>> = HashMap::new();
@@ -176,7 +176,7 @@ impl<'n> Fallbacks<'n> {
                 let marked: HashSet<TripIdx> =
                     back.and_then(|i| rides.get(i)).map(|ride| ride.trip).into_iter().collect();
                 // A first train from where the missed one left is named with its station.
-                let line = text::route_from(tt, fallback, Some(transfer.station), min_transfer, &marked, self.zone)?;
+                let line = text::route_from(tt, fallback, Some(transfer.station), min_transfer, &marked, &self.zone)?;
                 Ok((lands, changes, Reverse(slack), line, back, fallback))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -191,7 +191,7 @@ impl<'n> Fallbacks<'n> {
 }
 
 /// Where a train arrived, when, and when one is ready there for the next train.
-type Arrived = (StationIdx, DateTime<Utc>, DateTime<Utc>);
+type Arrived = (StationIdx, Timestamp, Timestamp);
 
 fn walks_first(chain: &Chain) -> bool {
     matches!(chain.steps.first(), Some(Step::Walk { .. }))

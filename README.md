@@ -31,8 +31,9 @@ still shift either way; they sort after the feasible connections of their
 group, and their fallbacks show what still works. `umstieg --help` lists all options.
 
 Times are in `--time-zone` (e.g. `Europe/Berlin`; default: this machine's, from
-`TZ` or the system), both `--at` as given and every time shown, and each shown
-time names its zone (`06:39 CEST`).
+`TZ` or `/etc/localtime`), both `--at` as given and every time shown, and each
+shown time names its zone (`06:39 CEST`). Zone rules come from the system's
+tzdb (`/usr/share/zoneinfo`), so a tzdata update applies without a rebuild.
 
 `--detail` adds platforms and, for every change, up to three fallbacks if the
 next train is missed: connections leaving within 2 h with at most 3 changes,

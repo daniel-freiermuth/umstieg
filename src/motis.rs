@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
@@ -11,6 +11,7 @@ use crate::cache::DiskCache;
 use crate::db::fold;
 use crate::sketch::{self, Sketch};
 use crate::timetable::ProductClass;
+use crate::zone;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
@@ -36,10 +37,10 @@ pub struct Place {
     pub track: Option<String>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
-    pub arrival: Option<DateTime<Utc>>,
-    pub departure: Option<DateTime<Utc>>,
-    pub scheduled_arrival: Option<DateTime<Utc>>,
-    pub scheduled_departure: Option<DateTime<Utc>>,
+    pub arrival: Option<Timestamp>,
+    pub departure: Option<Timestamp>,
+    pub scheduled_arrival: Option<Timestamp>,
+    pub scheduled_departure: Option<Timestamp>,
     #[serde(default)]
     pub cancelled: bool,
 }
@@ -126,8 +127,8 @@ pub struct Leg {
     pub mode: Mode,
     pub from: Place,
     pub to: Place,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub start_time: Timestamp,
+    pub end_time: Timestamp,
     pub display_name: Option<String>,
     pub route_short_name: Option<String>,
     /// "Ø Göteborg-Halmstad-Helsingborg-Malmö-Købe": Entur's display name
@@ -147,8 +148,8 @@ impl Leg {
         self.trip_id.is_some()
     }
 
-    pub fn duration(&self) -> TimeDelta {
-        self.end_time.signed_duration_since(self.start_time)
+    pub fn duration(&self) -> SignedDuration {
+        self.end_time.duration_since(self.start_time)
     }
 
     /// "ICE 616", "RE7 (11174)", "RJ (384)", "Skånetrafiken 804 (1114)": feeds
@@ -508,12 +509,12 @@ impl Motis {
     /// Pareto-optimal itineraries departing within `[time, time + window]`
     /// (MOTIS may pad with later ones). Their trains are drawn, answers from
     /// the cache too.
-    pub async fn plan(&self, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
+    pub async fn plan(&self, from: &str, to: &str, time: Timestamp, window: SignedDuration) -> Result<Vec<Itinerary>> {
         let query = [
             ("fromPlace", from.to_owned()),
             ("toPlace", to.to_owned()),
-            ("time", time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-            ("searchWindow", window.num_seconds().max(0).to_string()),
+            ("time", zone::utc_seconds(time)),
+            ("searchWindow", window.as_secs().max(0).to_string()),
         ];
         let key = format!("{}{query:?}", self.base);
         let text = self.disk.get_or_fetch(&key, self.get_text("/api/v5/plan", &query)).await?;
@@ -523,12 +524,8 @@ impl Motis {
     }
 
     /// Departures at `stop` (station-level id) from `time` on, at least `n`.
-    pub async fn departures(&self, stop: &str, time: DateTime<Utc>, n: usize) -> Result<Vec<StopTime>> {
-        let query = [
-            ("stopId", stop.to_owned()),
-            ("time", time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-            ("n", n.to_string()),
-        ];
+    pub async fn departures(&self, stop: &str, time: Timestamp, n: usize) -> Result<Vec<StopTime>> {
+        let query = [("stopId", stop.to_owned()), ("time", zone::utc_seconds(time)), ("n", n.to_string())];
         let text = self
             .disk
             .get_or_fetch(&format!("{}stoptimes{query:?}", self.base), self.get_text("/api/v5/stoptimes", &query))
@@ -544,8 +541,8 @@ impl Motis {
         &self,
         stop: Option<&str>,
         center: Option<(f64, f64)>,
-        from: DateTime<Utc>,
-        until: DateTime<Utc>,
+        from: Timestamp,
+        until: Timestamp,
     ) -> Result<Vec<Leg>> {
         let mut query: Vec<(&str, String)> = Vec::new();
         if let Some(stop) = stop {
@@ -556,8 +553,8 @@ impl Motis {
             query.extend([("center", format!("{lat},{lon}")), ("radius", CENTER_RADIUS_METERS.to_string())]);
         }
         query.extend([
-            ("time", from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-            ("window", until.signed_duration_since(from).num_seconds().max(0).to_string()),
+            ("time", zone::utc_seconds(from)),
+            ("window", until.duration_since(from).as_secs().max(0).to_string()),
             ("n", "1".to_owned()),
             ("fetchStops", "true".to_owned()),
         ]);

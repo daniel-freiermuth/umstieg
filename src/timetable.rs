@@ -6,8 +6,8 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use chrono::{DateTime, DurationRound, TimeDelta, Utc};
 use futures::future::join_all;
+use jiff::{RoundMode, SignedDuration, Timestamp, TimestampRound, Unit};
 
 use crate::checked;
 use crate::db::{self, Coverage, Db, Event, Visit};
@@ -16,16 +16,16 @@ use crate::sketch::{self, Sketch};
 use crate::trafikverket::{self, Trafikverket};
 
 /// Same train number within this time difference at a shared station = same train.
-const MERGE_TOLERANCE: TimeDelta = TimeDelta::minutes(60);
+const MERGE_TOLERANCE: SignedDuration = SignedDuration::from_mins(60);
 /// Without a matching number, two shared stations within this difference = same train.
-const SAME_TIME: TimeDelta = TimeDelta::minutes(2);
+const SAME_TIME: SignedDuration = SignedDuration::from_mins(2);
 /// A U-Bahn's, tram's or bus's number is its line's, and its runs can follow
 /// each other within `SAME_TIME`: copies of one run keep the same minute.
-const SAME_MINUTE: TimeDelta = TimeDelta::seconds(59);
+const SAME_MINUTE: SignedDuration = SignedDuration::from_secs(59);
 /// A train makes up at most 1/`MAX_CATCH_UP` of a stretch's planned time.
 const MAX_CATCH_UP: i64 = 4;
 /// Boards are fetched this far around the times MOTIS has for a station.
-const BOARD_MARGIN: TimeDelta = TimeDelta::minutes(30);
+const BOARD_MARGIN: SignedDuration = SignedDuration::from_mins(30);
 const MAX_HOURS_PER_STATION: usize = 10;
 /// Cap on stations added because DB trains call there between corridor stations.
 const MAX_DISCOVERED: usize = 20;
@@ -33,7 +33,7 @@ const MAX_DISCOVERED: usize = 20;
 const SAME_STATION_METERS: f64 = 300.0;
 /// Walk between nearby stations without a MOTIS footpath: `SAME_STATION_METERS`
 /// at walking pace (1 m/s) is at most this long.
-const NEARBY_WALK: TimeDelta = TimeDelta::minutes(5);
+const NEARBY_WALK: SignedDuration = SignedDuration::from_mins(5);
 /// DB boards cover German stations; elsewhere they are empty.
 const DB_TIME_ZONE: &str = "Europe/Berlin";
 /// A stop of another feed this close to a Trafikverket station is that station.
@@ -52,7 +52,7 @@ const SAME_DIRECTION_DEGREES: f64 = 60.0;
 const MAX_DETOUR: f64 = 1.5;
 /// At a discovered station, onward trains are looked for this long after the
 /// last train of a run found there.
-const TV_ONWARD: TimeDelta = TimeDelta::hours(2);
+const TV_ONWARD: SignedDuration = SignedDuration::from_hours(2);
 /// Countries whose stops Trafikverket's runs keep; German stops are DB's.
 const TV_COUNTRIES: [&str; 3] = ["SE", "DK", "NO"];
 /// Categories of long-distance trains, for feeds that give no product class or
@@ -81,12 +81,12 @@ impl ProductClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Time {
-    pub planned: DateTime<Utc>,
-    pub actual: DateTime<Utc>,
+    pub planned: Timestamp,
+    pub actual: Timestamp,
 }
 
 impl Time {
-    fn new(planned: Option<DateTime<Utc>>, actual: Option<DateTime<Utc>>) -> Option<Self> {
+    fn new(planned: Option<Timestamp>, actual: Option<Timestamp>) -> Option<Self> {
         let planned = planned.or(actual)?;
         Some(Self { planned, actual: actual.unwrap_or(planned) })
     }
@@ -95,8 +95,8 @@ impl Time {
         Self::new(e.planned, e.changed)
     }
 
-    pub fn delay(&self) -> TimeDelta {
-        self.actual.signed_duration_since(self.planned)
+    pub fn delay(&self) -> SignedDuration {
+        self.actual.duration_since(self.planned)
     }
 }
 
@@ -219,15 +219,15 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn arrival_time(&self) -> Option<DateTime<Utc>> {
+    pub fn arrival_time(&self) -> Option<Timestamp> {
         self.arrival.or(self.departure).map(|t| t.actual)
     }
 
-    pub fn departure_time(&self) -> Option<DateTime<Utc>> {
+    pub fn departure_time(&self) -> Option<Timestamp> {
         self.departure.map(|t| t.actual)
     }
 
-    fn planned(&self) -> Option<DateTime<Utc>> {
+    fn planned(&self) -> Option<Timestamp> {
         self.arrival.or(self.departure).map(|t| t.planned)
     }
 }
@@ -269,7 +269,7 @@ pub struct Station {
 pub struct Footpath {
     pub from: StationIdx,
     pub to: StationIdx,
-    pub duration: TimeDelta,
+    pub duration: SignedDuration,
 }
 
 pub struct Timetable {
@@ -647,17 +647,17 @@ struct Rough {
     /// Trains keyed by MOTIS trip id.
     trips: HashMap<String, Trip>,
     /// Stations of rail legs, with the time span MOTIS has there; their DB boards are fetched.
-    corridor: HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
+    corridor: HashMap<StationIdx, (Timestamp, Timestamp)>,
     /// Shortest walk seen per (from, to).
-    footpaths: HashMap<(StationIdx, StationIdx), TimeDelta>,
+    footpaths: HashMap<(StationIdx, StationIdx), SignedDuration>,
 }
 
 /// Shortest walk per (from, to); none from a station to itself.
 fn add_walk(
-    footpaths: &mut HashMap<(StationIdx, StationIdx), TimeDelta>,
+    footpaths: &mut HashMap<(StationIdx, StationIdx), SignedDuration>,
     from: StationIdx,
     to: StationIdx,
-    walk: TimeDelta,
+    walk: SignedDuration,
 ) {
     if from != to {
         let entry = footpaths.entry((from, to)).or_insert(walk);
@@ -684,18 +684,18 @@ fn from_motis(
             None => coordinate,
         };
         let mut previous_end: Option<StationIdx> = None;
-        let mut walk = TimeDelta::zero();
+        let mut walk = SignedDuration::ZERO;
         for leg in &itinerary.legs {
             let Some(trip_id) = &leg.trip_id else {
                 // MOTIS times are real dates, so only absurd walk sums saturate.
-                walk = checked::sum(walk, leg.duration());
+                walk = walk.saturating_add(leg.duration());
                 continue;
             };
             let calls = leg_calls(leg, resolved, stations);
             let (Some(first), Some(final_call)) = (calls.first(), calls.last()) else { continue };
             let from = match previous_end {
                 Some(end) => Some(end),
-                None if walk > TimeDelta::zero() => {
+                None if walk > SignedDuration::ZERO => {
                     itinerary.legs.first().map(|l| end_station(stations, &l.from, origin_idx))
                 }
                 None => None,
@@ -704,7 +704,7 @@ fn from_motis(
                 add_walk(&mut rough.footpaths, from, first.station, walk);
             }
             previous_end = Some(final_call.station);
-            walk = TimeDelta::zero();
+            walk = SignedDuration::ZERO;
 
             let stops: Vec<&Call> = match leg.class() {
                 Some(class) if all_stops && class != ProductClass::SBahn => calls.iter().collect(),
@@ -769,7 +769,7 @@ fn finish(trips: Vec<Trip>) -> Vec<Trip> {
 
 /// The walks from MOTIS, plus walks between nearby stations kept apart
 /// (different EVA numbers), sorted by (from, to).
-fn footpaths(stations: &[Station], mut walks: HashMap<(StationIdx, StationIdx), TimeDelta>) -> Vec<Footpath> {
+fn footpaths(stations: &[Station], mut walks: HashMap<(StationIdx, StationIdx), SignedDuration>) -> Vec<Footpath> {
     for (a, sa) in stations.iter().enumerate() {
         for (b, sb) in stations.iter().enumerate().filter(|&(b, _)| b != a) {
             let (Some(pa), Some(pb)) = (sa.position, sb.position) else { continue };
@@ -795,7 +795,7 @@ fn footpaths(stations: &[Station], mut walks: HashMap<(StationIdx, StationIdx), 
 /// (`MAX_CATCH_UP`; dwell times may shrink to nothing), so such live times
 /// are put back.
 fn propagate_delays(calls: &mut [Call]) {
-    let mut delay = TimeDelta::zero();
+    let mut delay = SignedDuration::ZERO;
     // The last time, and the train's last time at the stop before.
     let mut previous: Option<Time> = None;
     let mut left: Option<Time> = None;
@@ -806,7 +806,7 @@ fn propagate_delays(calls: &mut [Call]) {
             if !(from_board || time.actual != time.planned) {
                 // Only absurd feed delays reach past representable time; such a
                 // stop is then later than anything, i.e. unreachable.
-                time.actual = checked::later_or_max(time.planned, delay.max(TimeDelta::zero()));
+                time.actual = checked::later_or_max(time.planned, delay.max(SignedDuration::ZERO));
             }
             if let Some(left) = left.filter(|_| first) {
                 time.actual = time.actual.max(checked::later_or_max(left.actual, fastest_ride(left, *time)));
@@ -824,10 +824,10 @@ fn propagate_delays(calls: &mut [Call]) {
 
 /// The shortest a ride from `left` to `time` can take: its planned time less
 /// the whole minutes a train can make up on it.
-fn fastest_ride(left: Time, time: Time) -> TimeDelta {
-    let planned = time.planned.signed_duration_since(left.planned);
-    let catch_up = planned.num_minutes().checked_div(MAX_CATCH_UP).unwrap_or(0);
-    checked::difference(planned, TimeDelta::try_minutes(catch_up).unwrap_or_default())
+fn fastest_ride(left: Time, time: Time) -> SignedDuration {
+    let planned = time.planned.duration_since(left.planned);
+    let catch_up = planned.as_mins().checked_div(MAX_CATCH_UP).unwrap_or(0);
+    planned.saturating_sub(SignedDuration::try_from_mins(catch_up).unwrap_or_default())
 }
 
 fn leg_places(leg: &Leg) -> Vec<&Place> {
@@ -870,7 +870,7 @@ pub fn add_stops(tt: &mut Timetable, trip: TripIdx, leg: &Leg) -> Option<Vec<Cal
     tt.stations = stations.list;
     let known = &tt.trips.get(trip.0)?.calls;
     let close = |a: Option<Time>, b: Option<Time>| {
-        a.zip(b).is_none_or(|(a, b)| a.planned.signed_duration_since(b.planned).abs() <= SAME_TIME)
+        a.zip(b).is_none_or(|(a, b)| a.planned.duration_since(b.planned).abs() <= SAME_TIME)
     };
     let mut shared = false;
     for call in &calls {
@@ -912,7 +912,7 @@ pub fn add_stops(tt: &mut Timetable, trip: TripIdx, leg: &Leg) -> Option<Vec<Cal
         drop_delays(&mut trip.calls);
     } else {
         propagate_delays(&mut trip.calls);
-        let mut next: Option<DateTime<Utc>> = None;
+        let mut next: Option<Timestamp> = None;
         for (call, kept) in trip.calls.iter_mut().zip(kept).rev() {
             if let Some((arrival, departure)) = kept {
                 (call.arrival, call.departure) = (arrival, departure);
@@ -931,15 +931,16 @@ pub fn add_stops(tt: &mut Timetable, trip: TripIdx, leg: &Leg) -> Option<Vec<Cal
 type Boards = HashMap<StationIdx, (Vec<Visit>, Coverage)>;
 
 /// Hour starts covering `[lo - margin, hi + margin]`, capped.
-fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
-    let Some(Ok(mut t)) = lo.checked_sub_signed(BOARD_MARGIN).map(|t| t.duration_trunc(TimeDelta::hours(1))) else {
+fn hours(lo: Timestamp, hi: Timestamp) -> Vec<Timestamp> {
+    let hour = TimestampRound::new().smallest(Unit::Hour).mode(RoundMode::Floor);
+    let Some(Ok(mut t)) = lo.checked_sub(BOARD_MARGIN).ok().map(|t| t.round(hour)) else {
         return Vec::new();
     };
     let end = checked::later_or_max(hi, BOARD_MARGIN);
     let mut out = Vec::new();
     while t <= end && out.len() < MAX_HOURS_PER_STATION {
         out.push(t);
-        let Some(next) = t.checked_add_signed(TimeDelta::hours(1)) else { break };
+        let Some(next) = t.checked_add(SignedDuration::from_hours(1)).ok() else { break };
         t = next;
     }
     out
@@ -950,12 +951,12 @@ fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
 async fn load_boards(
     db: &Db,
     stations: &[Station],
-    wanted: Vec<(StationIdx, String, Vec<DateTime<Utc>>)>,
+    wanted: Vec<(StationIdx, String, Vec<Timestamp>)>,
     sketch: &Sketch,
     warnings: &mut Vec<String>,
 ) -> Boards {
     let fetches = wanted.into_iter().map(|(idx, eva, hours)| async move {
-        let seen = |hour: DateTime<Utc>, visits: &[Visit]| {
+        let seen = |hour: Timestamp, visits: &[Visit]| {
             if let Some(station) = stations.get(idx.0) {
                 sketch.draw_all(|| sketch::board_hour(station, hour, visits));
             }
@@ -981,7 +982,7 @@ async fn fetch_boards(
     motis: &Motis,
     db: &Db,
     stations: &mut Stations,
-    corridor: &HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
+    corridor: &HashMap<StationIdx, (Timestamp, Timestamp)>,
     discovered: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> Boards {
@@ -993,7 +994,7 @@ async fn fetch_boards(
 
     let by_db_name: HashMap<String, StationIdx> =
         boards.keys().filter_map(|&idx| Some((stations.list.get(idx.0)?.board_name.clone()?, idx))).collect();
-    let mut between: HashMap<String, (usize, DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut between: HashMap<String, (usize, Timestamp, Timestamp)> = HashMap::new();
     for (visits, _) in boards.values() {
         for visit in visits.iter().filter(|v| v.class == Some(ProductClass::LongDistance)) {
             let Some(departure) = &visit.departure else { continue };
@@ -1009,7 +1010,7 @@ async fn fetch_boards(
                 .and_then(|(later, _)| later.iter().find(|w| w.trip == visit.trip))
                 .and_then(|w| w.arrival.as_ref()?.planned)
                 // Only a range to fetch boards for; past representable time it is open-ended.
-                .unwrap_or_else(|| checked::later_or_max(t_from, TimeDelta::hours(1)));
+                .unwrap_or_else(|| checked::later_or_max(t_from, SignedDuration::from_hours(1)));
             for name in path.iter().take(next) {
                 let entry = between.entry(name.clone()).or_insert((0, t_from, t_to));
                 *entry = (entry.0.saturating_add(1), entry.1.min(t_from), entry.2.max(t_to));
@@ -1095,9 +1096,9 @@ fn tv_station<'a>(
 }
 
 /// Board hours from `lo` to `hi` widened by `BOARD_MARGIN`, at most `MAX_HOURS_PER_STATION`.
-fn board_span(lo: DateTime<Utc>, hi: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+fn board_span(lo: Timestamp, hi: Timestamp) -> (Timestamp, Timestamp) {
     let from = checked::earlier_or_min(lo, BOARD_MARGIN);
-    let longest = TimeDelta::hours(i64::try_from(MAX_HOURS_PER_STATION).unwrap_or(i64::MAX));
+    let longest = SignedDuration::from_hours(i64::try_from(MAX_HOURS_PER_STATION).unwrap_or(i64::MAX));
     let until = checked::later_or_max(hi, BOARD_MARGIN).min(checked::later_or_max(from, longest));
     (from, until)
 }
@@ -1107,7 +1108,7 @@ fn board_span(lo: DateTime<Utc>, hi: DateTime<Utc>) -> (DateTime<Utc>, DateTime<
 /// board is drawn as it comes, at its station in `by_sig`.
 async fn tv_boards(
     tv: &Trafikverket,
-    wanted: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    wanted: &HashMap<String, (Timestamp, Timestamp)>,
     by_sig: &HashMap<&str, &trafikverket::Station>,
     sketch: &Sketch,
     known: &mut HashSet<trafikverket::RunKey>,
@@ -1155,7 +1156,7 @@ async fn swedish(
     tv: &Trafikverket,
     motis: &Motis,
     stations: &mut Stations,
-    corridor: &HashMap<StationIdx, (DateTime<Utc>, DateTime<Utc>)>,
+    corridor: &HashMap<StationIdx, (Timestamp, Timestamp)>,
     ends: (StationIdx, StationIdx),
     discovered: &mut Vec<String>,
     warnings: &mut Vec<String>,
@@ -1175,7 +1176,7 @@ async fn swedish(
         }
     };
     let by_sig: HashMap<&str, &trafikverket::Station> = list.iter().map(|s| (s.signature.as_str(), s)).collect();
-    let mut first: HashMap<String, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut first: HashMap<String, (Timestamp, Timestamp)> = HashMap::new();
     let mut boarded: HashMap<String, StationIdx> = HashMap::new();
     for (&idx, &(lo, hi)) in corridor {
         let Some(st) = stations.list.get(idx.0) else { continue };
@@ -1242,7 +1243,7 @@ async fn swedish(
             let all = |s: &trafikverket::Seen| ProductClass::ALL.map(|class| (s.planned, class));
             let unfed: Vec<_> = seen.iter().filter(|s| !known.contains(&s.run)).flat_map(all).collect();
             let unfed = Coverage::of(&unfed);
-            let entries: Vec<(DateTime<Utc>, ProductClass)> =
+            let entries: Vec<(Timestamp, ProductClass)> =
                 seen.iter().flat_map(all).filter(|&(t, class)| !unfed.covers(t, class)).collect();
             coverage.push((idx, Coverage::of(&entries)));
         }
@@ -1268,7 +1269,7 @@ async fn from_departures(
     motis: &Motis,
     at: &Board<'_>,
     stations: &Stations,
-    first: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    first: &HashMap<String, (Timestamp, Timestamp)>,
     line: Option<((f64, f64), (f64, f64))>,
     discovered: &mut Vec<String>,
     warnings: &mut Vec<String>,
@@ -1292,7 +1293,7 @@ async fn departures_at(
     motis: &Motis,
     at: &Board<'_>,
     stations: &Stations,
-    wanted: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    wanted: &HashMap<String, (Timestamp, Timestamp)>,
     keep: impl Fn(&Leg) -> bool,
     departures: &mut Vec<Leg>,
     warnings: &mut Vec<String>,
@@ -1323,7 +1324,7 @@ async fn departures_at(
 /// A Transitous ride as a Trafikverket run: its stops at Trafikverket's
 /// stations nearby (any country; others left out, one per station).
 fn onward_run(leg: &Leg, list: &[trafikverket::Station]) -> trafikverket::Run {
-    let moment = |planned: Option<DateTime<Utc>>, live: Option<DateTime<Utc>>, cancelled: bool| {
+    let moment = |planned: Option<Timestamp>, live: Option<Timestamp>, cancelled: bool| {
         planned.or(live).map(|planned| trafikverket::Moment { planned, live, cancelled })
     };
     let mut stops: Vec<trafikverket::Stop> = Vec::new();
@@ -1359,8 +1360,8 @@ struct Sighted<'a> {
     neighbours: HashSet<&'a str>,
     /// Some run starts or ends here.
     terminus: bool,
-    first: DateTime<Utc>,
-    last: DateTime<Utc>,
+    first: Timestamp,
+    last: Timestamp,
 }
 
 /// Change points on long-distance and regional `runs`, off the boards so far
@@ -1382,8 +1383,8 @@ fn change_points(
     runs: &[trafikverket::Run],
     by_sig: &HashMap<&str, &trafikverket::Station>,
     line: Option<((f64, f64), (f64, f64))>,
-    boarded: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
-) -> HashMap<String, (DateTime<Utc>, DateTime<Utc>)> {
+    boarded: &HashMap<String, (Timestamp, Timestamp)>,
+) -> HashMap<String, (Timestamp, Timestamp)> {
     let mut seen: HashMap<&str, Sighted<'_>> = HashMap::new();
     for run in runs.iter().filter(|r| r.class != ProductClass::SBahn) {
         let last = run.stops.len().saturating_sub(1);
@@ -1426,7 +1427,7 @@ fn change_points(
             Some((sig, directions.len(), seen.terminus, to_go, seen.first, seen.last))
         })
         .collect();
-    let span = |(sig, _, _, _, lo, hi): (&str, usize, bool, f64, DateTime<Utc>, DateTime<Utc>)| {
+    let span = |(sig, _, _, _, lo, hi): (&str, usize, bool, f64, Timestamp, Timestamp)| {
         (sig.to_owned(), (lo, checked::later_or_max(hi, TV_ONWARD)))
     };
     let mut junctions: Vec<_> = ranked.iter().copied().filter(|s| s.1 >= JUNCTION_DIRECTIONS).collect();
@@ -1500,7 +1501,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
             end = stop.arrival.filter(|_| ends).map(|m| m.planned);
             open = end.is_some();
         } else if calls.is_empty() && stop.arrival.is_none() {
-            end = Some(DateTime::<Utc>::MIN_UTC);
+            end = Some(Timestamp::MIN);
         }
         planned.push((idx, stop.arrival.map(|m| m.planned), stop.departure.map(|m| m.planned)));
         calls.push(Call {
@@ -1514,7 +1515,7 @@ fn fed_trip(run: &trafikverket::Run, by_sig: &HashMap<&str, &trafikverket::Stati
         });
     }
     if open && let Some(end) = end {
-        gaps.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
+        gaps.push((Some(end), Timestamp::MAX, None));
     }
     let headsign = run.stops.last().and_then(|s| by_sig.get(s.signature.as_str())).map(|s| s.name.clone());
     let trip = Trip {
@@ -1535,16 +1536,16 @@ pub const fn whole_seconds(s: f64) -> i64 {
 }
 
 /// A train's calls as (station, planned arrival, planned departure).
-type Signature = Vec<(StationIdx, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
+type Signature = Vec<(StationIdx, Option<Timestamp>, Option<Timestamp>)>;
 /// A train seen at a station: (trip, planned arrival, planned departure).
-type Seen = (usize, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+type Seen = (usize, Option<Timestamp>, Option<Timestamp>);
 /// Two times: (one copy's, the other's) planned time at a station, or (earliest, latest).
-type Span = (DateTime<Utc>, DateTime<Utc>);
+type Span = (Timestamp, Timestamp);
 /// A stretch a DB train turned short doesn't run: (where it ends, if a board
 /// says so; its new start; else the planned departure of its last running
 /// call and that departure's changed route, if any). Its origin cancelled, it
 /// ends before anything.
-type Gap = (Option<DateTime<Utc>>, DateTime<Utc>, Option<(DateTime<Utc>, Vec<String>)>);
+type Gap = (Option<Timestamp>, Timestamp, Option<(Timestamp, Vec<String>)>);
 /// The trains a copy matched to a train goes into: its coupled portions that
 /// run. Empty for a train not coupled: the copy goes into it alone.
 type Copies = Vec<usize>;
@@ -1620,7 +1621,7 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
     let mut end = None;
     // Where no board says where it ends: the end of the last running
     // departure's changed route (IRIS's cpth), which is cut short.
-    let mut ends_at: Option<(DateTime<Utc>, Vec<String>)> = None;
+    let mut ends_at: Option<(Timestamp, Vec<String>)> = None;
     // A known new end with no boarded new start yet: the train starts
     // again at the latest at the next call that runs, if any.
     let mut open = false;
@@ -1644,17 +1645,17 @@ fn board_trip(stations: &[Station], mut calls: Vec<(StationIdx, &Visit)>) -> Fed
                 .filter(|e| !e.cancelled)
                 .and_then(|e| Some((call.departure?.planned, e.changed_path.clone().filter(|p| !p.is_empty())?)));
         } else if v.arrival.is_none() {
-            end = Some(DateTime::<Utc>::MIN_UTC);
+            end = Some(Timestamp::MIN);
         }
     }
     if open && let Some(end) = end {
-        gap.push((Some(end), DateTime::<Utc>::MAX_UTC, None));
+        gap.push((Some(end), Timestamp::MAX, None));
     } else if board_calls.last().is_some_and(|c| c.cancelled)
         && let Some(ends_at) = ends_at
     {
         // Only cut short, with no board at its new end: its last boards
         // aren't called at, so it ends where its changed route does.
-        gap.push((None, DateTime::<Utc>::MAX_UTC, Some(ends_at)));
+        gap.push((None, Timestamp::MAX, Some(ends_at)));
     }
     let planned_time = |e: &Option<Event>| e.as_ref().and_then(Time::from_event).map(|t| t.planned);
     let planned =
@@ -1769,7 +1770,7 @@ fn merge(
             at_station.entry(c.station).or_default().push((i, arr, dep));
         }
     };
-    let close = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| matches!((a, b), (Some(a), Some(b)) if a.signed_duration_since(b).abs() <= SAME_TIME);
+    let close = |a: Option<Timestamp>, b: Option<Timestamp>| matches!((a, b), (Some(a), Some(b)) if a.duration_since(b).abs() <= SAME_TIME);
     for (i, t) in trips.iter().enumerate() {
         index(&mut at_station, i, &t.calls);
     }
@@ -1792,7 +1793,7 @@ fn merge(
             by_number.get(n)?.iter().copied().find(|&i| {
                 motis.calls.iter().any(|c| {
                     trips.get(i).and_then(|t| t.call_at(c.station)).is_some_and(|d| match (d.planned(), c.planned()) {
-                        (Some(a), Some(b)) => a.signed_duration_since(b).abs() <= MERGE_TOLERANCE,
+                        (Some(a), Some(b)) => a.duration_since(b).abs() <= MERGE_TOLERANCE,
                         _ => false,
                     })
                 })
@@ -1847,9 +1848,9 @@ fn merge(
                     // one feed may call a tram and the other an S-Bahn.
                     let local = i >= planned
                         && trips.get(i).is_some_and(|t| motis.class.is_none() || t.class.is_none());
-                    let tolerance = if local { TimeDelta::minutes(1) } else { SAME_TIME };
-                    let same = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| {
-                        matches!((a, b), (Some(a), Some(b)) if a.signed_duration_since(b).abs() <= tolerance)
+                    let tolerance = if local { SignedDuration::from_mins(1) } else { SAME_TIME };
+                    let same = |a: Option<Timestamp>, b: Option<Timestamp>| {
+                        matches!((a, b), (Some(a), Some(b)) if a.duration_since(b).abs() <= tolerance)
                     };
                     if same_class && (same(arr, other_arr) || same(dep, other_dep)) {
                         let count = shared.entry(i).or_default();
@@ -2016,10 +2017,10 @@ fn merge(
 fn last_call_on(
     calls: &[Call],
     stations: &[Station],
-    departed: DateTime<Utc>,
+    departed: Timestamp,
     path: &[String],
-    start: DateTime<Utc>,
-) -> DateTime<Utc> {
+    start: Timestamp,
+) -> Timestamp {
     let keys: Vec<String> = path.iter().map(|n| db::station_key(n)).collect();
     let on_path = |c: &&Call| {
         stations.get(c.station.0).is_some_and(|s| {
@@ -2037,18 +2038,18 @@ fn last_call_on(
 /// Whether two copies' calls at a station agree: the same planned arrival or
 /// departure within `SAME_TIME`.
 fn agree(a: &Call, b: &Call) -> bool {
-    let close = |x: Option<Time>, y: Option<Time>| matches!((x, y), (Some(x), Some(y)) if x.planned.signed_duration_since(y.planned).abs() <= SAME_TIME);
+    let close = |x: Option<Time>, y: Option<Time>| matches!((x, y), (Some(x), Some(y)) if x.planned.duration_since(y.planned).abs() <= SAME_TIME);
     close(a.arrival, b.arrival) || close(a.departure, b.departure)
 }
 
 /// `calls` of another copy at stations `base` calls at too: (planned time,
 /// whether the copies agree there).
-fn anchors_of(base: &Trip, calls: &[Call]) -> Vec<(DateTime<Utc>, bool)> {
+fn anchors_of(base: &Trip, calls: &[Call]) -> Vec<(Timestamp, bool)> {
     calls.iter().filter_map(|c| Some((c.planned()?, agree(c, base.call_at(c.station)?)))).collect()
 }
 
 /// Whether a stop at `t` lies only next to `anchors` where the copies agree.
-fn anchored(anchors: &[(DateTime<Utc>, bool)], t: Option<DateTime<Utc>>) -> bool {
+fn anchored(anchors: &[(Timestamp, bool)], t: Option<Timestamp>) -> bool {
     t.is_some_and(|t| {
         let before = anchors.iter().filter(|a| a.0 < t).max_by_key(|a| a.0);
         let after = anchors.iter().filter(|a| a.0 > t).min_by_key(|a| a.0);
@@ -2082,7 +2083,7 @@ fn absorbs(base: &Trip, other: &Trip) -> bool {
 /// within `SAME_TIME`, a copy of the run keeps its times.
 fn in_step(base: &Trip, other: &Trip) -> bool {
     let same = |x: Option<Time>, y: Option<Time>| match (x, y) {
-        (Some(x), Some(y)) => x.planned.signed_duration_since(y.planned).abs() <= SAME_MINUTE,
+        (Some(x), Some(y)) => x.planned.duration_since(y.planned).abs() <= SAME_MINUTE,
         _ => true,
     };
     other
@@ -2104,7 +2105,7 @@ fn one_run(base: &Trip, other: &Trip) -> bool {
         other.calls.iter().filter_map(|c| Some((c.planned()?, base.call_at(c.station)?.planned()?))).collect();
     let pairs = || shared.iter().flat_map(|a| shared.iter().map(move |b| (a, b)));
     let same_way = pairs().any(|(a, b)| a.0 < b.0 && a.1 < b.1) && !pairs().any(|(a, b)| a.0 < b.0 && a.1 > b.1);
-    let ends = |side: fn(&Span) -> DateTime<Utc>| shared.iter().map(side).min().zip(shared.iter().map(side).max());
+    let ends = |side: fn(&Span) -> Timestamp| shared.iter().map(side).min().zip(shared.iter().map(side).max());
     let (Some(theirs), Some(ours)) = (ends(|s| s.0), ends(|s| s.1)) else { return false };
     let (a, b) = (own_stops(&other.calls, base, theirs), own_stops(&base.calls, other, ours));
     same_way && !((a.0 && b.0) || (a.1 && b.1))

@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 
 use super::*;
 use crate::testkit::{self, at};
@@ -12,8 +14,8 @@ use crate::testkit::{self, at};
 const PLAN: &str = include_str!("../testdata/db/plan_8000244_261024_08.xml");
 const CHANGES: &str = include_str!("../testdata/db/fchg_8000244.xml");
 
-fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).single().unwrap()
+fn utc(y: i16, mo: i8, d: i8, h: i8, mi: i8) -> Timestamp {
+    TimeZone::UTC.to_timestamp(date(y, mo, d).at(h, mi, 0, 0)).unwrap()
 }
 
 fn stations_xml(stations: &[(&str, &str)]) -> String {
@@ -656,7 +658,7 @@ async fn each_hours_board_is_seen_as_it_comes_with_live_changes() {
     fake.on("/plan/8000914/261024/08", 200, PLAN).on("/fchg/8000914", 200, CHANGES);
     let db = client(&fake).await;
     let seen = Mutex::new(Vec::new());
-    let record = |hour: DateTime<Utc>, visits: &[Visit]| {
+    let record = |hour: Timestamp, visits: &[Visit]| {
         let mut labels: Vec<String> = visits.iter().map(Visit::label).collect();
         labels.sort_unstable();
         let ice = visits.iter().find(|v| v.label() == "ICE 591").and_then(|v| v.arrival.as_ref()?.changed);

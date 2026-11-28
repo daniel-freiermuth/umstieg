@@ -3,47 +3,47 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, TimeDelta, Utc};
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::enumerate::{Chain, Ride, Step};
 use crate::timetable::{FootpathIdx, StationIdx, Time, Timetable, TripIdx};
 
 /// "HH:MM" in `zone`, with the zone's abbreviation: "06:39 CEST".
-pub fn clock(t: DateTime<Utc>, zone: Tz) -> String {
-    t.with_timezone(&zone).format("%H:%M %Z").to_string()
+pub fn clock(t: Timestamp, zone: &TimeZone) -> String {
+    t.to_zoned_datetime(zone.clone()).strftime("%H:%M %Z").to_string()
 }
 
 /// A departure window with its date in `zone`: "Thu 29 Oct 2026, 06:00 CET–08:00 CET",
 /// the end's date too if it falls on another day.
-pub fn window(from: DateTime<Utc>, until: DateTime<Utc>, zone: Tz) -> String {
-    let (a, b) = (from.with_timezone(&zone), until.with_timezone(&zone));
+pub fn window(from: Timestamp, until: Timestamp, zone: &TimeZone) -> String {
+    let (a, b) = (from.to_zoned_datetime(zone.clone()), until.to_zoned_datetime(zone.clone()));
     // Spaced when the end has its own date, so the dash doesn't read as part of a date.
-    let end = if a.date_naive() == b.date_naive() {
+    let end = if a.date() == b.date() {
         format!("–{}", clock(until, zone))
     } else {
-        format!(" – {}, {}", b.format("%a %-d %b"), clock(until, zone))
+        format!(" – {}, {}", b.strftime("%a %-d %b"), clock(until, zone))
     };
-    format!("{}, {}{end}", a.format("%a %-d %b %Y"), clock(from, zone))
+    format!("{}, {}{end}", a.strftime("%a %-d %b %Y"), clock(from, zone))
 }
 
-pub fn duration(d: TimeDelta) -> String {
-    let m = d.num_minutes();
+pub fn duration(d: SignedDuration) -> String {
+    let m = d.as_mins();
     let (hours, rest) = (m.checked_div(60).unwrap_or_default(), m.checked_rem(60).unwrap_or_default());
     if m.abs() >= 60 { format!("{hours}h{:02}", rest.abs()) } else { format!("{m}m") }
 }
 
 /// Time plus live delay, e.g. "11:51 CET" or "11:55 CET (+4)".
-pub fn timed(t: Option<Time>, zone: Tz) -> String {
+pub fn timed(t: Option<Time>, zone: &TimeZone) -> String {
     let Some(t) = t else { return "--:--".to_owned() };
-    let delay = t.delay().num_minutes();
+    let delay = t.delay().as_mins();
     if delay != 0 { format!("{} ({delay:+})", clock(t.actual, zone)) } else { clock(t.actual, zone) }
 }
 
 /// "12m", "3m⚠" below the minimum transfer, "missed 2m✗" for a change that
 /// live data says is gone (listed with `--missed-by`: delays may still shift).
-pub fn buffer(slack: TimeDelta, min_transfer: TimeDelta) -> String {
-    if slack < TimeDelta::zero() {
+pub fn buffer(slack: SignedDuration, min_transfer: SignedDuration) -> String {
+    if slack < SignedDuration::ZERO {
         return format!("missed {}✗", duration(slack.abs()));
     }
     let warn = if slack < min_transfer { "⚠" } else { "" };
@@ -51,7 +51,7 @@ pub fn buffer(slack: TimeDelta, min_transfer: TimeDelta) -> String {
 }
 
 /// "06:39 CEST → 22:05 CEST  15h26  3×  min 47m"
-pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, zone: Tz) -> Result<String> {
+pub fn header(tt: &Timetable, chain: &Chain, min_transfer: SignedDuration, zone: &TimeZone) -> Result<String> {
     let departure = chain.departure(tt)?;
     let arrival = chain.arrival(tt)?;
     let min = chain.min_slack(tt)?.map_or_else(|| "direct".to_owned(), |s| format!("min {}", buffer(s, min_transfer)));
@@ -59,7 +59,7 @@ pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, zone: Tz) 
         "{} → {}  {}  {}×  {}",
         clock(departure, zone),
         clock(arrival, zone),
-        duration(arrival.signed_duration_since(departure)),
+        duration(arrival.duration_since(departure)),
         chain.changes(),
         min,
     ))
@@ -71,9 +71,9 @@ pub fn header(tt: &Timetable, chain: &Chain, min_transfer: TimeDelta, zone: Tz) 
 pub fn route(
     tt: &Timetable,
     chain: &Chain,
-    min_transfer: TimeDelta,
+    min_transfer: SignedDuration,
     rejoin: &HashSet<TripIdx>,
-    zone: Tz,
+    zone: &TimeZone,
 ) -> Result<String> {
     route_from(tt, chain, None, min_transfer, rejoin, zone)
 }
@@ -84,9 +84,9 @@ pub fn route_from(
     tt: &Timetable,
     chain: &Chain,
     start: Option<StationIdx>,
-    min_transfer: TimeDelta,
+    min_transfer: SignedDuration,
     rejoin: &HashSet<TripIdx>,
-    zone: Tz,
+    zone: &TimeZone,
 ) -> Result<String> {
     let transfers = chain.transfers(tt)?;
     let mut parts = Vec::new();
@@ -112,7 +112,8 @@ pub fn route_from(
         let (bs, as_) = (tt.station(b.station)?, tt.station(a.station)?);
         let mut from = String::new();
         if let Some(tr) = transfer {
-            let walk = if tr.walk > TimeDelta::zero() { format!(" walk {}", duration(tr.walk)) } else { String::new() };
+            let walk =
+                if tr.walk > SignedDuration::ZERO { format!(" walk {}", duration(tr.walk)) } else { String::new() };
             parts.push(format!("‖{}{walk}‖", buffer(tr.slack, min_transfer)));
             if bs.name != tt.station(tr.station)?.name {
                 from = format!(" {}", bs.name);
