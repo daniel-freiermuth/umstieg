@@ -30,7 +30,7 @@ import {
 import { type Connection, type Need, bestThrough } from "./best";
 import { type Drawn, groupOf, header, piecesOf, route, signature, signatureOfPieces } from "./connections";
 import { Fallbacks, arrive } from "./fallback";
-import { type Narrowed, type Picked, narrow, pinAfter, step, toggle } from "./picks";
+import { type Narrowed, type Picked, atHeights, narrow, pinAfter, step, toggle } from "./picks";
 import {
   type Reach,
   type Ride,
@@ -259,10 +259,11 @@ let geom: Geom | null = null; // plot area of the last render
 function heightOf(s: number): number | null {
   return item(D.metrics, metricIndex).heights[s] ?? null;
 }
-// Heights per the chosen metric; zoom resets to the full extent.
+// Heights per the chosen metric, the picks' too; zoom resets to the full extent.
 function applyMetric(k: number): void {
   metricIndex = k;
   rows = applyHeights(D, k);
+  picks = atHeights(picks, D.pieces, item(D.metrics, k).heights);
   full = extent(D);
   dom = { ...full };
   writeLegend();
@@ -721,8 +722,10 @@ const asPick = (t: Target | Picked): Picked => ({
   id: t.id,
   info: t.info,
   pts: t.pts,
+  raw: "raw" in t ? t.raw : t.pts.flatMap(([time, , s]) => (s === undefined ? [] : [[time, s] as const])),
   need: t.need ?? null,
   reach: t.reach ?? null,
+  ...(t.spot === undefined ? {} : { spot: t.spot }),
 });
 function applyPicks(): void {
   candidates = withBest(narrow(picks));

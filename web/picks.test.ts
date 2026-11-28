@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { type Picked, narrow, pinAfter, step, toggle } from "./picks";
+import { type Picked, atHeights, narrow, pinAfter, step, toggle } from "./picks";
 import type { Segment } from "./reach";
 
 const pick = (id: string, station: number | null, segments: Segment[] | null = null): Picked => ({
   id,
   info: id,
   pts: [],
+  raw: [],
   need: station === null ? null : { kind: "station", station },
   reach: segments === null ? null : { key: `r:${id}`, segments },
 });
@@ -95,5 +96,117 @@ describe("toggle", () => {
     // The same line clicked again is a new object with the same id.
     expect(toggle(picks, pick("a", 1)).map((p) => p.id)).toEqual(["b"]);
     expect(picks.map((p) => p.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("atHeights", () => {
+  // A piece's calls as (time, station), whatever the metric.
+  const piece = (...raw: [number, number][]): { raw: [number, number][] } => ({ raw });
+  // A pick of a stretch of piece 0, from its first to its last call.
+  const stretch = (...raw: [number, number][]): Picked => ({
+    ...pick("ride", null),
+    raw,
+    spot: { piece: 0, from: raw[0]?.[0] ?? 0, to: raw[raw.length - 1]?.[0] ?? 0 },
+  });
+  // Where a marker is drawn: time and height.
+  const drawn = (p: Picked | undefined): number[][] => (p?.pts ?? []).map(([t, y]) => [t, y]);
+
+  test("a picked stretch follows its line in the new metric, through stops that only now have a height", () => {
+    // A (station 0) at 0 → X (1) at 5 → C (2) at 10, picked where X had no
+    // height: the line, and the pick, went straight A → C.
+    const ride: Picked = {
+      ...stretch([0, 0], [10, 2]),
+      pts: [
+        [0, 120, 0],
+        [10, 0, 2],
+      ],
+      need: { kind: "ride", trip: 4, from: 0, at: 0, to: 2, until: 10 },
+      reach: { key: "r", segments: [[0, 0, 10]] },
+    };
+    const [r] = atHeights([ride], [piece([0, 0], [5, 1], [10, 2])], [10, 50, 0]);
+    expect(drawn(r)).toEqual([
+      [0, 10],
+      [5, 50],
+      [10, 0],
+    ]);
+    expect({ ...r, pts: ride.pts }).toEqual(ride);
+    expect(ride.pts[0]).toEqual([0, 120, 0]);
+  });
+
+  test("a picked stretch ending at a stop the new metric has no height for stays on the line past it", () => {
+    const ride = stretch([0, 0], [5, 1]);
+    expect(drawn(atHeights([ride], [piece([0, 0], [5, 1], [10, 2])], [10, null, 0])[0])).toEqual([
+      [0, 10],
+      [5, 5],
+    ]);
+  });
+
+  test("a picked stretch keeps to its stops where the next or last hop takes no time", () => {
+    // A at 0 → B at 10 → C at 10 → D at 20: B → C is a hop of its own.
+    const line = piece([0, 0], [10, 1], [10, 2], [20, 3]);
+    const heights = [30, 20, 10, 0];
+    const [ab, bc, cd] = atHeights(
+      [stretch([0, 0], [10, 1]), stretch([10, 1], [10, 2]), stretch([10, 2], [20, 3])],
+      [line],
+      heights,
+    );
+    expect(drawn(ab)).toEqual([
+      [0, 30],
+      [10, 20],
+    ]);
+    expect(drawn(bc)).toEqual([
+      [10, 20],
+      [10, 10],
+    ]);
+    expect(drawn(cd)).toEqual([
+      [10, 10],
+      [20, 0],
+    ]);
+  });
+
+  // Picked as station 1's row, and as a stay at station 2.
+  const station: Picked = {
+    ...pick("station", 1),
+    pts: [
+      [0, 90, 1],
+      [20, 90, 1],
+    ],
+    raw: [
+      [0, 1],
+      [20, 1],
+    ],
+  };
+  const stay: Picked = {
+    ...pick("stay", null),
+    pts: [
+      [5, 40, 2],
+      [15, 40, 2],
+    ],
+    raw: [
+      [5, 2],
+      [15, 2],
+    ],
+    spot: { station: 2, t: 8 },
+  };
+
+  test("a station's row or a stay moves to the station's height, and is left out without one, as its line is", () => {
+    const [s, w] = atHeights([station, stay], [], [null, 250, null]);
+    expect(s?.pts).toEqual([
+      [0, 250, 1],
+      [20, 250, 1],
+    ]);
+    expect(w?.pts).toEqual([]);
+  });
+
+  test("a station's row or a stay is back on its line after a metric that left its station out", () => {
+    const [s, w] = atHeights(atHeights([station, stay], [], [null, null, null]), [], [null, 250, 30]);
+    expect(s?.pts).toEqual([
+      [0, 250, 1],
+      [20, 250, 1],
+    ]);
+    expect(w?.pts).toEqual([
+      [5, 30, 2],
+      [15, 30, 2],
+    ]);
   });
 });
