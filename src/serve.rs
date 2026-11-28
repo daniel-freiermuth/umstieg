@@ -129,7 +129,7 @@ fn first_job() -> u64 {
 pub async fn serve(addr: SocketAddr, parallel: usize, endpoints: Endpoints) -> Result<()> {
     let app = Arc::new(App::new(parallel, endpoints, Keys::load, first_job())?);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("route planner on http://{addr}/");
+    tracing::info!("route planner on http://{}/", listener.local_addr()?);
     axum::serve(listener, router(app)).await?;
     Ok(())
 }
