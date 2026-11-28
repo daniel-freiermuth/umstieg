@@ -2633,7 +2633,7 @@ async fn trafikverket_boards_and_runs_are_drawn_as_they_come() {
 
     let goteborg = Item::Asked {
         place: Place { name: "Göteborg C".to_owned(), at: GOTEBORG },
-        span: Some((at("05:30").timestamp(), at("07:30").timestamp())),
+        span: Some((at("05:00").timestamp(), at("08:00").timestamp())),
         seen: vec![Seen(id("319"), Some(at("06:04").timestamp()), Some(at("06:04").timestamp()))],
     };
     assert!(drawn.contains(&goteborg), "{drawn:?}");
@@ -2735,6 +2735,54 @@ async fn junction_boards_cover_no_hour_of_their_unfetched_commuter_runs() {
         let pt = trips.iter().find(|t| t.label == "Pendeltåg 8000").expect("the Transitous train");
         assert_eq!(calls_of(pt).len(), 2, "{class:?}");
     }
+}
+
+#[tokio::test]
+async fn boards_are_asked_about_whole_hours() {
+    use crate::testkit::{TvRun, TvWorld};
+    let world = TvWorld::new(
+        vec![
+            ("G", "Göteborg C", "SE", GOTEBORG.0, GOTEBORG.1),
+            ("Kh", "Karlshamn", "SE", KARLSHAMN.0, KARLSHAMN.1),
+            ("Dk.kh", "Köpenhamn H", "DK", 55.672, 12.565),
+        ],
+        vec![
+            TvRun {
+                ident: "1060",
+                product: "Öresundståg",
+                traffic: "Tåg",
+                stops: vec![("Kh", "11:10", "11:12"), ("Dk.kh", "13:00", "")],
+            },
+            TvRun {
+                ident: "1062",
+                product: "Öresundståg",
+                traffic: "Tåg",
+                stops: vec![("Kh", "", "11:45"), ("Dk.kh", "13:30", "")],
+            },
+        ],
+    );
+    let url = crate::testkit::serve_trafikverket(&world).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let mut stations = Stations::default();
+    let origin = stations.intern(Sighting { name: "Göteborg C", position: Some(GOTEBORG), ..Sighting::default() });
+    let destination = stations.intern(Sighting { name: "Karlshamn", position: Some(KARLSHAMN), ..Sighting::default() });
+    // Karlshamn's board from 06:00 to 11:30 lists Öresundståg 1060 at 11:10,
+    // so it covers hour 11: 1062 at 11:45 must be on it too.
+    let corridor = HashMap::from([(origin, (at("06:00"), at("07:00"))), (destination, (at("06:30"), at("11:00")))]);
+    let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
+    let found =
+        swedish(&tv, &unused_motis(), &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings)
+            .await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // Transitous's copy of 1062 keeps its stop at Karlshamn.
+    let copenhagen = index_of(&stations, "Köpenhamn H");
+    let boards: Boards = found.coverage.into_iter().map(|(idx, coverage)| (idx, (Vec::new(), coverage))).collect();
+    let motis =
+        motis_trip("Öresundståg 1062", Some(Regional), &[(destination.0, "", "11:45"), (copenhagen.0, "13:30", "")]);
+    let trips = merge(&stations.list, &boards, raw(vec![("m", motis)]), found.trips, false);
+    let calls: Vec<usize> = trips.iter().filter(|t| t.label == "Öresundståg 1062").map(|t| calls_of(t).len()).collect();
+    assert_eq!(calls, [2]);
 }
 
 #[tokio::test]
