@@ -79,12 +79,12 @@ export function atHeights(
   return picks.map((p) => {
     const spot = p.spot;
     if (spot !== undefined && "piece" in spot) {
-      // Its first and last call, found among the piece's by time and station.
+      // Its first and last call, found among the piece's by time and station
+      // (a line is at a stop at any one time in a single call).
       const { raw } = item(pieces, spot.piece);
-      const [first, last] = [p.raw[0], p.raw[p.raw.length - 1]];
-      const from = raw.findIndex(([t, s]) => t === first?.[0] && s === first[1]);
-      const to = from < 0 ? -1 : raw.findIndex(([t, s], k) => k > from && t === last?.[0] && s === last[1]);
-      return { ...p, pts: to < 0 ? [] : stretch(raw, heights, from, to) };
+      const call = (c?: readonly [t: number, s: number]): number =>
+        raw.findIndex(([t, s]) => t === c?.[0] && s === c[1]);
+      return { ...p, pts: stretch(raw, heights, call(p.raw[0]), call(p.raw[p.raw.length - 1])) };
     }
     return {
       ...p,
@@ -99,7 +99,8 @@ export function atHeights(
 /**
  * A piece's line at `heights` from its call `from` to its call `to`
  * (positions in `raw`), cut at their times where they have no height; the
- * hops before and after are left out, even those taking no time.
+ * hops before and after are left out, even those taking no time. Nothing
+ * where `to` is not found (-1).
  */
 function stretch(
   raw: readonly (readonly [t: number, s: number])[],
@@ -124,7 +125,9 @@ function stretch(
   for (let n = 1; n < drawn.length; n++) {
     const a = item(drawn, n - 1),
       b = item(drawn, n);
-    if (b.k <= from || a.k >= to) continue;
+    if (b.k <= from) continue;
+    if (a.k >= to) continue;
+    // Stryker disable next-line EqualityOperator: cut at its own time, the hop from `from` starts at `from` as drawn.
     push(a.k < from ? on(a.pt, b.pt, item(raw, from)[0]) : a.pt);
     push(b.k > to ? on(a.pt, b.pt, item(raw, to)[0]) : b.pt);
   }
