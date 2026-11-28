@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use futures::future::{join_all, try_join_all};
 use jiff::civil;
-use jiff::tz::TimeZone;
+use jiff::tz::{TimeZone, TimeZoneDatabase};
 use jiff::{SignedDuration, Timestamp};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -58,9 +58,15 @@ fn showable(zone: &TimeZone) -> bool {
     })
 }
 
-/// `--time-zone`: an IANA name such as "Europe/Berlin".
+/// `--time-zone`: an IANA name such as "Europe/Berlin". One the system's tzdb
+/// lacks comes from the bundled copy: browsers fill in legacy links
+/// ("Asia/Calcutta") that Debian's and Ubuntu's default tzdata leave out.
 fn time_zone(s: &str) -> Result<TimeZone, String> {
-    TimeZone::get(s).ok().filter(showable).ok_or_else(|| format!("{s:?} is not a time zone name such as Europe/Berlin"))
+    TimeZone::get(s)
+        .or_else(|_| TimeZoneDatabase::bundled().get(s))
+        .ok()
+        .filter(showable)
+        .ok_or_else(|| format!("{s:?} is not a time zone name such as Europe/Berlin"))
 }
 
 /// This machine's time zone: TZ ("Europe/Berlin", ":Europe/Berlin" or a

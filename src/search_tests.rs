@@ -135,6 +135,24 @@ fn the_time_zone_is_a_zone_name() {
 }
 
 #[test]
+fn names_the_system_tzdb_lacks_come_from_the_bundled_one() {
+    if testkit::in_child() {
+        // Browsers name zones by legacy links ("Asia/Calcutta") that Debian's
+        // and Ubuntu's default tzdata leave out; this tzdb has Berlin only.
+        assert!(TimeZone::get("Asia/Calcutta").is_err(), "the test's tzdb lacks it");
+        assert_eq!(time_zone("Asia/Calcutta").unwrap().iana_name(), Some("Asia/Calcutta"));
+        assert_eq!(time_zone("Europe/Berlin").unwrap().iana_name(), Some("Europe/Berlin"));
+        assert!(time_zone("Factory").is_err(), "still only names the plot page can show");
+        return;
+    }
+    let tzdir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tzdir.path().join("Europe")).unwrap();
+    std::fs::copy("/usr/share/zoneinfo/Europe/Berlin", tzdir.path().join("Europe/Berlin")).unwrap();
+    let test = "search::tests::names_the_system_tzdb_lacks_come_from_the_bundled_one";
+    testkit::rerun_with_env(test, &[("TZDIR", tzdir.path().as_os_str())]);
+}
+
+#[test]
 fn the_machine_zone_is_tz_else_the_system_s() {
     const EXPECT: &str = "UMSTIEG_TEST_EXPECT";
     if testkit::in_child() {
