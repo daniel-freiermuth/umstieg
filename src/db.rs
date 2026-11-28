@@ -8,14 +8,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Europe::Berlin;
+use jiff::Timestamp;
+use jiff::civil::DateTime;
 use tokio::sync::Semaphore;
 // tokio's clock: tests pause and advance it instead of waiting out the quota.
 use tokio::time::Instant;
 
 use crate::sync::lock;
 use crate::timetable::ProductClass;
+use crate::zone;
 
 /// The DB Timetables API (`--db-api` overrides it).
 pub const API: &str = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1";
@@ -48,8 +49,8 @@ pub struct Station {
 /// Arrival or departure of a train at a station.
 #[derive(Debug, Clone, Default)]
 pub struct Event {
-    pub planned: Option<DateTime<Utc>>,
-    pub changed: Option<DateTime<Utc>>,
+    pub planned: Option<Timestamp>,
+    pub changed: Option<Timestamp>,
     pub planned_platform: Option<String>,
     pub changed_platform: Option<String>,
     pub cancelled: bool,
@@ -358,8 +359,8 @@ impl Db {
     pub async fn visits(
         &self,
         eva: &str,
-        hours: &[DateTime<Utc>],
-        seen: &(dyn Fn(DateTime<Utc>, &[Visit]) + Sync),
+        hours: &[Timestamp],
+        seen: &(dyn Fn(Timestamp, &[Visit]) + Sync),
     ) -> Result<(Vec<Visit>, Coverage)> {
         let changes = self.changes(eva).await?;
         let mut by_trip: HashMap<String, Visit> = HashMap::new();
@@ -423,20 +424,20 @@ fn parse_station_cache(text: &str) -> HashMap<String, Option<Station>> {
 pub struct Coverage(Vec<(String, ProductClass)>);
 
 impl Coverage {
-    pub fn covers(&self, at: DateTime<Utc>, class: ProductClass) -> bool {
+    pub fn covers(&self, at: Timestamp, class: ProductClass) -> bool {
         let slot = slot(at);
         self.0.iter().any(|(s, c)| *s == slot && *c == class)
     }
 
     /// Coverage of the given (time, class) pairs: a board's trains.
-    pub fn of(entries: &[(DateTime<Utc>, ProductClass)]) -> Self {
+    pub fn of(entries: &[(Timestamp, ProductClass)]) -> Self {
         Self(entries.iter().map(|&(t, c)| (slot(t), c)).collect())
     }
 }
 
 /// "YYMMDD/HH" in German local time, the API's hour slot format.
-fn slot(t: DateTime<Utc>) -> String {
-    t.with_timezone(&Berlin).format("%y%m%d/%H").to_string()
+fn slot(t: Timestamp) -> String {
+    zone::berlin().to_datetime(t).strftime("%y%m%d/%H").to_string()
 }
 
 fn visit_id(v: &Visit) -> String {
@@ -538,9 +539,8 @@ fn parse_stations(xml: &str) -> Result<Vec<Station>> {
         .collect())
 }
 
-fn parse_time(s: &str) -> Option<DateTime<Utc>> {
-    let naive = NaiveDateTime::parse_from_str(s, "%y%m%d%H%M").ok()?;
-    Berlin.from_local_datetime(&naive).earliest().map(|t| t.with_timezone(&Utc))
+fn parse_time(s: &str) -> Option<Timestamp> {
+    zone::earliest(&zone::berlin(), DateTime::strptime("%y%m%d%H%M", s).ok()?)
 }
 
 /// Product class of a timetable's `f` attribute; codes other than F, N and S

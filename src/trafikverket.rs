@@ -10,12 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{OnceCell, Semaphore};
 
 use crate::cache::DiskCache;
 use crate::timetable::ProductClass;
+use crate::zone;
 
 /// The API (`--trafikverket-api` overrides it).
 pub const API: &str = "https://api.trafikinfo.trafikverket.se/v2/data.json";
@@ -70,16 +71,16 @@ pub struct RunKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     pub run: RunKey,
-    pub planned: DateTime<Utc>,
+    pub planned: Timestamp,
     pub class: ProductClass,
 }
 
 /// Arrival or departure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Moment {
-    pub planned: DateTime<Utc>,
+    pub planned: Timestamp,
     /// Actual time once passed, else the forecast, if there is one.
-    pub live: Option<DateTime<Utc>>,
+    pub live: Option<Timestamp>,
     pub cancelled: bool,
 }
 
@@ -169,9 +170,9 @@ struct Announcement {
     scheduled_departure_date_time: String,
     location_signature: String,
     activity_type: String,
-    advertised_time_at_location: DateTime<Utc>,
-    estimated_time_at_location: Option<DateTime<Utc>>,
-    time_at_location: Option<DateTime<Utc>>,
+    advertised_time_at_location: Timestamp,
+    estimated_time_at_location: Option<Timestamp>,
+    time_at_location: Option<Timestamp>,
     #[serde(default)]
     canceled: bool,
     #[serde(default)]
@@ -309,13 +310,13 @@ impl Trafikverket {
     }
 
     /// Trains (not replacement buses) at `signature` from `from` until `until`.
-    pub async fn board(&self, signature: &str, from: DateTime<Utc>, until: DateTime<Utc>) -> Result<Vec<Seen>> {
+    pub async fn board(&self, signature: &str, from: Timestamp, until: Timestamp) -> Result<Vec<Seen>> {
         let filter = format!(
             "<EQ name=\"LocationSignature\" value=\"{}\"/><GTE name=\"AdvertisedTimeAtLocation\" value=\"{}\"/>\
              <LT name=\"AdvertisedTimeAtLocation\" value=\"{}\"/>",
             attribute(signature),
-            from.to_rfc3339_opts(SecondsFormat::Secs, true),
-            until.to_rfc3339_opts(SecondsFormat::Secs, true),
+            zone::utc_seconds(from),
+            zone::utc_seconds(until),
         );
         let announcements = parse_announcements(&self.post(&announcement_query(&filter)).await?)?;
         let mut seen: Vec<Seen> = announcements

@@ -10,14 +10,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, FixedOffset, NaiveDate, TimeDelta, Utc};
-use chrono_tz::Europe::Stockholm;
+use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::cache::DiskCache;
 use crate::motis::{Itinerary, Leg, Mode, Place};
 use crate::rough::Query;
 use crate::trafikverket;
+use crate::zone;
 
 /// The API (`--sj` overrides it; empty: not asked).
 pub const API: &str = "https://prod-api.adp.sj.se/public/sales/booking/v3";
@@ -33,9 +34,9 @@ const SWEDISH_TIME_ZONE: &str = "Europe/Stockholm";
 const MAX_DAYS: usize = 3;
 /// A change between stops nearby is walked in at most this (Malmö C Norra
 /// Vallgatan to Malmö Central), however long SJ's change is.
-const MAX_WALK: TimeDelta = TimeDelta::minutes(10);
+const MAX_WALK: SignedDuration = SignedDuration::from_mins(10);
 /// From the station asked about to a nearby stop a connection starts at.
-const END_WALK: TimeDelta = TimeDelta::minutes(5);
+const END_WALK: SignedDuration = SignedDuration::from_mins(5);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,8 +71,8 @@ pub struct Departure {
 struct SjLeg {
     origin: SjStation,
     destination: SjStation,
-    departure_date_time: DateTime<FixedOffset>,
-    arrival_date_time: DateTime<FixedOffset>,
+    departure_date_time: Timestamp,
+    arrival_date_time: Timestamp,
     #[serde(default)]
     service_name: String,
     service_identifier: Option<String>,
@@ -135,7 +136,7 @@ impl Sj {
     }
 
     /// SJ's connections from `from` to `to` (UIC codes) on `date`, all day.
-    pub async fn departures(&self, from: &str, to: &str, date: NaiveDate) -> Result<Vec<Departure>> {
+    pub async fn departures(&self, from: &str, to: &str, date: Date) -> Result<Vec<Departure>> {
         let fetch = async {
             let body = serde_json::json!({
                 "origin": from, "destination": to, "departureDate": date.to_string(),
@@ -173,13 +174,13 @@ pub fn uic(stop_id: &str) -> Option<String> {
 /// leg's to it, `END_WALK`.
 fn itineraries_of(
     departures: &[Departure],
-    from: DateTime<Utc>,
-    until: DateTime<Utc>,
+    from: Timestamp,
+    until: Timestamp,
     stations: &[trafikverket::Station],
 ) -> Vec<Itinerary> {
     departures
         .iter()
-        .filter(|d| d.legs.first().is_some_and(|l| (from..=until).contains(&l.departure_date_time.to_utc())))
+        .filter(|d| d.legs.first().is_some_and(|l| (from..=until).contains(&l.departure_date_time)))
         .map(|d| {
             let mut legs: Vec<Leg> = Vec::new();
             for leg in &d.legs {
@@ -234,7 +235,7 @@ fn place(station: &SjStation, stations: &[trafikverket::Station]) -> Place {
 }
 
 fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
-    let (departs, arrives) = (leg.departure_date_time.to_utc(), leg.arrival_date_time.to_utc());
+    let (departs, arrives) = (leg.departure_date_time, leg.arrival_date_time);
     let kind = leg.service_type.as_ref();
     let mode = match leg.transport_method.as_str() {
         "TRAIN" if kind.and_then(|k| k.modality.as_deref()) == Some("HIGHSPEED_RAIL") => Mode::HighspeedRail,
@@ -272,7 +273,7 @@ fn ride(leg: &SjLeg, stations: &[trafikverket::Station]) -> Leg {
     }
 }
 
-fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {
+fn walk(from: Place, to: Place, start: Timestamp, end: Timestamp) -> Leg {
     Leg {
         mode: Mode::Walk,
         from,
@@ -291,16 +292,17 @@ fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg
 }
 
 /// The dates in Sweden from `from` to `until`, at most `MAX_DAYS`.
-fn dates(from: DateTime<Utc>, until: DateTime<Utc>) -> Vec<NaiveDate> {
-    let last = until.with_timezone(&Stockholm).date_naive();
-    from.with_timezone(&Stockholm).date_naive().iter_days().take_while(|d| *d <= last).take(MAX_DAYS).collect()
+fn dates(from: Timestamp, until: Timestamp) -> Vec<Date> {
+    let zone = zone::stockholm();
+    let (first, last) = (zone.to_datetime(from).date(), zone.to_datetime(until).date());
+    std::iter::successors(Some(first), |d| d.tomorrow().ok()).take_while(|d| *d <= last).take(MAX_DAYS).collect()
 }
 
 /// A rough route's Swedish stops: UIC code and planned departure.
-type SwedishStops = Vec<(String, Option<DateTime<Utc>>)>;
+type SwedishStops = Vec<(String, Option<Timestamp>)>;
 
 /// Where SJ is asked from: a UIC code and the span its connections may leave in.
-type Start = (String, DateTime<Utc>, DateTime<Utc>);
+type Start = (String, Timestamp, Timestamp);
 
 /// The Swedish ends of a search: the origin (leaving in the window) or else
 /// where the rough routes enter Sweden (leaving when they do), and the

@@ -7,7 +7,7 @@ use crate::testkit::{Builder, at};
 
 /// "HH:MM" as Unix seconds; "" none.
 fn s(hhmm: &str) -> Option<i64> {
-    (!hhmm.is_empty()).then(|| at(hhmm).timestamp())
+    (!hhmm.is_empty()).then(|| at(hhmm).as_second())
 }
 
 fn json_of(item: &Item) -> String {
@@ -21,7 +21,7 @@ fn motis_place(
     arrival: (&str, &str),
     departure: (&str, &str),
 ) -> serde_json::Value {
-    let t = |hhmm: &str| (!hhmm.is_empty()).then(|| at(hhmm).to_rfc3339());
+    let t = |hhmm: &str| (!hhmm.is_empty()).then(|| at(hhmm).to_string());
     json!({
         "name": name,
         "lat": at_.map(|p| p.0),
@@ -36,8 +36,8 @@ fn motis_place(
 fn leg(trip_id: Option<&str>, from: serde_json::Value, stops: Vec<serde_json::Value>, to: serde_json::Value) -> Leg {
     let mut leg = json!({
         "mode": "REGIONAL_RAIL",
-        "startTime": at("08:00").to_rfc3339(),
-        "endTime": at("09:00").to_rfc3339(),
+        "startTime": at("08:00").to_string(),
+        "endTime": at("09:00").to_string(),
         "tripId": trip_id,
     });
     leg["from"] = from;
@@ -104,8 +104,8 @@ fn ends_need_both_positions() {
     let expected = Item::Ends {
         from: Place { name: "A".to_owned(), at: (49.47935, 8.46895) },
         to: Place { name: "B".to_owned(), at: (-1.0, -2.0) },
-        depart_from: at("08:00").timestamp(),
-        depart_until: at("09:00").timestamp(),
+        depart_from: at("08:00").as_second(),
+        depart_until: at("09:00").as_second(),
     };
     assert_eq!(ends, Some(expected));
     assert_eq!(super::ends(&a, &stop("C", None), at("08:00"), at("09:00")), None);
@@ -162,7 +162,7 @@ fn onward_asks_at_the_center_else_where_the_first_train_boards() {
         |id: &str, p: (f64, f64)| Item::Train { id: id.to_owned(), stops: vec![Stop(p.0, p.1, None, s("08:00"))] };
     let asked = |name: &str, p: (f64, f64)| Item::Asked {
         place: Place { name: name.to_owned(), at: p },
-        span: Some((at("08:00").timestamp(), at("10:00").timestamp())),
+        span: Some((at("08:00").as_second(), at("10:00").as_second())),
         seen: Vec::new(),
     };
     assert_eq!(
@@ -197,7 +197,7 @@ fn a_db_board_hour_lists_its_trains_live_times_first() {
     let here = station("Frankfurt Süd", Some((50.099_224, 8.686_406)));
     let expected = Item::Asked {
         place: Place { name: "Frankfurt Süd".to_owned(), at: (50.09922, 8.68641) },
-        span: Some((at("08:00").timestamp(), at("09:00").timestamp())),
+        span: Some((at("08:00").as_second(), at("09:00").as_second())),
         seen: vec![Seen("db:1-2-3".to_owned(), s("08:12"), s("08:11")), Seen("db:4-5-6".to_owned(), None, s("08:41"))],
     };
     assert_eq!(board_hour(&here, at("08:00"), &visits), Some(expected));
@@ -226,7 +226,7 @@ fn a_trafikverket_board_lists_its_runs_at_their_planned_time() {
     }];
     let expected = Item::Asked {
         place: Place { name: "G station".to_owned(), at: (57.7, 11.97) },
-        span: Some((at("07:30").timestamp(), at("10:30").timestamp())),
+        span: Some((at("07:30").as_second(), at("10:30").as_second())),
         seen: vec![Seen("tv:319/2026-10-24".to_owned(), s("08:05"), s("08:05"))],
     };
     let span = (at("07:30"), at("10:30"));

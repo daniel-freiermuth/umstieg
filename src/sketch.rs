@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::db::{self, Visit};
@@ -95,22 +95,17 @@ fn place(name: &str, at: Option<(f64, f64)>) -> Option<Place> {
     Some(Place { name: name.to_owned(), at: rounded(at?) })
 }
 
-fn secs(t: Option<DateTime<Utc>>) -> Option<i64> {
-    t.map(|t| t.timestamp())
+fn secs(t: Option<Timestamp>) -> Option<i64> {
+    t.map(Timestamp::as_second)
 }
 
 /// The search's ends, if both have positions.
-pub fn ends(
-    from: &motis::Stop,
-    to: &motis::Stop,
-    depart_from: DateTime<Utc>,
-    depart_until: DateTime<Utc>,
-) -> Option<Item> {
+pub fn ends(from: &motis::Stop, to: &motis::Stop, depart_from: Timestamp, depart_until: Timestamp) -> Option<Item> {
     Some(Item::Ends {
         from: place(&from.name, from.position)?,
         to: place(&to.name, to.position)?,
-        depart_from: depart_from.timestamp(),
-        depart_until: depart_until.timestamp(),
+        depart_from: depart_from.as_second(),
+        depart_until: depart_until.as_second(),
     })
 }
 
@@ -135,24 +130,24 @@ pub fn itineraries(itineraries: &[Itinerary]) -> Vec<Item> {
 
 /// Departures asked for at `center` (else where the first train boards) from
 /// `from` until `until`, and their trains.
-pub fn onward(center: Option<(f64, f64)>, from: DateTime<Utc>, until: DateTime<Utc>, legs: &[Leg]) -> Vec<Item> {
+pub fn onward(center: Option<(f64, f64)>, from: Timestamp, until: Timestamp, legs: &[Leg]) -> Vec<Item> {
     let first = legs.first().map(|l| &l.from);
     let name = first.map_or("", |p| p.name.as_str());
     let at = center.or_else(|| first.and_then(|p| p.lat.zip(p.lon)));
     let asked = place(name, at).map(|place| Item::Asked {
         place,
-        span: Some((from.timestamp(), until.timestamp())),
+        span: Some((from.as_second(), until.as_second())),
         seen: Vec::new(),
     });
     asked.into_iter().chain(legs.iter().filter_map(train)).collect()
 }
 
 /// An hour of a DB board at `station`, if it has a position.
-pub fn board_hour(station: &crate::timetable::Station, hour: DateTime<Utc>, visits: &[Visit]) -> Option<Item> {
+pub fn board_hour(station: &crate::timetable::Station, hour: Timestamp, visits: &[Visit]) -> Option<Item> {
     let actual = |e: &Option<db::Event>| secs(e.as_ref().and_then(|e| e.changed.or(e.planned)));
     Some(Item::Asked {
         place: place(&station.name, station.position)?,
-        span: Some((hour.timestamp(), hour.timestamp().saturating_add(3600))),
+        span: Some((hour.as_second(), hour.as_second().saturating_add(3600))),
         seen: visits.iter().map(|v| Seen(format!("db:{}", v.trip), actual(&v.arrival), actual(&v.departure))).collect(),
     })
 }
@@ -165,22 +160,22 @@ fn run_id(key: &trafikverket::RunKey) -> String {
 /// A Trafikverket board at `station`, if it has a position.
 pub fn tv_board(
     station: &trafikverket::Station,
-    (from, until): (DateTime<Utc>, DateTime<Utc>),
+    (from, until): (Timestamp, Timestamp),
     seen: &[trafikverket::Seen],
 ) -> Option<Item> {
     Some(Item::Asked {
         place: place(&station.name, station.position)?,
-        span: Some((from.timestamp(), until.timestamp())),
+        span: Some((from.as_second(), until.as_second())),
         seen: seen
             .iter()
-            .map(|s| Seen(run_id(&s.run), Some(s.planned.timestamp()), Some(s.planned.timestamp())))
+            .map(|s| Seen(run_id(&s.run), Some(s.planned.as_second()), Some(s.planned.as_second())))
             .collect(),
     })
 }
 
 /// A Trafikverket run's train: its stops at stations `position` knows.
 pub fn tv_run(run: &trafikverket::Run, position: impl Fn(&str) -> Option<(f64, f64)>) -> Item {
-    let time = |m: Option<trafikverket::Moment>| m.map(|m| m.live.unwrap_or(m.planned).timestamp());
+    let time = |m: Option<trafikverket::Moment>| m.map(|m| m.live.unwrap_or(m.planned).as_second());
     let stops = run
         .stops
         .iter()
@@ -204,7 +199,7 @@ pub fn timetable(tt: &Timetable, heights: &[Option<i32>]) -> Item {
             height: heights.get(i).copied().flatten(),
         })
         .collect();
-    let actual = |t: Option<crate::timetable::Time>| t.map(|t| t.actual.timestamp());
+    let actual = |t: Option<crate::timetable::Time>| t.map(|t| t.actual.as_second());
     let trains = tt
         .trips
         .iter()

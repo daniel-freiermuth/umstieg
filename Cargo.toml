@@ -6,11 +6,12 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
-chrono = { version = "0.4.45", features = ["serde"] }
-chrono-tz = "0.10.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
-iana-time-zone = "0.1.65"
+# Zones from the system's tzdb (/usr/share/zoneinfo), so a tzdata update applies
+# without a rebuild; the bundled copy where the system has none, and compiled-in
+# copies of the feeds' zones (Berlin, Stockholm) so those can't be missing.
+jiff = { version = "1.0.3", features = ["serde", "static", "tzdb-bundle-always"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "query", "gzip"] }
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -2,15 +2,15 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use proptest::prelude::*;
 
 use super::*;
 use crate::testkit::{Builder, at, ride, show, spec, timetable};
 use crate::timetable::{CallIdx, FootpathIdx, PerStation, StationIdx, TripIdx};
 
-const fn min(m: i64) -> TimeDelta {
-    TimeDelta::minutes(m)
+const fn min(m: i64) -> SignedDuration {
+    SignedDuration::from_mins(m)
 }
 
 /// Generous limits departing `from`–`until`; tests narrow what they check.
@@ -20,9 +20,9 @@ fn limits(tt: &Timetable, from: &str, until: &str) -> Limits {
         depart_from: at(from),
         depart_until: at(until),
         max_changes: 5,
-        extra_time: TimeDelta::hours(12),
+        extra_time: SignedDuration::from_hours(12),
         min_transfer: min(5),
-        missed_by: TimeDelta::zero(),
+        missed_by: SignedDuration::ZERO,
         keep_detours: false,
         forward_only: false,
         max_nodes: 1_000_000,
@@ -125,7 +125,7 @@ fn fastest_is_a_connection_the_search_can_list() {
     ];
     for (b, fastest, only) in cases {
         let tt = b.build("A", "D");
-        let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
+        let limits = Limits { extra_time: SignedDuration::ZERO, ..limits(&tt, "08:00", "08:00") };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(fastest)), vec![only.to_owned()]));
     }
@@ -139,7 +139,7 @@ fn a_train_catching_up_its_delay_is_not_pruned() {
     b.trip("RE 1", &[("A", "", "08:00"), ("C", "08:30", "")]);
     b.trip("ICE 2", &[("C", "", "08:21+10"), ("D", "09:21+4", "")]);
     let tt = b.build("A", "D");
-    let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
+    let limits = Limits { extra_time: SignedDuration::ZERO, ..limits(&tt, "08:00", "08:00") };
     let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
     assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(85)), vec!["RE 1 A-C / ICE 2 C-D".to_owned()]));
 }
@@ -239,7 +239,7 @@ fn changes_missed_by_up_to_missed_by_are_listed_with_negative_buffer() {
             .iter()
             .map(|c| {
                 let second = c.rides().nth(1).unwrap().trip;
-                (tt.trips[second.0].label.clone(), c.min_slack(&tt).unwrap().unwrap().num_minutes())
+                (tt.trips[second.0].label.clone(), c.min_slack(&tt).unwrap().unwrap().as_mins())
             })
             .collect();
         found.sort();
@@ -300,10 +300,10 @@ fn walk_into_the_destination_counts_towards_travel_time() {
 fn extreme_limits_saturate_instead_of_overflowing() {
     let tt = direct_or_walk();
     let limits = Limits {
-        depart_until: DateTime::<Utc>::MAX_UTC,
+        depart_until: Timestamp::MAX,
         max_changes: usize::MAX,
-        extra_time: TimeDelta::MAX,
-        missed_by: TimeDelta::MAX,
+        extra_time: SignedDuration::MAX,
+        missed_by: SignedDuration::MAX,
         max_nodes: 1000,
         ..limits(&tt, "08:00", "08:00")
     };
@@ -316,11 +316,11 @@ fn extreme_limits_saturate_instead_of_overflowing() {
 fn a_walk_too_long_to_end_is_never_taken() {
     let mut tt = direct_or_walk();
     for fp in &mut tt.footpaths {
-        fp.duration = TimeDelta::MAX;
+        fp.duration = SignedDuration::MAX;
     }
     assert_eq!(listed(&tt, &limits(&tt, "08:00", "08:00")), ["RE 1 A-D"]);
     // Walking all the way: as long as the walk.
-    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C")], Some(TimeDelta::MAX));
+    assert_eq!(fastest_journeys(&tt).unwrap()[station(&tt, "C")], Some(SignedDuration::MAX));
     let chain = Chain { steps: vec![ride(&tt, "RE 2", "A", "C"), walk(&tt, "C", "D")] };
     let err = chain.arrival(&tt).unwrap_err().to_string();
     assert!(err.contains("arrival after the last walk") && err.contains("out of range"), "{err}");
@@ -634,7 +634,7 @@ fn detour_from_the_origin_counts_no_alternative_leaving_after_the_window() {
             }
         }
         let tt = b.build("A", "D");
-        let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", until) };
+        let limits = Limits { extra_time: SignedDuration::ZERO, ..limits(&tt, "08:00", until) };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         let expected = (Some(min(fastest)), vec![only.to_owned()]);
         assert_eq!((result.fastest, shown(&tt, &result)), expected, "{scenario} until {until}");
@@ -838,7 +838,7 @@ fn earliest_arrival_by_train_from_a_start_time() {
     b.walk("E", "F", 5); // a second walk
     b.walk("A", "W", 1); // a walk before any train
     let tt = b.build("A", "F");
-    let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:45"), TimeDelta::zero()).unwrap();
+    let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:45"), SignedDuration::ZERO).unwrap();
     let cases = [
         ("A", Some("08:00")),
         ("B", Some("08:35")),
@@ -872,7 +872,7 @@ fn earliest_arrival_scans_until_nothing_improves() {
     b.trip("RB 1", &[("A", "", "08:00"), ("B", "08:30", "")]);
     b.walk("B", "C", 5);
     let tt = b.build("A", "E");
-    let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:00"), TimeDelta::zero()).unwrap();
+    let ea = earliest_arrival(&tt, station(&tt, "A"), at("08:00"), at("08:00"), SignedDuration::ZERO).unwrap();
     assert_eq!(ea[station(&tt, "E")], Some(at("09:30")));
 }
 
@@ -885,7 +885,7 @@ fn missed_connections_are_listed_when_they_are_all_there_is() {
     let tt = b.build("A", "D");
     for (missed_by, fastest, expected) in [(0, None, &[][..]), (2, Some(90), &["ICE 1 A-B / RE 2 B-D"])] {
         let limits =
-            Limits { missed_by: min(missed_by), extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
+            Limits { missed_by: min(missed_by), extra_time: SignedDuration::ZERO, ..limits(&tt, "08:00", "08:00") };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         assert_eq!(
             (result.fastest, shown(&tt, &result)),
@@ -923,7 +923,7 @@ fn fastest_missed_connection_never_leaves_the_destination() {
         }
         b.trip("RB 3", &[("C", "", "09:19"), ("D", "09:20", "")]);
         let tt = b.build("A", "D");
-        let limits = Limits { missed_by: min(7), extra_time: TimeDelta::zero(), ..limits(&tt, "08:30", "08:30") };
+        let limits = Limits { missed_by: min(7), extra_time: SignedDuration::ZERO, ..limits(&tt, "08:30", "08:30") };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(54)), sorted(&["RE 1 A-B / RB 2 B-D"])), "{how}");
     }
@@ -1003,7 +1003,7 @@ fn a_search_for_the_fastest_cut_short_leaves_the_list_incomplete() {
     let cases: [(usize, i64, &[&str], Option<usize>); 2] =
         [(20, 40, &[], None), (1_000_000, 60, &["RE 4 A-D"], Some(5))];
     for (max_nodes, fastest, expected, complete) in cases {
-        let limits = Limits { extra_time: TimeDelta::zero(), max_nodes, ..limits(&tt, "08:00", "08:00") };
+        let limits = Limits { extra_time: SignedDuration::ZERO, max_nodes, ..limits(&tt, "08:00", "08:00") };
         let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
         assert_eq!(
             (result.fastest, shown(&tt, &result), result.complete_up_to),
@@ -1076,7 +1076,7 @@ fn a_train_leaving_at_the_deadline_still_counts() {
     b.trip("RE 1", &[("A", "", "08:00"), ("B", "08:30", "")]);
     b.trip("RE 2", &[("B", "", "08:20+10"), ("D", "08:24+6", "")]);
     let tt = b.build("A", "D");
-    let limits = Limits { extra_time: TimeDelta::zero(), ..limits(&tt, "08:00", "08:00") };
+    let limits = Limits { extra_time: SignedDuration::ZERO, ..limits(&tt, "08:00", "08:00") };
     let result = enumerate(&Network::new(&tt).unwrap(), &limits).unwrap();
     assert_eq!((result.fastest, shown(&tt, &result)), (Some(min(30)), vec!["RE 1 A-B / RE 2 B-D".to_owned()]));
 }
@@ -1120,7 +1120,7 @@ fn fastest_journeys_settle_rides_taking_no_time() {
     let tt = b.build("V", "D");
     let fastest = fastest_journeys(&tt).unwrap();
     let at_station = |name| fastest[station(&tt, name)];
-    assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(TimeDelta::zero())));
+    assert_eq!((at_station("V"), at_station("P"), at_station("Q")), (Some(min(30)), None, Some(SignedDuration::ZERO)));
 }
 
 #[test]
@@ -1152,8 +1152,8 @@ fn a_running_search_reports_rounds_states_and_finds() {
 struct Oracle<'a> {
     tt: &'a Timetable,
     limits: &'a Limits,
-    max_duration: TimeDelta,
-    lower_bound: &'a PerStation<Option<TimeDelta>>,
+    max_duration: SignedDuration,
+    lower_bound: &'a PerStation<Option<SignedDuration>>,
     visited: Vec<bool>,
     used: Vec<bool>,
     steps: Vec<Step>,
@@ -1164,8 +1164,8 @@ impl Oracle<'_> {
     fn chains(
         tt: &Timetable,
         limits: &Limits,
-        max_duration: TimeDelta,
-        lower_bound: &PerStation<Option<TimeDelta>>,
+        max_duration: SignedDuration,
+        lower_bound: &PerStation<Option<SignedDuration>>,
     ) -> HashSet<Vec<Step>> {
         let mut o = Oracle {
             tt,
@@ -1178,19 +1178,19 @@ impl Oracle<'_> {
             found: HashSet::new(),
         };
         o.visited[limits.origin.0] = true;
-        o.go(limits.origin, limits.depart_from, None, 0, false, TimeDelta::zero());
+        o.go(limits.origin, limits.depart_from, None, 0, false, SignedDuration::ZERO);
         o.found
     }
 
     fn go(
         &mut self,
         station: StationIdx,
-        ready: DateTime<Utc>,
-        deadline: Option<DateTime<Utc>>,
+        ready: Timestamp,
+        deadline: Option<Timestamp>,
         rides: usize,
         walked: bool,
         // The walk from the origin before the first train.
-        lead: TimeDelta,
+        lead: SignedDuration,
     ) {
         let tt = self.tt;
         if station == tt.destination {
@@ -1273,13 +1273,13 @@ impl Oracle<'_> {
 /// walks (one before the first train, never two in a row), revisits allowed.
 /// Returns (duration, planned ride and walk time, live ride and walk time),
 /// each minimised on its own.
-fn journeys(tt: &Timetable, from: StationIdx) -> [Option<TimeDelta>; 3] {
+fn journeys(tt: &Timetable, from: StationIdx) -> [Option<SignedDuration>; 3] {
     struct Best {
         tt_destination: StationIdx,
-        best: [Option<TimeDelta>; 3],
+        best: [Option<SignedDuration>; 3],
     }
     impl Best {
-        fn offer(&mut self, values: [TimeDelta; 3]) {
+        fn offer(&mut self, values: [SignedDuration; 3]) {
             for (b, v) in self.best.iter_mut().zip(values) {
                 *b = Some(b.map_or(v, |b| b.min(v)));
             }
@@ -1293,10 +1293,10 @@ fn journeys(tt: &Timetable, from: StationIdx) -> [Option<TimeDelta>; 3] {
         b: &mut Best,
         used: &mut [bool],
         station: StationIdx,
-        ready: Option<DateTime<Utc>>,
-        start: Option<DateTime<Utc>>,
-        lead: TimeDelta,
-        rode: (TimeDelta, TimeDelta),
+        ready: Option<Timestamp>,
+        start: Option<Timestamp>,
+        lead: SignedDuration,
+        rode: (SignedDuration, SignedDuration),
         walked: bool,
     ) {
         if station == b.tt_destination {
@@ -1338,7 +1338,7 @@ fn journeys(tt: &Timetable, from: StationIdx) -> [Option<TimeDelta>; 3] {
         }
     }
     let mut b = Best { tt_destination: tt.destination, best: [None; 3] };
-    let zero = TimeDelta::zero();
+    let zero = SignedDuration::ZERO;
     go(tt, &mut b, &mut vec![false; tt.trips.len()], from, None, None, zero, (zero, zero), false);
     b.best
 }
@@ -1378,7 +1378,7 @@ proptest! {
         prop_assert_eq!(unique.len(), got.len(), "listed twice");
         prop_assert_eq!(result.complete_up_to, Some(max_changes));
         // Without a fastest connection there is none at all, whatever the duration.
-        let max_duration = result.fastest.map_or(TimeDelta::days(10), |f| f + limits.extra_time);
+        let max_duration = result.fastest.map_or(SignedDuration::from_hours(240), |f| f + limits.extra_time);
         let expected = Oracle::chains(&tt, &limits, max_duration, &net.lower_bound);
         let show_all = |set: &HashSet<Vec<Step>>| {
             let mut v: Vec<String> = set.iter().map(|s| show(&tt, s)).collect();
@@ -1412,7 +1412,7 @@ proptest! {
             ..limits(&tt, "08:00", "08:00")
         };
         let fastest = |limits: &Limits| {
-            Oracle::chains(&tt, limits, TimeDelta::days(10), &net.lower_bound).into_iter().map(|steps| {
+            Oracle::chains(&tt, limits, SignedDuration::from_hours(240), &net.lower_bound).into_iter().map(|steps| {
                 let chain = Chain { steps };
                 chain.arrival(&tt).unwrap() - chain.departure(&tt).unwrap()
             }).min()

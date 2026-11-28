@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeDelta, Utc};
-use chrono_tz::Tz;
 use clap::ValueEnum;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 
 use crate::checked;
@@ -66,7 +66,7 @@ impl Metric {
 /// the goal is unreachable from there).
 fn heights(net: &Network<'_>, metric: Metric) -> Result<PerStation<Option<f64>>> {
     let tt = net.tt;
-    let minutes = |d: &Option<TimeDelta>| d.map(|d| d.as_seconds_f64() / 60.0);
+    let minutes = |d: &Option<SignedDuration>| d.map(|d| d.as_secs_f64() / 60.0);
     let geometric: fn(f64, f64, f64) -> f64 = match metric {
         Metric::RemainingTime => {
             return Ok(remaining_ride_minutes(tt)?.into_iter().map(|m| m.map(f64::from)).collect());
@@ -102,7 +102,7 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<PerStation<Option<f64>>>
 /// shorter of planned and live time, cancelled stops included, walks rounded
 /// down. Heights are i32 minutes: a lower bound beyond ~4000 years saturates.
 pub fn remaining_ride_minutes(tt: &Timetable) -> Result<PerStation<Option<i32>>> {
-    let minute = |t: DateTime<Utc>| t.timestamp().div_euclid(60);
+    let minute = |t: Timestamp| t.as_second().div_euclid(60);
     let mut edges: PerStation<Vec<(StationIdx, i64)>> = tt.per_station(Vec::new());
     let mut connect = |a: StationIdx, b: StationIdx, w: i64| -> Result<()> {
         if a != b {
@@ -124,7 +124,7 @@ pub fn remaining_ride_minutes(tt: &Timetable) -> Result<PerStation<Option<i32>>>
         }
     }
     for fp in &tt.footpaths {
-        connect(fp.from, fp.to, fp.duration.num_minutes().max(0))?;
+        connect(fp.from, fp.to, fp.duration.as_mins().max(0))?;
     }
     let best = enumerate::shortest_paths(&edges, tt.destination, 0_i64, i64::saturating_add)?;
     Ok(best.into_iter().map(|b| b.map(|m| i32::try_from(m).unwrap_or(i32::MAX))).collect())
@@ -265,15 +265,15 @@ struct Piece {
 
 struct Builder<'a> {
     tt: &'a Timetable,
-    min_transfer: TimeDelta,
-    zone: Tz,
+    min_transfer: SignedDuration,
+    zone: &'a TimeZone,
     used: HashSet<StationIdx>,
     pieces: Vec<Piece>,
     index: HashMap<Piece, usize>,
 }
 
-const fn point(station: StationIdx, t: DateTime<Utc>) -> (i64, StationIdx) {
-    (t.timestamp().div_euclid(60), station)
+fn point(station: StationIdx, t: Timestamp) -> (i64, StationIdx) {
+    (t.as_second().div_euclid(60), station)
 }
 
 /// A ride's points, its skips and its setdowns, as `Piece` names them.
@@ -319,7 +319,7 @@ impl Builder<'_> {
         &mut self,
         chain: &Chain,
         until: Option<usize>,
-        start: Option<(StationIdx, DateTime<Utc>)>,
+        start: Option<(StationIdx, Timestamp)>,
     ) -> Result<Vec<usize>> {
         let tt = self.tt;
         let mut out = Vec::new();
@@ -357,7 +357,7 @@ impl Builder<'_> {
                         b.departure_time().with_context(|| format!("{} boarded where it doesn't depart", t.label))?;
                     // No change before a first train walked to: no wait piece.
                     if let Some((_, since)) = here.filter(|_| ride > 0 || start.is_some()) {
-                        let wait = departure.signed_duration_since(since);
+                        let wait = departure.duration_since(since);
                         // A missed change (`--missed-by`) leaves before the arrival: drawn
                         // forward over the gap, red like other too-short changes.
                         let pts = vec![point(b.station, since.min(departure)), point(b.station, since.max(departure))];
@@ -422,15 +422,15 @@ impl Builder<'_> {
 /// What the search kept to, for the page's own search through picks.
 #[derive(Clone)]
 pub struct Bounds {
-    pub depart_from: DateTime<Utc>,
-    pub depart_until: DateTime<Utc>,
-    pub max_duration: TimeDelta,
+    pub depart_from: Timestamp,
+    pub depart_until: Timestamp,
+    pub max_duration: SignedDuration,
     pub max_changes: usize,
-    pub missed_by: TimeDelta,
+    pub missed_by: SignedDuration,
     pub keep_detours: bool,
     /// With `--forward-only`, each station's least remaining time as the
     /// enumeration saw it (before stops were completed on the found trains).
-    pub lower_bound: Option<PerStation<Option<TimeDelta>>>,
+    pub lower_bound: Option<PerStation<Option<SignedDuration>>>,
 }
 
 pub struct Plot<'a> {
@@ -441,9 +441,9 @@ pub struct Plot<'a> {
     pub subtitle: String,
     pub groups: &'a [Group],
     pub metric: Metric,
-    pub min_transfer: TimeDelta,
+    pub min_transfer: SignedDuration,
     /// Where every time is shown in.
-    pub zone: Tz,
+    pub zone: TimeZone,
     /// Link back to the search form that produced the plot (`umstieg serve`).
     pub back: Option<String>,
     /// Where the page fetches its connections' details; `None` puts them into the page.
@@ -560,7 +560,7 @@ fn network_pieces(builder: &mut Builder<'_>, usable: &Usable) -> Result<Vec<usiz
 /// per (station, start of the wait, line).
 fn intern_fallback(
     out: &mut Vec<FallbackOut>,
-    index: &mut HashMap<(StationIdx, DateTime<Utc>, String), usize>,
+    index: &mut HashMap<(StationIdx, Timestamp, String), usize>,
     builder: &mut Builder<'_>,
     transfer: &enumerate::Transfer,
     fallback: Fallback,
@@ -596,14 +596,14 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
     let mut builder = Builder {
         tt,
         min_transfer: plot.min_transfer,
-        zone: plot.zone,
+        zone: &plot.zone,
         used: HashSet::from([tt.origin, tt.destination]),
         pieces: Vec::new(),
         index: HashMap::new(),
     };
 
     let mut fallback_out: Vec<FallbackOut> = Vec::new();
-    let mut fallback_index: HashMap<(StationIdx, DateTime<Utc>, String), usize> = HashMap::new();
+    let mut fallback_index: HashMap<(StationIdx, Timestamp, String), usize> = HashMap::new();
     let mut chains = Vec::new();
     let mut details = Vec::new();
     let total: usize = plot.groups.iter().map(|g| g.chains.len()).sum();
@@ -618,19 +618,19 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
             let mut refs = Vec::new();
             for (change, transfer) in chain.transfers(tt)?.iter().enumerate() {
                 for fallback in fallbacks.for_change(chain, change)? {
-                    let late = fallback.lands.signed_duration_since(arrival).max(TimeDelta::zero());
-                    let arrive = format!("{} (+{})", text::clock(fallback.lands, plot.zone), text::duration(late));
+                    let late = fallback.lands.duration_since(arrival).max(SignedDuration::ZERO);
+                    let arrive = format!("{} (+{})", text::clock(fallback.lands, &plot.zone), text::duration(late));
                     let i = intern_fallback(&mut fallback_out, &mut fallback_index, &mut builder, transfer, fallback)?;
                     refs.push((i, arrive));
                 }
             }
             chains.push(ChainOut {
                 group: g,
-                header: text::header(tt, chain, plot.min_transfer, plot.zone)?,
+                header: text::header(tt, chain, plot.min_transfer, &plot.zone)?,
                 pieces: builder.pieces(chain, None, None)?,
             });
             details.push(Detail {
-                route: text::route(tt, chain, plot.min_transfer, &HashSet::new(), plot.zone)?,
+                route: text::route(tt, chain, plot.min_transfer, &HashSet::new(), &plot.zone)?,
                 fallbacks: refs,
             });
         }
@@ -644,7 +644,7 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         title: plot.title.clone(),
         subtitle: plot.subtitle.clone(),
         back: plot.back.clone(),
-        tz: plot.zone.name().to_owned(),
+        tz: plot.zone.iana_name().context("the time zone has no IANA name")?.to_owned(),
         metrics,
         metric: shown,
         stations,
@@ -675,14 +675,14 @@ pub fn render(net: &Network<'_>, fallbacks: &mut Fallbacks<'_>, plot: &Plot<'_>)
         limits: LimitsOut {
             origin: tt.origin,
             destination: tt.destination,
-            depart_from: plot.bounds.depart_from.timestamp().div_euclid(60),
-            depart_until: plot.bounds.depart_until.timestamp().div_euclid(60),
-            max_duration: plot.bounds.max_duration.num_minutes(),
+            depart_from: plot.bounds.depart_from.as_second().div_euclid(60),
+            depart_until: plot.bounds.depart_until.as_second().div_euclid(60),
+            max_duration: plot.bounds.max_duration.as_mins(),
             max_changes: plot.bounds.max_changes,
-            missed_by: plot.bounds.missed_by.num_minutes(),
-            min_transfer: plot.min_transfer.num_minutes(),
+            missed_by: plot.bounds.missed_by.as_mins(),
+            min_transfer: plot.min_transfer.as_mins(),
             keep_detours: plot.bounds.keep_detours,
-            lower_bound: plot.bounds.lower_bound.as_ref().map(|lb| lb.map(|b| b.map(|d| d.num_seconds()))),
+            lower_bound: plot.bounds.lower_bound.as_ref().map(|lb| lb.map(|b| b.map(|d| d.as_secs()))),
         },
     };
     // Without a link back the page is a file (`umstieg --html`), like plot.ts's #new-search.

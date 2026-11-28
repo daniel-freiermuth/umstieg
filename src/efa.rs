@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeDelta, Utc};
-use chrono_tz::Europe::Berlin;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::cache::DiskCache;
 use crate::motis::{Itinerary, Leg, Mode, Place};
 use crate::sketch::{self, Sketch};
+use crate::zone;
 
 /// Trips asked for per request; EFA answers with about this many departures.
 const TRIPS_PER_REQUEST: &str = "6";
@@ -56,10 +56,10 @@ struct EfaStop {
     id: Option<String>,
     /// `[lat, lon]` with `coordOutputFormat=WGS84[dd.ddddd]`.
     coord: Option<Vec<f64>>,
-    arrival_time_planned: Option<DateTime<Utc>>,
-    arrival_time_estimated: Option<DateTime<Utc>>,
-    departure_time_planned: Option<DateTime<Utc>>,
-    departure_time_estimated: Option<DateTime<Utc>>,
+    arrival_time_planned: Option<Timestamp>,
+    arrival_time_estimated: Option<Timestamp>,
+    departure_time_planned: Option<Timestamp>,
+    departure_time_estimated: Option<Timestamp>,
     properties: Option<StopProperties>,
 }
 
@@ -134,8 +134,8 @@ impl Efa {
     }
 
     /// Journeys from `from` to `to` (DHIDs) departing from `time` on; their trains are drawn.
-    pub async fn trips(&self, from: &str, to: &str, time: DateTime<Utc>) -> Result<Vec<Itinerary>> {
-        let local = time.with_timezone(&Berlin);
+    pub async fn trips(&self, from: &str, to: &str, time: Timestamp) -> Result<Vec<Itinerary>> {
+        let local = zone::berlin().to_datetime(time);
         let query = [
             ("outputFormat", "rapidJSON".to_owned()),
             ("coordOutputFormat", "WGS84[dd.ddddd]".to_owned()),
@@ -143,8 +143,8 @@ impl Efa {
             ("name_origin", from.to_owned()),
             ("type_destination", "any".to_owned()),
             ("name_destination", to.to_owned()),
-            ("itdDate", local.format("%Y%m%d").to_string()),
-            ("itdTime", local.format("%H%M").to_string()),
+            ("itdDate", local.strftime("%Y%m%d").to_string()),
+            ("itdTime", local.strftime("%H%M").to_string()),
             ("itdTripDateTimeDepArr", "dep".to_owned()),
             ("calcNumberOfTrips", TRIPS_PER_REQUEST.to_owned()),
             ("useRealtime", "1".to_owned()),
@@ -215,7 +215,7 @@ fn place(s: &EfaStop) -> Place {
 
 fn itinerary(journey: &Journey) -> Option<Itinerary> {
     let mut legs = Vec::new();
-    let mut clock: Option<DateTime<Utc>> = None;
+    let mut clock: Option<Timestamp> = None;
     for leg in &journey.legs {
         let (from, to) = (place(&leg.origin), place(&leg.destination));
         let transport = leg.transportation.as_ref();
@@ -223,7 +223,7 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
             // A walk: EFA gives its duration, times follow from the legs around it.
             // A duration beyond representable time makes the journey unusable.
             let start = from.departure.or(clock)?;
-            let end = start.checked_add_signed(TimeDelta::try_seconds(leg.duration.unwrap_or(0))?)?;
+            let end = start.checked_add(SignedDuration::from_secs(leg.duration.unwrap_or(0))).ok()?;
             legs.push(walk(from, to, start, end));
             clock = Some(end);
             continue;
@@ -241,7 +241,7 @@ fn itinerary(journey: &Journey) -> Option<Itinerary> {
         let train_number = properties.and_then(|p| p.train_number.clone());
         // One id per run, shared by every journey using it, so the timetable merges them.
         let run = properties.and_then(|p| p.trip_code).unwrap_or_default();
-        let day = from.scheduled_departure.unwrap_or(start).with_timezone(&Berlin).format("%Y%m%d");
+        let day = zone::berlin().to_datetime(from.scheduled_departure.unwrap_or(start)).strftime("%Y%m%d");
         let stops = &leg.stop_sequence;
         let inner = stops.get(1..stops.len().saturating_sub(1)).unwrap_or_default();
         let intermediate = inner.iter().map(place).collect();
@@ -275,7 +275,7 @@ fn category(transport: &Transportation) -> Option<&str> {
     (words.next() == Some(number)).then_some(category)
 }
 
-const fn walk(from: Place, to: Place, start: DateTime<Utc>, end: DateTime<Utc>) -> Leg {
+const fn walk(from: Place, to: Place, start: Timestamp, end: Timestamp) -> Leg {
     Leg {
         mode: Mode::Walk,
         from,

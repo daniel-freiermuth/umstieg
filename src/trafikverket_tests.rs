@@ -10,7 +10,7 @@ fn announcement(ident: &str, sig: &str, activity: &str, hhmm: &str) -> serde_jso
     json!({
         "AdvertisedTrainIdent": ident, "ScheduledDepartureDateTime": TV_DATE,
         "LocationSignature": sig, "ActivityType": activity,
-        "AdvertisedTimeAtLocation": at(hhmm).to_rfc3339(),
+        "AdvertisedTimeAtLocation": at(hhmm).to_string(),
         "ProductInformation": [{ "Description": "Öresundståg" }],
         "TypeOfTraffic": [{ "Description": "Tåg" }],
     })
@@ -26,7 +26,7 @@ fn runs_of(announcements: &[serde_json::Value]) -> Vec<Run> {
 
 /// Stops as (signature, arrival, departure) in "HH:MM" ("" none).
 fn stops(run: &Run) -> Vec<(String, String, String)> {
-    let hhmm = |m: Option<Moment>| m.map(|m| m.planned.format("%H:%M").to_string()).unwrap_or_default();
+    let hhmm = |m: Option<Moment>| m.map(|m| m.planned.strftime("%H:%M").to_string()).unwrap_or_default();
     run.stops.iter().map(|s| (s.signature.clone(), hhmm(s.arrival), hhmm(s.departure))).collect()
 }
 
@@ -100,11 +100,11 @@ fn only_a_departure_completes_a_stop() {
 #[test]
 fn live_times_cancellations_tracks_and_deletions() {
     let mut late = announcement("1", "A", "Avgang", "08:00");
-    late["EstimatedTimeAtLocation"] = json!(at("08:04").to_rfc3339());
+    late["EstimatedTimeAtLocation"] = json!(at("08:04").to_string());
     late["TrackAtLocation"] = json!("3a");
     let mut passed = announcement("1", "B", "Ankomst", "09:00");
-    passed["EstimatedTimeAtLocation"] = json!(at("09:04").to_rfc3339());
-    passed["TimeAtLocation"] = json!(at("09:06").to_rfc3339());
+    passed["EstimatedTimeAtLocation"] = json!(at("09:04").to_string());
+    passed["TimeAtLocation"] = json!(at("09:06").to_string());
     let mut cancelled = announcement("1", "B", "Avgang", "09:02");
     cancelled["Canceled"] = json!(true);
     let mut deleted = announcement("1", "C", "Ankomst", "10:00");
@@ -202,7 +202,7 @@ async fn boards_list_each_train_once_without_buses_in_the_asked_span() {
     let world = world();
     let tv = Trafikverket::new(&testkit::serve_trafikverket(&world).await, "key", "umstieg-test").unwrap();
     let seen = tv.board("G", at("06:00"), at("07:45")).await.unwrap();
-    let got: Vec<(&str, DateTime<Utc>, ProductClass)> =
+    let got: Vec<(&str, Timestamp, ProductClass)> =
         seen.iter().map(|s| (s.run.ident.as_str(), s.planned, s.class)).collect();
     // 3027 leaves at 07:45, the end of the span; train 1 arrives at 09:00.
     assert_eq!(got, [("1047", at("06:55"), ProductClass::Regional), ("319", at("06:04"), ProductClass::LongDistance)]);

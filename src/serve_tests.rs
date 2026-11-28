@@ -525,7 +525,7 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
         old.key = key(&query);
         lock(&app.jobs).insert(id, old);
     }
-    let today = || chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
+    let today = || jiff::Timestamp::now().to_zoned_datetime(crate::zone::berlin());
     let link_at = |location: &str| {
         let url = reqwest::Url::parse(&format!("http://umstieg{location}")).unwrap();
         let pairs: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
@@ -542,10 +542,10 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
     assert_eq!(code, StatusCode::SEE_OTHER);
     let (path, rest, at) = link_at(&headers[header::LOCATION.as_str()]);
     assert_eq!((path.as_str(), &rest), ("/search", &same));
-    let minute = |t: chrono::DateTime<chrono_tz::Tz>| t.format("%Y-%m-%dT%H:%M").to_string();
+    let minute = |t: &jiff::ZonedDateTime| t.strftime("%Y-%m-%dT%H:%M").to_string();
     // In the second of a repeated hour, with the offset that tells it from the first.
-    let exact = |t: chrono::DateTime<chrono_tz::Tz>| t.format("%Y-%m-%dT%H:%M%:z").to_string();
-    assert!([minute(before), minute(after), exact(before), exact(after)].contains(&at), "{at} is not now");
+    let exact = |t: &jiff::ZonedDateTime| t.strftime("%Y-%m-%dT%H:%M%:z").to_string();
+    assert!([minute(&before), minute(&after), exact(&before), exact(&after)].contains(&at), "{at} is not now");
 
     // "HH:MM" is today.
     let (code, headers, page) = get_page(&app, &format!("/search?from=A&to=C&{zone}&at=08:00")).await;
@@ -553,7 +553,7 @@ async fn a_search_link_with_a_relative_time_is_not_answered_by_an_older_search()
     assert_eq!(code, StatusCode::SEE_OTHER);
     let (path, rest, at) = link_at(&headers[header::LOCATION.as_str()]);
     assert_eq!((path.as_str(), &rest), ("/search", &same));
-    assert_eq!(at, format!("{}T08:00", today().date_naive()));
+    assert_eq!(at, format!("{}T08:00", today().date()));
     assert_eq!(lock(&app.jobs).len(), 2, "the dated link starts the search, not this one");
 }
 

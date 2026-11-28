@@ -5,27 +5,27 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::checked;
 use crate::efa::{self, Efa};
 use crate::motis::{Itinerary, Leg, Motis, Stop};
 
 /// How far past the latest hub arrival we look for onward connections.
-const ONWARD_WINDOW: TimeDelta = TimeDelta::hours(3);
+const ONWARD_WINDOW: SignedDuration = SignedDuration::from_hours(3);
 /// How far before MOTIS's earliest hub arrival onward connections are collected.
-const EARLIER_ONWARD: TimeDelta = TimeDelta::hours(2);
+const EARLIER_ONWARD: SignedDuration = SignedDuration::from_hours(2);
 /// Width of the departure slices the planner is asked for separately.
-const SLICE: TimeDelta = TimeDelta::hours(1);
+const SLICE: SignedDuration = SignedDuration::from_hours(1);
 /// EFA answers with several trips per request; ask it this often across a window.
-const EFA_STEP: TimeDelta = TimeDelta::hours(1);
+const EFA_STEP: SignedDuration = SignedDuration::from_hours(1);
 
 pub struct Query {
     pub origin: Stop,
     pub destination: Stop,
-    pub time: DateTime<Utc>,
-    pub window: TimeDelta,
+    pub time: Timestamp,
+    pub window: SignedDuration,
     /// Hubs forced by the user, tried in addition to automatic ones.
     pub vias: Vec<Stop>,
     pub auto_hubs: usize,
@@ -35,7 +35,7 @@ pub struct Rough {
     pub itineraries: Vec<Itinerary>,
     /// When the planner's first answer leaves and arrives, in the window or
     /// after it (the last bus may have gone).
-    pub first: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    pub first: Option<(Timestamp, Timestamp)>,
     pub hubs: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -127,7 +127,7 @@ async fn via_hub(motis: &Motis, efa: Option<&Efa>, q: &Query, hub: &Stop) -> Res
     // doesn't know), so onward trains are collected from before them as well.
     let from = checked::earlier_or_min(lo, EARLIER_ONWARD).max(q.time);
     // A window: saturating only widens it past anything a feed answers.
-    let onward = checked::sum(hi.signed_duration_since(from), ONWARD_WINDOW);
+    let onward = hi.duration_since(from).saturating_add(ONWARD_WINDOW);
     let second = departing(sliced(motis, &hub.id, &q.destination.id, from, onward).await?, from, onward);
     first.extend(second);
     if let (Some(efa), Some(h), Some(d)) = (efa, &at_hub, &destination) {
@@ -141,8 +141,8 @@ async fn efa_window(
     efa: &Efa,
     from: &str,
     to: &str,
-    time: DateTime<Utc>,
-    window: TimeDelta,
+    time: Timestamp,
+    window: SignedDuration,
     notes: &mut Vec<String>,
 ) -> Vec<Itinerary> {
     let starts = starts(time, window, EFA_STEP);
@@ -161,7 +161,13 @@ async fn efa_window(
 /// earlier departures are the buffer-rich alternatives this tool is about, so
 /// the window is asked for in slices: each slice keeps its own best departures.
 /// Answers are unfiltered: MOTIS pads them with later departures.
-async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
+async fn sliced(
+    motis: &Motis,
+    from: &str,
+    to: &str,
+    time: Timestamp,
+    window: SignedDuration,
+) -> Result<Vec<Itinerary>> {
     let starts = starts(time, window, SLICE);
     let slices = futures::future::try_join_all(starts.iter().map(|&t| motis.plan(from, to, t, SLICE))).await?;
     Ok(slices.into_iter().flatten().collect())
@@ -170,13 +176,13 @@ async fn sliced(motis: &Motis, from: &str, to: &str, time: DateTime<Utc>, window
 /// Request times `step` apart across the window, the first at its start even
 /// when it is empty. Its end saturates: a window reaching past representable
 /// time just ends there.
-fn starts(time: DateTime<Utc>, window: TimeDelta, step: TimeDelta) -> Vec<DateTime<Utc>> {
+fn starts(time: Timestamp, window: SignedDuration, step: SignedDuration) -> Vec<Timestamp> {
     let end = checked::later_or_max(time, window);
     let mut starts = Vec::new();
     let mut t = Some(time);
     while let Some(at) = t.filter(|&at| at == time || at < end) {
         starts.push(at);
-        t = at.checked_add_signed(step);
+        t = at.checked_add(step).ok();
     }
     starts
 }
@@ -185,7 +191,7 @@ fn starts(time: DateTime<Utc>, window: TimeDelta, step: TimeDelta) -> Vec<DateTi
 /// nothing runs; keep the asked-for window. An itinerary counts if any of
 /// its trains leaves in it: EFA also answers an earlier journey (RNV 4 at
 /// 04:13 for 05:00), whose ICE 273 from Mannheim at 06:15 is in the window.
-fn departing(itineraries: Vec<Itinerary>, time: DateTime<Utc>, window: TimeDelta) -> Vec<Itinerary> {
+fn departing(itineraries: Vec<Itinerary>, time: Timestamp, window: SignedDuration) -> Vec<Itinerary> {
     let span = time..=checked::later_or_max(time, window);
     itineraries
         .into_iter()

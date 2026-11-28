@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::extract::{Query as Params, State};
 use axum::http::StatusCode;
-use chrono::NaiveDateTime;
-use chrono::TimeZone;
-use chrono_tz::Europe::Berlin;
+use jiff::civil::DateTime;
 use serde_json::{Value, json};
 
 use super::*;
@@ -21,7 +19,7 @@ fn stop(id: &str, name: &str) -> Stop {
 }
 
 fn query(origin: Stop, destination: Stop, vias: Vec<Stop>, auto_hubs: usize) -> Query {
-    Query { origin, destination, time: at("08:00"), window: TimeDelta::hours(2), vias, auto_hubs }
+    Query { origin, destination, time: at("08:00"), window: SignedDuration::from_hours(2), vias, auto_hubs }
 }
 
 /// A MOTIS leg; `trip` None is a walk.
@@ -85,7 +83,7 @@ fn departing_keeps_itineraries_with_a_train_leaving_in_the_window() {
         ("walk only", vec![leg(None, o, d, "08:30", "09:00")], false),
     ];
     for (what, legs, kept) in cases {
-        let kept_now = !departing(vec![itinerary(legs)], at("08:00"), TimeDelta::hours(2)).is_empty();
+        let kept_now = !departing(vec![itinerary(legs)], at("08:00"), SignedDuration::from_hours(2)).is_empty();
         assert_eq!(kept_now, kept, "{what}");
     }
 }
@@ -94,16 +92,17 @@ fn departing_keeps_itineraries_with_a_train_leaving_in_the_window() {
 fn windows_reaching_past_representable_time_end_there() {
     let o = ("o", "Origin");
     let d = ("d", "Dest");
-    let kept = departing(vec![itinerary(vec![leg(Some("t"), o, d, "08:00", "09:00")])], at("08:00"), TimeDelta::MAX);
+    let kept =
+        departing(vec![itinerary(vec![leg(Some("t"), o, d, "08:00", "09:00")])], at("08:00"), SignedDuration::MAX);
     assert_eq!(kept.len(), 1);
-    let end = DateTime::<Utc>::MAX_UTC;
-    assert_eq!(starts(end - TimeDelta::minutes(90), TimeDelta::MAX, SLICE).len(), 2);
+    let end = Timestamp::MAX;
+    assert_eq!(starts(end - SignedDuration::from_mins(90), SignedDuration::MAX, SLICE).len(), 2);
 }
 
 #[test]
 fn a_zero_window_still_asks_at_its_time() {
-    assert_eq!(starts(at("08:00"), TimeDelta::zero(), SLICE), vec![at("08:00")]);
-    assert_eq!(starts(at("08:00"), TimeDelta::zero(), EFA_STEP), vec![at("08:00")]);
+    assert_eq!(starts(at("08:00"), SignedDuration::ZERO, SLICE), vec![at("08:00")]);
+    assert_eq!(starts(at("08:00"), SignedDuration::ZERO, EFA_STEP), vec![at("08:00")]);
 }
 
 // ---- hubs ----
@@ -204,11 +203,11 @@ async fn plan(State(fake): State<Arc<FakeMotis>>, Params(q): Params<HashMap<Stri
     if fake.failing.contains(&pair) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "down".to_owned());
     }
-    let time: DateTime<Utc> = q["time"].parse().unwrap();
-    let end = time + TimeDelta::seconds(q["searchWindow"].parse().unwrap());
+    let time: Timestamp = q["time"].parse().unwrap();
+    let end = time + SignedDuration::from_secs(q["searchWindow"].parse().unwrap());
     let span = |i: &Value| {
         let legs = i["legs"].as_array().unwrap();
-        let parse = |t: &Value| t.as_str().unwrap().parse::<DateTime<Utc>>().unwrap();
+        let parse = |t: &Value| t.as_str().unwrap().parse::<Timestamp>().unwrap();
         (parse(&legs[0]["startTime"]), parse(&legs[legs.len() - 1]["endTime"]))
     };
     let answers: Vec<&Value> =
@@ -238,7 +237,7 @@ async fn fake_motis(fake: FakeMotis) -> (Motis, Arc<FakeMotis>) {
 struct FakeEfa {
     journeys: HashMap<(String, String), Vec<Value>>,
     failing: Vec<(String, String)>,
-    log: Mutex<Vec<(String, String, DateTime<Utc>)>>,
+    log: Mutex<Vec<(String, String, Timestamp)>>,
 }
 
 impl FakeEfa {
@@ -259,7 +258,7 @@ impl FakeEfa {
         self
     }
 
-    fn asked(&self, from: &str, to: &str) -> Vec<DateTime<Utc>> {
+    fn asked(&self, from: &str, to: &str) -> Vec<Timestamp> {
         let mut times: Vec<_> =
             self.log.lock().unwrap().iter().filter(|(f, t, _)| f == from && t == to).map(|e| e.2).collect();
         times.sort();
@@ -273,8 +272,8 @@ async fn trip_request(
     Params(q): Params<HashMap<String, String>>,
 ) -> (StatusCode, String) {
     let pair = (q["name_origin"].clone(), q["name_destination"].clone());
-    let local = NaiveDateTime::parse_from_str(&format!("{}{}", q["itdDate"], q["itdTime"]), "%Y%m%d%H%M").unwrap();
-    let time = Berlin.from_local_datetime(&local).unwrap().with_timezone(&Utc);
+    let local = DateTime::strptime("%Y%m%d%H%M", format!("{}{}", q["itdDate"], q["itdTime"])).unwrap();
+    let time = crate::zone::berlin().to_timestamp(local).unwrap();
     fake.log.lock().unwrap().push((pair.0.clone(), pair.1.clone(), time));
     if fake.failing.contains(&pair) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "down".to_owned());
@@ -295,13 +294,13 @@ async fn fake_efa(fake: FakeEfa) -> (Efa, Arc<FakeEfa>) {
 async fn windows_are_asked_in_hour_slices() {
     let (motis, fake) =
         fake_motis(FakeMotis::default().route(vec![leg(Some("t"), ("o", "O"), ("d", "D"), "09:30", "10:00")])).await;
-    let found = sliced(&motis, "o", "d", at("08:00"), TimeDelta::minutes(150)).await.unwrap();
+    let found = sliced(&motis, "o", "d", at("08:00"), SignedDuration::from_mins(150)).await.unwrap();
     let asked: Vec<(String, String)> = fake.asked().into_iter().map(|(_, _, t, w)| (t, w)).collect();
     let expected = [("08:00", "3600"), ("09:00", "3600"), ("10:00", "3600")].map(|(t, w)| (t.to_owned(), w.to_owned()));
     assert_eq!(asked, expected);
     assert_eq!(found.len(), 2, "unfiltered: the 08:00 and 09:00 slices both see the 09:30 train");
 
-    sliced(&motis, "o", "d", at("08:30"), TimeDelta::zero()).await.unwrap();
+    sliced(&motis, "o", "d", at("08:30"), SignedDuration::ZERO).await.unwrap();
     let asked: Vec<(String, String)> = fake.asked().into_iter().map(|(_, _, t, w)| (t, w)).collect();
     assert_eq!(asked.len(), 4, "an empty window asks one slice");
     assert!(asked.contains(&("08:30".to_owned(), "3600".to_owned())), "{asked:?}");

@@ -1,16 +1,21 @@
 use std::collections::HashSet;
 
-use chrono::{TimeDelta, TimeZone, Utc};
-use chrono_tz::America::New_York;
-use chrono_tz::Europe::{Berlin, London};
-use chrono_tz::UTC;
+use jiff::SignedDuration;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 
 use super::{buffer, clock, duration, header, route, timed, window};
 use crate::enumerate::{Chain, Step};
 use crate::testkit::{Builder, time};
 use crate::timetable::{CallIdx, FootpathIdx, StationIdx, TripIdx};
+use crate::zone::berlin;
 
-const MIN: TimeDelta = TimeDelta::minutes(5);
+const MIN: SignedDuration = SignedDuration::from_mins(5);
+const UTC: &TimeZone = &TimeZone::UTC;
+
+fn zone(name: &str) -> TimeZone {
+    TimeZone::get(name).unwrap()
+}
 
 fn ride(trip: TripIdx, board: usize, alight: usize) -> Step {
     Step::Ride { trip, board: CallIdx(board), alight: CallIdx(alight) }
@@ -18,35 +23,37 @@ fn ride(trip: TripIdx, board: usize, alight: usize) -> Step {
 
 #[test]
 fn clock_is_in_the_zone_with_its_abbreviation_and_dst() {
-    let utc = |m, d, h, mi| Utc.with_ymd_and_hms(2026, m, d, h, mi, 0).unwrap();
+    let utc = |m, d, h, mi| UTC.to_timestamp(date(2026, m, d).at(h, mi, 0, 0)).unwrap();
+    let (london, new_york) = (zone("Europe/London"), zone("America/New_York"));
     let cases = [
-        (utc(10, 24, 4, 39), Berlin, "06:39 CEST"),
-        (utc(10, 26, 4, 39), Berlin, "05:39 CET"),
-        (utc(10, 25, 0, 30), Berlin, "02:30 CEST"), // first 02:30 of the night
-        (utc(10, 25, 1, 30), Berlin, "02:30 CET"),  // and the repeated one, told apart
-        (utc(3, 29, 1, 0), Berlin, "03:00 CEST"),   // 02:00 skipped
-        (utc(10, 24, 4, 39), London, "05:39 BST"),
-        (utc(10, 24, 4, 39), New_York, "00:39 EDT"),
+        (utc(10, 24, 4, 39), &berlin(), "06:39 CEST"),
+        (utc(10, 26, 4, 39), &berlin(), "05:39 CET"),
+        (utc(10, 25, 0, 30), &berlin(), "02:30 CEST"), // first 02:30 of the night
+        (utc(10, 25, 1, 30), &berlin(), "02:30 CET"),  // and the repeated one, told apart
+        (utc(3, 29, 1, 0), &berlin(), "03:00 CEST"),   // 02:00 skipped
+        (utc(10, 24, 4, 39), &london, "05:39 BST"),
+        (utc(10, 24, 4, 39), &new_york, "00:39 EDT"),
         (utc(10, 24, 23, 59), UTC, "23:59 UTC"),
     ];
     for (t, zone, want) in cases {
-        assert_eq!(clock(t, zone), want, "{t} in {zone}");
+        assert_eq!(clock(t, zone), want, "{t} in {zone:?}");
     }
 }
 
 #[test]
 fn window_has_the_date_in_the_zone_and_the_end_date_only_when_it_differs() {
-    let utc = |m, d, h, mi| Utc.with_ymd_and_hms(2026, m, d, h, mi, 0).unwrap();
+    let utc = |m, d, h, mi| UTC.to_timestamp(date(2026, m, d).at(h, mi, 0, 0)).unwrap();
+    let new_york = zone("America/New_York");
     let cases = [
-        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), Berlin, "Thu 29 Oct 2026, 06:00 CET–08:00 CET"),
+        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), &berlin(), "Thu 29 Oct 2026, 06:00 CET–08:00 CET"),
         // 23:30 UTC is already the next day in Berlin.
-        (utc(10, 29, 23, 30), utc(10, 30, 1, 0), Berlin, "Fri 30 Oct 2026, 00:30 CET–02:00 CET"),
-        (utc(10, 29, 22, 0), utc(10, 29, 23, 30), Berlin, "Thu 29 Oct 2026, 23:00 CET – Fri 30 Oct, 00:30 CET"),
-        (utc(10, 25, 0, 30), utc(10, 25, 1, 30), Berlin, "Sun 25 Oct 2026, 02:30 CEST–02:30 CET"),
-        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), New_York, "Thu 29 Oct 2026, 01:00 EDT–03:00 EDT"),
+        (utc(10, 29, 23, 30), utc(10, 30, 1, 0), &berlin(), "Fri 30 Oct 2026, 00:30 CET–02:00 CET"),
+        (utc(10, 29, 22, 0), utc(10, 29, 23, 30), &berlin(), "Thu 29 Oct 2026, 23:00 CET – Fri 30 Oct, 00:30 CET"),
+        (utc(10, 25, 0, 30), utc(10, 25, 1, 30), &berlin(), "Sun 25 Oct 2026, 02:30 CEST–02:30 CET"),
+        (utc(10, 29, 5, 0), utc(10, 29, 7, 0), &new_york, "Thu 29 Oct 2026, 01:00 EDT–03:00 EDT"),
     ];
     for (from, until, zone, want) in cases {
-        assert_eq!(window(from, until, zone), want, "{from}–{until} in {zone}");
+        assert_eq!(window(from, until, zone), want, "{from}–{until} in {zone:?}");
     }
 }
 
@@ -64,11 +71,11 @@ fn duration_switches_to_hours_at_sixty_minutes_and_keeps_the_sign() {
         (-90, "-1h30"),
     ];
     for (minutes, want) in cases {
-        assert_eq!(duration(TimeDelta::minutes(minutes)), want, "{minutes}");
+        assert_eq!(duration(SignedDuration::from_mins(minutes)), want, "{minutes}");
     }
     // Whole minutes only, rounded towards zero.
-    assert_eq!(duration(TimeDelta::seconds(59 * 60 + 59)), "59m");
-    assert_eq!(duration(TimeDelta::seconds(-59)), "0m");
+    assert_eq!(duration(SignedDuration::from_secs(59 * 60 + 59)), "59m");
+    assert_eq!(duration(SignedDuration::from_secs(-59)), "0m");
 }
 
 #[test]
@@ -77,7 +84,7 @@ fn timed_shows_the_actual_time_and_the_delay_sign() {
     for (t, want) in cases {
         assert_eq!(timed(time(t), UTC), want, "{t}");
     }
-    assert_eq!(timed(time("23:58+5"), Berlin), "02:03 CEST (+5)");
+    assert_eq!(timed(time("23:58+5"), &berlin()), "02:03 CEST (+5)");
 }
 
 #[test]
@@ -92,9 +99,9 @@ fn buffer_warns_below_the_minimum_and_marks_missed_changes() {
         (-75, "missed 1h15✗"),
     ];
     for (slack, want) in cases {
-        assert_eq!(buffer(TimeDelta::minutes(slack), MIN), want, "{slack}");
+        assert_eq!(buffer(SignedDuration::from_mins(slack), MIN), want, "{slack}");
     }
-    assert_eq!(buffer(TimeDelta::zero(), TimeDelta::zero()), "0m");
+    assert_eq!(buffer(SignedDuration::ZERO, SignedDuration::ZERO), "0m");
 }
 
 #[test]
@@ -107,7 +114,7 @@ fn header_shows_times_in_the_given_zone_and_the_smallest_buffer() {
 
     let two = Chain { steps: vec![ride(ice, 0, 1), ride(re, 0, 1), ride(s, 0, 1)] };
     // Buffers 7m and 4m: the smaller, flagged. 06:39 and 21:06 UTC are 08:39 and 23:06 in Berlin.
-    assert_eq!(header(&tt, &two, MIN, Berlin).unwrap(), "08:39 CEST → 23:06 CEST  14h27  2×  min 4m⚠");
+    assert_eq!(header(&tt, &two, MIN, &berlin()).unwrap(), "08:39 CEST → 23:06 CEST  14h27  2×  min 4m⚠");
 
     tt.destination = StationIdx(tt.stations.iter().position(|s| s.name == "B").unwrap());
     let direct = Chain { steps: vec![ride(ice, 0, 1)] };

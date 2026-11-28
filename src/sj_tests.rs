@@ -4,7 +4,8 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use chrono::TimeDelta;
+use jiff::SignedDuration;
+use jiff::civil::date;
 
 use super::*;
 use crate::motis::Stop;
@@ -13,8 +14,8 @@ use crate::testkit;
 const DEPARTURES: &str = include_str!("../testdata/sj/departures.json");
 
 /// 2026-10-30 at "HH:MM" Swedish (winter) time.
-fn swedish(hhmm: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(&format!("2026-10-30T{hhmm}:00+01:00")).unwrap().to_utc()
+fn swedish(hhmm: &str) -> Timestamp {
+    format!("2026-10-30T{hhmm}:00+01:00").parse().unwrap()
 }
 
 fn fixture() -> Vec<Departure> {
@@ -38,7 +39,7 @@ fn legs(itinerary: &Itinerary) -> Vec<String> {
         .iter()
         .map(|l| {
             let id = |p: &Place| p.stop_id.clone().unwrap_or_default().replace("se-Trafiklab_", "");
-            let local = |t: DateTime<Utc>| t.with_timezone(&Stockholm).format("%H:%M").to_string();
+            let local = |t: Timestamp| zone::stockholm().to_datetime(t).strftime("%H:%M").to_string();
             format!(
                 "{} {} #{} {}→{} {}–{}",
                 l.mode.as_str(),
@@ -177,15 +178,15 @@ fn a_connection_ending_next_to_the_destination_walks_there() {
 
 #[test]
 fn dates_cover_the_span_in_swedish_time() {
-    let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+    let day = |d: i8| date(2026, 10, d);
     assert_eq!(dates(swedish("06:00"), swedish("08:00")), [day(30)]);
     // 23:30 UTC is already the next day in Sweden.
-    assert_eq!(dates(swedish("22:00"), swedish("22:00") + TimeDelta::hours(3)), [day(30), day(31)]);
+    assert_eq!(dates(swedish("22:00"), swedish("22:00") + SignedDuration::from_hours(3)), [day(30), day(31)]);
     assert_eq!(
-        dates(swedish("06:00"), swedish("06:00") + TimeDelta::days(10)),
-        [day(30), day(31), NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()]
+        dates(swedish("06:00"), swedish("06:00") + SignedDuration::from_hours(240)),
+        [day(30), day(31), date(2026, 11, 1)]
     );
-    assert_eq!(dates(swedish("06:00") + TimeDelta::days(1), swedish("06:00")), Vec::<NaiveDate>::new());
+    assert_eq!(dates(swedish("06:00") + SignedDuration::from_hours(24), swedish("06:00")), Vec::<Date>::new());
 }
 
 fn query(from: &str, to: &str) -> Query {
@@ -194,7 +195,7 @@ fn query(from: &str, to: &str) -> Query {
         origin: stop(from),
         destination: stop(to),
         time: swedish("06:00"),
-        window: TimeDelta::hours(2),
+        window: SignedDuration::from_hours(2),
         vias: Vec::new(),
         auto_hubs: 0,
     }
@@ -294,7 +295,7 @@ async fn fake(log: Arc<Mutex<Vec<String>>>, fail: bool) -> String {
 async fn sj_is_asked_once_per_day_and_route_with_its_key() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let sj = Sj::new(&fake(log.clone(), false).await, "umstieg-test").unwrap();
-    let day = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
+    let day = date(2026, 10, 30);
     assert_eq!(sj.departures("740000002", "740000073", day).await.unwrap().len(), 4);
     let asked = log.lock().unwrap().clone();
     assert_eq!(asked.len(), 2);
@@ -308,7 +309,7 @@ async fn sj_is_asked_once_per_day_and_route_with_its_key() {
     // Cached: the same search again asks nothing; another day does.
     sj.departures("740000002", "740000073", day).await.unwrap();
     assert_eq!((log.lock().unwrap().len(), sj.request_count()), (2, 2));
-    sj.departures("740000002", "740000073", day.succ_opt().unwrap()).await.unwrap();
+    sj.departures("740000002", "740000073", day.tomorrow().unwrap()).await.unwrap();
     assert_eq!(log.lock().unwrap().len(), 4);
 }
 

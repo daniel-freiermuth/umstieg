@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use proptest::prelude::*;
 
 use super::ProductClass::{LongDistance, Regional, SBahn};
@@ -25,10 +25,10 @@ type DelayCase<'a> = (&'a str, &'a [(bool, &'a str, &'a str)], &'a [&'a str]);
 /// (name, MOTIS class, MOTIS calls, merged)
 type SameTimeCase<'a> = (&'a str, Option<ProductClass>, &'a Stops<'a>, bool);
 /// (name, MOTIS class, extra stop, its time, board coverage there, kept)
-type StopCase<'a> = (&'a str, Option<ProductClass>, usize, &'a str, &'a [(DateTime<Utc>, ProductClass)], bool);
+type StopCase<'a> = (&'a str, Option<ProductClass>, usize, &'a str, &'a [(Timestamp, ProductClass)], bool);
 
-fn minutes(m: i64) -> TimeDelta {
-    TimeDelta::minutes(m)
+fn minutes(m: i64) -> SignedDuration {
+    SignedDuration::from_mins(m)
 }
 
 /// A station known to DB under `board_name` (`None`: only MOTIS knows it).
@@ -90,7 +90,7 @@ fn boards(visits: impl IntoIterator<Item = (usize, Visit)>) -> Boards {
     out
 }
 
-fn cover(boards: &mut Boards, station: usize, entries: &[(DateTime<Utc>, ProductClass)]) {
+fn cover(boards: &mut Boards, station: usize, entries: &[(Timestamp, ProductClass)]) {
     boards.entry(StationIdx(station)).or_default().1 = Coverage::of(entries);
 }
 
@@ -364,7 +364,7 @@ fn propagate_delays_carries_the_last_known_delay_forward() {
 
 #[test]
 fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
-    let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
+    let (min, max) = (Timestamp::MIN, Timestamp::MAX);
     let mut calls = vec![
         Call {
             station: StationIdx(0),
@@ -385,11 +385,12 @@ fn absurd_delays_make_later_stops_unreachable_instead_of_panicking() {
 fn board_hours_near_the_ends_of_time_stay_in_range() {
     // First the plain case: it fails fast where the open-ended ones below would loop for ages.
     assert_eq!(hours(at("08:10"), at("08:50")), [at("07:00"), at("08:00"), at("09:00")]);
-    let (min, max) = (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC);
-    let none: Vec<DateTime<Utc>> = Vec::new();
+    let (min, max) = (Timestamp::MIN, Timestamp::MAX);
+    let none: Vec<Timestamp> = Vec::new();
     assert_eq!(hours(min, min), none, "no hour before the earliest time");
-    // chrono can't round times past 2262 to the hour: no boards asked for, no panic.
-    assert_eq!(hours(max - TimeDelta::minutes(10), max), none);
+    // At the latest time there is, the hours up to it, none past it.
+    let last: Timestamp = "9999-12-30T22:00:00Z".parse().unwrap();
+    assert_eq!(hours(max - SignedDuration::from_mins(10), max), [last - SignedDuration::from_hours(1), last]);
     let far = hours(at("08:10"), max);
     assert_eq!((far.len(), far.first()), (10, Some(&at("07:00"))), "capped, the end saturates");
 }
@@ -435,7 +436,7 @@ proptest! {
         // The model: per call, its first time is at least the last time at the
         // call before plus the stretch's planned time less a quarter (whole
         // minutes); no time is earlier than the one before.
-        let mut delay = TimeDelta::zero();
+        let mut delay = SignedDuration::ZERO;
         let mut previous: Option<Time> = None;
         let mut left: Option<Time> = None;
         let mut k = 0;
@@ -446,10 +447,10 @@ proptest! {
                 k += 1;
                 prop_assert_eq!(new.planned, old.planned);
                 let live = from_board || old.actual != old.planned;
-                let mut expected = if live { old.actual } else { old.planned + delay.max(TimeDelta::zero()) };
+                let mut expected = if live { old.actual } else { old.planned + delay.max(SignedDuration::ZERO) };
                 if let Some(l) = left.filter(|_| first) {
                     let planned = old.planned - l.planned;
-                    let fastest = planned - minutes(planned.num_minutes().div_euclid(4));
+                    let fastest = planned - minutes(planned.as_mins().div_euclid(4));
                     expected = expected.max(l.actual + fastest);
                 }
                 if let Some(p) = previous {
@@ -734,7 +735,7 @@ fn nearby_stations_kept_apart_get_minimum_walks_both_ways() {
     ];
     // MOTIS knows a quicker way from the S-Bahn station up to the main hall.
     let motis = HashMap::from([((StationIdx(1), StationIdx(0)), minutes(2))]);
-    let got: Vec<(usize, usize, TimeDelta)> = footpaths(&stations, motis)
+    let got: Vec<(usize, usize, SignedDuration)> = footpaths(&stations, motis)
         .into_iter()
         .map(|Footpath { from, to, duration }| (from.0, to.0, duration))
         .collect();
@@ -1084,9 +1085,9 @@ fn a_db_train_turned_short_isnt_ridden_across_the_stretch_it_doesnt_run() {
         depart_from: at("08:00"),
         depart_until: at("08:00"),
         max_changes: 5,
-        extra_time: TimeDelta::hours(12),
-        min_transfer: TimeDelta::minutes(5),
-        missed_by: TimeDelta::zero(),
+        extra_time: SignedDuration::from_hours(12),
+        min_transfer: SignedDuration::from_mins(5),
+        missed_by: SignedDuration::ZERO,
         keep_detours: false,
         forward_only: false,
         max_nodes: 1_000_000,
@@ -1930,7 +1931,7 @@ fn coupled_db_runs_parting_past_the_boards_dont_take_each_others_copies() {
 fn merge_by_number(label: &str, offset: i64) -> Vec<Trip> {
     let stations = vec![station("A", Some("A")), station("B", Some("B")), station("E", None)];
     let visits = run("r", "ICE 616", Some(LongDistance), &[(0, "", "08:00"), (1, "09:00", "")]);
-    let [start, end] = [at("08:00"), at("11:00")].map(|t| (t + minutes(offset)).format("%H:%M").to_string());
+    let [start, end] = [at("08:00"), at("11:00")].map(|t| (t + minutes(offset)).strftime("%H:%M").to_string());
     let motis = motis_trip(label, Some(LongDistance), &[(0, "", start.as_str()), (2, end.as_str(), "")]);
     merge(&stations, &boards(visits), raw(vec![("m", motis)]), Vec::new(), false)
 }
@@ -2428,8 +2429,8 @@ async fn each_hour_of_a_db_board_is_drawn_at_its_station_if_it_has_a_position() 
     // Osthafen and Mittelhof lie nowhere known: not drawn.
     let hour = |h: &str| Item::Asked {
         place: Place { name: "Westend".to_owned(), at: (50.11905, 8.65351) },
-        span: Some((at(h).timestamp(), at(h).timestamp() + 3600)),
-        seen: vec![Seen("db:1001-2610241000".to_owned(), None, Some(at("08:00").timestamp()))],
+        span: Some((at(h).as_second(), at(h).as_second() + 3600)),
+        seen: vec![Seen("db:1001-2610241000".to_owned(), None, Some(at("08:00").as_second()))],
     };
     assert_eq!(drawn, [hour("07:00"), hour("08:00")]);
 }
@@ -2633,11 +2634,11 @@ async fn trafikverket_boards_and_runs_are_drawn_as_they_come() {
 
     let goteborg = Item::Asked {
         place: Place { name: "Göteborg C".to_owned(), at: GOTEBORG },
-        span: Some((at("05:30").timestamp(), at("07:30").timestamp())),
-        seen: vec![Seen(id("319"), Some(at("06:04").timestamp()), Some(at("06:04").timestamp()))],
+        span: Some((at("05:30").as_second(), at("07:30").as_second())),
+        seen: vec![Seen(id("319"), Some(at("06:04").as_second()), Some(at("06:04").as_second()))],
     };
     assert!(drawn.contains(&goteborg), "{drawn:?}");
-    let s = |hhmm: &str| Some(at(hhmm).timestamp());
+    let s = |hhmm: &str| Some(at(hhmm).as_second());
     let sj = Item::Train {
         id: id("319"),
         stops: vec![
@@ -2832,7 +2833,7 @@ fn stations_with_different_trafikverket_signatures_stay_apart() {
 
 fn tv_run(ident: &str, class: ProductClass, stops: &[&str]) -> crate::trafikverket::Run {
     let moment = |minute: usize| {
-        let planned = at("08:00") + TimeDelta::minutes(i64::try_from(minute).unwrap() * 10);
+        let planned = at("08:00") + SignedDuration::from_mins(i64::try_from(minute).unwrap() * 10);
         Some(crate::trafikverket::Moment { planned, live: None, cancelled: false })
     };
     crate::trafikverket::Run {
@@ -2852,7 +2853,7 @@ fn tv_run(ident: &str, class: ProductClass, stops: &[&str]) -> crate::trafikverk
     }
 }
 
-type Spans = HashMap<String, (DateTime<Utc>, DateTime<Utc>)>;
+type Spans = HashMap<String, (Timestamp, Timestamp)>;
 
 /// Trafikverket stations named by signature, at (lat, lon).
 fn tv_stations(list: &[(&str, (f64, f64))]) -> Vec<crate::trafikverket::Station> {
@@ -2967,9 +2968,9 @@ fn tv_journeys(run: &crate::trafikverket::Run) -> [Vec<String>; 3] {
         depart_from: at("08:00"),
         depart_until: at("08:00"),
         max_changes: 5,
-        extra_time: TimeDelta::hours(12),
-        min_transfer: TimeDelta::minutes(5),
-        missed_by: TimeDelta::zero(),
+        extra_time: SignedDuration::from_hours(12),
+        min_transfer: SignedDuration::from_mins(5),
+        missed_by: SignedDuration::ZERO,
         keep_detours: false,
         forward_only: false,
         max_nodes: 1_000_000,
@@ -3028,7 +3029,7 @@ fn a_train_only_cut_short_runs_nowhere_past_its_new_end() {
     cancel(&mut run.stops[2].arrival);
     cancel(&mut run.stops[2].departure);
     let (.., gaps) = fed_trip(&run, &by_sig, &mut Stations::default());
-    assert_eq!(gaps, [(Some(at("08:10")), DateTime::<Utc>::MAX_UTC, None)], "nothing after B");
+    assert_eq!(gaps, [(Some(at("08:10")), Timestamp::MAX, None)], "nothing after B");
     // Turned at B, C's arrival announced and running: it starts again at C.
     let mut run = tv_run("1", Regional, &["A", "B", "C"]);
     cancel(&mut run.stops[1].departure);
@@ -3207,7 +3208,7 @@ fn stop_times(departures: &[Departure<'_>]) -> serde_json::Value {
     let positions = horizon_stations();
     let place = |&(sig, arrival, departure): &(&str, &str, &str)| {
         let (lat, lon) = positions[sig];
-        let iso = |hhmm: &str| time(hhmm).map(|t| t.planned.to_rfc3339());
+        let iso = |hhmm: &str| time(hhmm).map(|t| t.planned.to_string());
         json!({ "name": sig, "stopId": format!("{sig}-quay"), "lat": lat, "lon": lon,
                 "arrival": iso(arrival), "scheduledArrival": iso(arrival),
                 "departure": iso(departure), "scheduledDeparture": iso(departure) })

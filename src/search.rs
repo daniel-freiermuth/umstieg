@@ -6,10 +6,11 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::Tz;
+use anyhow::{Context, Result, bail};
 use futures::future::{join_all, try_join_all};
+use jiff::civil;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::enumerate::{self, Chain, Limits, Network, REPORT_EVERY, Step};
@@ -20,7 +21,7 @@ use crate::sj::{self, Sj};
 use crate::sketch::{self, Sketch};
 use crate::text::{buffer, clock, duration, header, route, timed, window};
 use crate::trafikverket::{self, Trafikverket};
-use crate::{checked, complete, db, efa, plot, rough, timetable, usable};
+use crate::{checked, complete, db, efa, plot, rough, timetable, usable, zone};
 
 /// Upper limit of the options in minutes (`--window`, `--min-transfer`,
 /// `--missed-by`): a week, far beyond any search the timetable covers.
@@ -46,22 +47,30 @@ fn max_changes(s: &str) -> Result<usize, String> {
     if n <= MAX_CHANGES { Ok(n) } else { Err(format!("{n} is not in 0..={MAX_CHANGES}")) }
 }
 
+/// Whether the plot page can show times in `zone`: JavaScript's Intl takes
+/// IANA names only, not a POSIX rule ("CET-1CEST", no name), "Etc/Unknown",
+/// nor the tzdb directory's other entries ("Factory", "posixrules", "posix/…").
+fn showable(zone: &TimeZone) -> bool {
+    zone.iana_name().is_some_and(|name| {
+        let name = name.to_ascii_lowercase();
+        !["factory", "posixrules", "localtime"].contains(&name.as_str())
+            && !["posix/", "right/"].iter().any(|dir| name.starts_with(dir))
+    })
+}
+
 /// `--time-zone`: an IANA name such as "Europe/Berlin".
-fn time_zone(s: &str) -> Result<Tz, String> {
-    s.parse().map_err(|_| format!("{s:?} is not a time zone name such as Europe/Berlin"))
+fn time_zone(s: &str) -> Result<TimeZone, String> {
+    TimeZone::get(s).ok().filter(showable).ok_or_else(|| format!("{s:?} is not a time zone name such as Europe/Berlin"))
 }
 
 /// This machine's time zone: TZ ("Europe/Berlin", ":Europe/Berlin" or a
-/// zoneinfo path) if set, else the system's.
-fn machine_zone() -> Result<Tz> {
-    let name = match std::env::var("TZ") {
-        Ok(tz) if !tz.is_empty() => {
-            let tz = tz.trim_start_matches(':');
-            tz.split_once("zoneinfo/").map_or(tz, |(_, name)| name).to_owned()
-        }
-        _ => iana_time_zone::get_timezone().context("cannot tell this machine's time zone; give --time-zone")?,
-    };
-    time_zone(&name).map_err(|e| anyhow!("this machine's time zone: {e}; give --time-zone"))
+/// zoneinfo path) if set, else /etc/localtime; one the plot page can show.
+fn machine_zone() -> Result<TimeZone> {
+    let zone = TimeZone::try_system().context("cannot tell this machine's time zone; give --time-zone")?;
+    if !showable(&zone) {
+        bail!("this machine's time zone has no IANA name such as Europe/Berlin; give --time-zone");
+    }
+    Ok(zone)
 }
 
 /// Stations, time and every limit of a search. The web form is generated from
@@ -79,7 +88,7 @@ pub struct SearchArgs {
     /// Time zone of --at and of every time shown, e.g. "Europe/Berlin". Default:
     /// this machine's (TZ, else the system's).
     #[arg(long, value_parser = time_zone)]
-    pub time_zone: Option<Tz>,
+    pub time_zone: Option<TimeZone>,
     /// Departure window in minutes.
     #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(i64).range(0..=MAX_MINUTES))]
     pub window: i64,
@@ -239,11 +248,11 @@ pub async fn run(
     let feeds = Feeds::new(args, endpoints, keys, &user_agent, &sketch, events)?;
     let (efa, db, tv) = (feeds.efa.as_ref(), feeds.db.as_ref(), feeds.tv.as_ref());
 
-    let zone = match args.time_zone {
-        Some(zone) => zone,
+    let zone = match &args.time_zone {
+        Some(zone) => zone.clone(),
         None => machine_zone()?,
     };
-    let time = parse_time_in(args.at.as_deref(), zone, Utc::now())?;
+    let time = parse_time_in(args.at.as_deref(), &zone, Timestamp::now())?;
     // Options are range-checked by clap; checked again here for searches set up
     // in code, so that none of them can make the time arithmetic overflow.
     let window = checked::minutes(args.window, "--window")?;
@@ -346,22 +355,22 @@ fn drawn(
     tt: &timetable::Timetable,
     chains: &[Chain],
     fallbacks: &mut Fallbacks<'_>,
-    missed_by: TimeDelta,
+    missed_by: SignedDuration,
 ) -> Result<usable::Usable> {
     let extra = fallbacks.for_network(&usable::of_chains(tt, chains), missed_by)?;
     Ok(usable::of_chains(tt, chains.iter().chain(&extra)))
 }
 
 /// What the search kept to, for the page's own search through picks.
-fn bounds(
+const fn bounds(
     limits: &Limits,
-    fastest: TimeDelta,
-    lower_bound: Option<timetable::PerStation<Option<TimeDelta>>>,
+    fastest: SignedDuration,
+    lower_bound: Option<timetable::PerStation<Option<SignedDuration>>>,
 ) -> plot::Bounds {
     plot::Bounds {
         depart_from: limits.depart_from,
         depart_until: limits.depart_until,
-        max_duration: checked::sum(fastest, limits.extra_time),
+        max_duration: fastest.saturating_add(limits.extra_time),
         max_changes: limits.max_changes,
         missed_by: limits.missed_by,
         keep_detours: limits.keep_detours,
@@ -371,8 +380,8 @@ fn bounds(
 
 /// Often there is a connection, only leaving after the window (the last bus
 /// has gone): when the planner's first one leaves and arrives, if any.
-fn later(planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>, zone: Tz) -> String {
-    let at = |t: DateTime<Utc>| format!("{}, {}", t.with_timezone(&zone).format("%a %-d %b"), clock(t, zone));
+fn later(planner_first: Option<(Timestamp, Timestamp)>, zone: &TimeZone) -> String {
+    let at = |t: Timestamp| format!("{}, {}", zone.to_datetime(t).strftime("%a %-d %b"), clock(t, zone));
     planner_first.map_or_else(String::new, |(leaves, arrives)| {
         format!("\nTransitous's first connection leaves {} and arrives {}.", at(leaves), at(arrives))
     })
@@ -601,13 +610,12 @@ async fn with_sj(
 }
 
 /// `--extra-hours` as a duration, negative meaning none.
-fn extra_time(hours: f64) -> Result<TimeDelta> {
+fn extra_time(hours: f64) -> Result<SignedDuration> {
     let seconds = hours * 3600.0;
     if !(seconds.is_finite() && seconds.abs() < 1e12) {
         bail!("--extra-hours: {hours} is out of range");
     }
-    TimeDelta::try_seconds(timetable::whole_seconds(seconds).max(0))
-        .with_context(|| format!("--extra-hours: {hours} is out of range"))
+    Ok(SignedDuration::from_secs(timetable::whole_seconds(seconds).max(0)))
 }
 
 /// Everything the report needs, owned, to be written on a blocking thread.
@@ -617,20 +625,20 @@ struct Report {
     enumeration: enumerate::Enumeration,
     limits: Limits,
     /// With `--forward-only`, the lower bounds the enumeration kept to.
-    lower_bound: Option<timetable::PerStation<Option<TimeDelta>>>,
+    lower_bound: Option<timetable::PerStation<Option<SignedDuration>>>,
     hubs: Vec<String>,
     /// When the planner's earliest answer leaves and arrives.
-    planner_first: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    planner_first: Option<(Timestamp, Timestamp)>,
     /// "12 Transitous requests, 3 EFA requests, …".
     requests: String,
     with_db: bool,
     /// SJ's connections are among the rough routes.
     with_sj: bool,
     /// Where every time is shown in: --time-zone, else the machine's.
-    zone: Tz,
-    time: DateTime<Utc>,
-    depart_until: DateTime<Utc>,
-    min_transfer: TimeDelta,
+    zone: TimeZone,
+    time: Timestamp,
+    depart_until: Timestamp,
+    min_transfer: SignedDuration,
     plot: Option<PlotPage>,
 }
 
@@ -649,7 +657,7 @@ impl Report {
             requests,
             with_db,
             with_sj,
-            zone,
+            ref zone,
             time,
             depart_until,
             min_transfer,
@@ -660,7 +668,7 @@ impl Report {
         let total = result.chains.len();
         let mut missed = 0_usize;
         for chain in &result.chains {
-            if chain.min_slack(tt)?.is_some_and(|s| s < TimeDelta::zero()) {
+            if chain.min_slack(tt)?.is_some_and(|s| s < SignedDuration::ZERO) {
                 missed = missed.saturating_add(1);
             }
         }
@@ -732,7 +740,7 @@ impl Report {
                     groups: &groups,
                     metric: args.metric,
                     min_transfer,
-                    zone,
+                    zone: zone.clone(),
                     back,
                     details_url,
                     progress: &progress,
@@ -748,7 +756,7 @@ impl Report {
 /// The summary line, and how complete the enumeration is (", complete up to
 /// 2 changes; raise --max-nodes for more", or nothing when it is).
 fn summarize(
-    fastest: TimeDelta,
+    fastest: SignedDuration,
     complete_up_to: Option<usize>,
     limits: &Limits,
     (total, listed, groups): (usize, usize, usize),
@@ -767,7 +775,7 @@ fn summarize(
     let summary = format!(
         "fastest {} · limits: ≤ {} travel time, ≤ {} changes · {listing}{}",
         duration(fastest),
-        duration(checked::sum(fastest, limits.extra_time)),
+        duration(fastest.saturating_add(limits.extra_time)),
         limits.max_changes,
         if missed > 0 {
             format!(", {missed} with a change missed by ≤ {}", duration(limits.missed_by))
@@ -785,8 +793,8 @@ fn write_groups(
     groups: &[enumerate::Group],
     args: &SearchArgs,
     fallbacks: &mut Fallbacks<'_>,
-    min_transfer: TimeDelta,
-    zone: Tz,
+    min_transfer: SignedDuration,
+    zone: &TimeZone,
 ) -> Result<()> {
     for group in groups {
         writeln!(out, "■ {} … {}  ({})", tt.trip(group.first)?.label, tt.trip(group.last)?.label, group.chains.len())?;
@@ -812,45 +820,42 @@ fn write_groups(
 /// search, not whichever "now" it is opened at. In the second of a repeated
 /// hour, which that would read as the first, with the offset:
 /// "YYYY-MM-DDTHH:MM+01:00". `None` for a dated `at`, or one that won't parse.
-pub fn dated_at(args: &SearchArgs, now: DateTime<Utc>) -> Option<String> {
+pub fn dated_at(args: &SearchArgs, now: Timestamp) -> Option<String> {
     let at = args.at.as_deref().filter(|a| !a.is_empty());
-    if at.is_some_and(|a| NaiveTime::parse_from_str(a, "%H:%M").is_err()) {
+    if at.is_some_and(|a| civil::Time::strptime("%H:%M", a).is_err()) {
         return None;
     }
-    let zone = match args.time_zone {
-        Some(zone) => zone,
+    let zone = match &args.time_zone {
+        Some(zone) => zone.clone(),
         None => machine_zone().ok()?,
     };
-    let time = parse_time_in(at, zone, now).ok()?;
-    let local = time.with_timezone(&zone);
-    let wall = local.format("%Y-%m-%dT%H:%M").to_string();
-    let first = zone.from_local_datetime(&local.naive_local()).earliest();
-    let repeated = first.is_some_and(|first| first != local);
-    Some(if repeated { format!("{wall}{}", local.format("%:z")) } else { wall })
+    let time = parse_time_in(at, &zone, now).ok()?;
+    let local = time.to_zoned_datetime(zone.clone());
+    let wall = local.strftime("%Y-%m-%dT%H:%M").to_string();
+    let repeated = zone::earliest(&zone, local.datetime()).is_some_and(|first| first != time);
+    Some(if repeated { format!("{wall}{}", local.strftime("%:z")) } else { wall })
 }
 
 /// `at` as a time in `zone`: "HH:MM" on `now`'s date there, nothing is `now`;
 /// "YYYY-MM-DDTHH:MM+01:00" (from `dated_at`) is that moment.
-fn parse_time_in(at: Option<&str>, zone: Tz, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
+fn parse_time_in(at: Option<&str>, zone: &TimeZone, now: Timestamp) -> Result<Timestamp> {
     let Some(at) = at.filter(|a| !a.is_empty()) else { return Ok(now) };
-    if let Ok(t) = DateTime::parse_from_str(at, "%Y-%m-%dT%H:%M%:z") {
-        return Ok(t.with_timezone(&Utc));
+    if let Ok(t) = Timestamp::strptime("%Y-%m-%dT%H:%M%:z", at) {
+        return Ok(t);
     }
-    let naive = if let Ok(t) = NaiveTime::parse_from_str(at, "%H:%M") {
-        NaiveDateTime::new(now.with_timezone(&zone).date_naive(), t)
-    } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M") {
+    let wall = if let Ok(t) = civil::Time::strptime("%H:%M", at) {
+        zone.to_datetime(now).date().to_datetime(t)
+    } else if let Ok(dt) = civil::DateTime::strptime("%Y-%m-%d %H:%M", at) {
         dt
-    } else if let Ok(dt) = NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M") {
+    } else if let Ok(dt) = civil::DateTime::strptime("%Y-%m-%dT%H:%M", at) {
         dt
-    } else if let Ok(d) = NaiveDate::parse_from_str(at, "%Y-%m-%d") {
-        d.and_time(NaiveTime::MIN)
+    } else if let Ok(d) = civil::Date::strptime("%Y-%m-%d", at) {
+        d.to_datetime(civil::Time::midnight())
     } else {
         bail!("cannot parse --at {at:?}; use \"HH:MM\" or \"YYYY-MM-DD HH:MM\"");
     };
-    zone.from_local_datetime(&naive)
-        .earliest()
-        .map(|t| t.with_timezone(&Utc))
-        .with_context(|| format!("{at:?} does not exist in {zone}"))
+    let name = zone.iana_name().unwrap_or("this time zone");
+    zone::earliest(zone, wall).with_context(|| format!("{at:?} does not exist in {name}"))
 }
 
 /// Where a ride's times come from: the board feed ("DB", or "TV" for
@@ -877,8 +882,8 @@ fn write_detail(
     tt: &timetable::Timetable,
     chain: &Chain,
     fallbacks: &mut Fallbacks<'_>,
-    min_transfer: TimeDelta,
-    zone: Tz,
+    min_transfer: SignedDuration,
+    zone: &TimeZone,
 ) -> Result<()> {
     writeln!(out, "  {}", header(tt, chain, min_transfer, zone)?)?;
     let transfers = chain.transfers(tt)?;
@@ -912,7 +917,7 @@ fn write_detail(
                     writeln!(out, "      ↳ {} buffer · if missed:", buffer(tr.slack, min_transfer))?;
                     let options = fallbacks.for_change(chain, ride)?;
                     for f in &options {
-                        let late = f.lands.signed_duration_since(arrival).max(TimeDelta::zero());
+                        let late = f.lands.duration_since(arrival).max(SignedDuration::ZERO);
                         let lands = clock(f.lands, zone);
                         writeln!(out, "          {} · arrive {lands} (+{})", f.line, duration(late))?;
                     }
