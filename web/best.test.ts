@@ -439,6 +439,34 @@ describe("the best connections", () => {
     expect(search(net, [], { until: 50 * M })).toEqual(["walk 0>5@44 2:5>9@45"]);
   });
 
+  test("boarding a train that called where a walk after a train led is a detour whatever the window", () => {
+    // Train 1 from 0 to 1, walk 1 to 2 (5 min, there at 15), train 2 from 2 at 20 to 3; train 3
+    // calls at 2 at 25, then at 3 at 35: caught at 2 instead, a detour though 25 less the walk is
+    // after the window (until 10): the window bounds only leaving the origin. Riding train 2 needs
+    // the detour.
+    const net = [
+      ride(1, [
+        [0, 0],
+        [1, 10],
+      ]),
+      walk(1, 2, 5),
+      ride(2, [
+        [2, 20],
+        [3, 30],
+      ]),
+      ride(3, [
+        [2, 25, 25],
+        [3, 35, 35],
+        [9, 50],
+      ]),
+    ];
+    const onTrain2: Need = { kind: "ride", trip: 2, from: 2, at: 20 * M, to: 3, until: 30 * M };
+    expect(search(net, [onTrain2], { until: 10 * M })).toEqual([]);
+    expect(search(net, [onTrain2], { until: 10 * M, keepDetours: true })).toEqual([
+      "1:0>1@0 walk 1>2@10 2:2>3@20 3:3>9@35",
+    ]);
+  });
+
   test("a station a train only passes (cancelled) is no station or stay of a connection riding it", () => {
     // Boarded at its second call, 0: what it passes counts from there.
     const ice = (cancelled: number[]): Stretch[] => [
