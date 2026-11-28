@@ -295,3 +295,15 @@ async fn failures_are_retried_then_reported() {
     let error = efa.trips("a", "b", at("08:00")).await.unwrap_err();
     assert!(format!("{error:#}").contains("decoding"), "{error:#}");
 }
+
+#[tokio::test]
+async fn trips_draw_their_trains() {
+    let (efa, _) = client(&[(200, TRIPS)]).await;
+    let (sketch, drawn) = testkit::recording();
+    let efa = efa.sketching(sketch);
+    let trips = efa.trips("de:07332:116", "de:08222:2417", at("22:30")).await.unwrap();
+    let trains = sketch::itineraries(&trips);
+    let transit = trips.iter().flat_map(|i| &i.legs).filter(|l| l.is_transit()).count();
+    assert_eq!((trains.len(), transit > 0), (transit, true), "one train per transit leg");
+    assert_eq!(testkit::taken(&drawn), trains);
+}

@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::cache::DiskCache;
 use crate::motis::{Itinerary, Leg, Mode, Place};
+use crate::sketch::{self, Sketch};
 
 /// Trips asked for per request; EFA answers with about this many departures.
 const TRIPS_PER_REQUEST: &str = "6";
@@ -101,6 +102,7 @@ pub struct Efa {
     base: String,
     disk: DiskCache,
     requests: AtomicUsize,
+    sketch: Sketch,
 }
 
 /// EFA addresses German stops by their DHID ("de:07332:116"), which DELFI
@@ -118,14 +120,20 @@ impl Efa {
             base: base.trim_end_matches('/').to_owned(),
             disk: DiskCache::new("efa", CACHE_TTL),
             requests: AtomicUsize::new(0),
+            sketch: Sketch::default(),
         })
+    }
+
+    /// This client, drawing the trains of its answers on `sketch`.
+    pub fn sketching(self, sketch: Sketch) -> Self {
+        Self { sketch, ..self }
     }
 
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
     }
 
-    /// Journeys from `from` to `to` (DHIDs) departing from `time` on.
+    /// Journeys from `from` to `to` (DHIDs) departing from `time` on; their trains are drawn.
     pub async fn trips(&self, from: &str, to: &str, time: DateTime<Utc>) -> Result<Vec<Itinerary>> {
         let local = time.with_timezone(&Berlin);
         let query = [
@@ -144,7 +152,9 @@ impl Efa {
         let url = format!("{}/XML_TRIP_REQUEST2", self.base);
         let text = self.disk.get_or_fetch(&format!("{url}{query:?}"), self.get(&url, &query)).await?;
         let response: TripResponse = serde_json::from_str(&text).with_context(|| format!("decoding {url}"))?;
-        Ok(response.journeys.iter().filter_map(itinerary).collect())
+        let itineraries: Vec<Itinerary> = response.journeys.iter().filter_map(itinerary).collect();
+        self.sketch.draw_all(|| sketch::itineraries(&itineraries));
+        Ok(itineraries)
     }
 
     async fn get(&self, url: &str, query: &[(&str, String)]) -> Result<String> {

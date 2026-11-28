@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 
 use crate::cache::DiskCache;
 use crate::db::fold;
+use crate::sketch::{self, Sketch};
 use crate::timetable::ProductClass;
 
 /// Parallel requests against the API. Transitous is volunteer-run; keep it light.
@@ -323,6 +324,7 @@ pub struct Motis {
     permits: Semaphore,
     disk: DiskCache,
     requests: AtomicUsize,
+    sketch: Sketch,
 }
 
 impl Motis {
@@ -333,7 +335,18 @@ impl Motis {
             permits: Semaphore::new(MAX_CONCURRENT_REQUESTS),
             disk: DiskCache::new("motis", PLAN_CACHE_TTL),
             requests: AtomicUsize::new(0),
+            sketch: Sketch::default(),
         })
+    }
+
+    /// This client, drawing the trains and stations of its answers on `sketch`.
+    pub fn sketching(self, sketch: Sketch) -> Self {
+        Self { sketch, ..self }
+    }
+
+    /// Where the search this client asks for draws.
+    pub const fn sketch(&self) -> &Sketch {
+        &self.sketch
     }
 
     pub fn request_count(&self) -> usize {
@@ -493,7 +506,8 @@ impl Motis {
     }
 
     /// Pareto-optimal itineraries departing within `[time, time + window]`
-    /// (MOTIS may pad with later ones).
+    /// (MOTIS may pad with later ones). Their trains are drawn, answers from
+    /// the cache too.
     pub async fn plan(&self, from: &str, to: &str, time: DateTime<Utc>, window: TimeDelta) -> Result<Vec<Itinerary>> {
         let query = [
             ("fromPlace", from.to_owned()),
@@ -504,6 +518,7 @@ impl Motis {
         let key = format!("{}{query:?}", self.base);
         let text = self.disk.get_or_fetch(&key, self.get_text("/api/v5/plan", &query)).await?;
         let resp: PlanResponse = serde_json::from_str(&text).context("decoding plan")?;
+        self.sketch.draw_all(|| sketch::itineraries(&resp.itineraries));
         Ok(resp.itineraries)
     }
 
@@ -523,7 +538,8 @@ impl Motis {
     }
 
     /// The trains leaving `stop` (a station-level id, else the station at
-    /// `center`) from `from` until `until`, each up to its last stop.
+    /// `center`) from `from` until `until`, each up to its last stop. The
+    /// station (`center`, else where the first train boards) and the trains are drawn.
     pub async fn onward(
         &self,
         stop: Option<&str>,
@@ -550,10 +566,12 @@ impl Motis {
             .get_or_fetch(&format!("{}stoptimes{query:?}", self.base), self.get_text("/api/v5/stoptimes", &query))
             .await?;
         let resp: StopTimesResponse = serde_json::from_str(&text).context("decoding stop times")?;
-        Ok(resp.stop_times.into_iter().filter_map(StopTime::onward).collect())
+        let legs: Vec<Leg> = resp.stop_times.into_iter().filter_map(StopTime::onward).collect();
+        self.sketch.draw_all(|| sketch::onward(center, from, until, &legs));
+        Ok(legs)
     }
 
-    /// A trip with all its stops, as one leg.
+    /// A trip with all its stops, as one leg; its train is drawn.
     pub async fn trip(&self, trip_id: &str) -> Result<Leg> {
         let query = [("tripId", trip_id.to_owned())];
         let text = self
@@ -561,7 +579,10 @@ impl Motis {
             .get_or_fetch(&format!("{}trip{query:?}", self.base), self.get_text("/api/v5/trip", &query))
             .await?;
         let itinerary: Itinerary = serde_json::from_str(&text).context("decoding trip")?;
-        itinerary.legs.into_iter().find(Leg::is_transit).with_context(|| format!("trip {trip_id} has no ride"))
+        let leg =
+            itinerary.legs.into_iter().find(Leg::is_transit).with_context(|| format!("trip {trip_id} has no ride"))?;
+        self.sketch.draw_all(|| sketch::train(&leg));
+        Ok(leg)
     }
 }
 

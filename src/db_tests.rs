@@ -608,7 +608,7 @@ async fn visits_apply_live_changes_to_the_planned_board() {
     let fake = Arc::new(Fake::default());
     fake.on("/plan/8000910/261024/08", 200, PLAN).on("/fchg/8000910", 200, CHANGES);
     let db = client(&fake).await;
-    let (visits, coverage) = db.visits("8000910", &[at("06:00")]).await.unwrap();
+    let (visits, coverage) = db.visits("8000910", &[at("06:00")], &|_, _| {}).await.unwrap();
     let labels = by_label(&visits);
     let mut names: Vec<&str> = labels.keys().map(String::as_str).collect();
     names.sort_unstable();
@@ -651,6 +651,27 @@ async fn visits_apply_live_changes_to_the_planned_board() {
 }
 
 #[tokio::test]
+async fn each_hours_board_is_seen_as_it_comes_with_live_changes() {
+    let fake = Arc::new(Fake::default());
+    fake.on("/plan/8000914/261024/08", 200, PLAN).on("/fchg/8000914", 200, CHANGES);
+    let db = client(&fake).await;
+    let seen = Mutex::new(Vec::new());
+    let record = |hour: DateTime<Utc>, visits: &[Visit]| {
+        let mut labels: Vec<String> = visits.iter().map(Visit::label).collect();
+        labels.sort_unstable();
+        let ice = visits.iter().find(|v| v.label() == "ICE 591").and_then(|v| v.arrival.as_ref()?.changed);
+        seen.lock().unwrap().push((hour, labels, ice));
+    };
+    db.visits("8000914", &[at("06:00"), at("07:00")], &record).await.unwrap();
+    let planned = ["ECE 151", "ICE 591", "RE70 (4557)", "RE70 (4558)", "S1 (38114)", "S3 (38314)"].map(str::to_owned);
+    assert_eq!(
+        seen.into_inner().unwrap(),
+        [(at("06:00"), planned.to_vec(), Some(at("06:42"))), (at("07:00"), Vec::new(), None)],
+        "each hour's planned trains, changes applied; trains added later aren't on a planned board"
+    );
+}
+
+#[tokio::test]
 async fn changes_without_train_data_for_unknown_trains_are_dropped_even_within_the_hours() {
     let fake = Arc::new(Fake::default());
     let changes = r#"<timetable station="Mannheim Hbf" eva="8000244">
@@ -659,7 +680,7 @@ async fn changes_without_train_data_for_unknown_trains_are_dropped_even_within_t
 </timetable>"#;
     fake.on("/fchg/8000913", 200, changes);
     let db = client(&fake).await;
-    let (visits, _) = db.visits("8000913", &[at("10:00")]).await.unwrap();
+    let (visits, _) = db.visits("8000913", &[at("10:00")], &|_, _| {}).await.unwrap();
     let labels: Vec<String> = visits.iter().map(Visit::label).collect();
     assert_eq!(labels, ["ICE 9998"], "no number: not a train to ride");
 }
@@ -691,7 +712,7 @@ async fn added_trains_only_within_the_asked_hours() {
     let fake = Arc::new(Fake::default());
     fake.on("/fchg/8000911", 200, CHANGES);
     let db = client(&fake).await;
-    let (visits, coverage) = db.visits("8000911", &[at("10:00")]).await.unwrap();
+    let (visits, coverage) = db.visits("8000911", &[at("10:00")], &|_, _| {}).await.unwrap();
     let labels: Vec<String> = visits.iter().map(Visit::label).collect();
     assert_eq!(labels, ["ICE 9998"], "12:50 CEST is in the 12 o'clock board, 08:50 is not");
     assert!(
@@ -699,7 +720,7 @@ async fn added_trains_only_within_the_asked_hours() {
         "no board, no coverage: added trains don't count"
     );
 
-    let (visits, _) = db.visits("8000911", &[at("07:00"), at("08:00")]).await.unwrap();
+    let (visits, _) = db.visits("8000911", &[at("07:00"), at("08:00")], &|_, _| {}).await.unwrap();
     assert!(visits.is_empty());
 }
 
@@ -708,8 +729,8 @@ async fn plans_are_cached_on_disk_changes_fetched_once_per_client() {
     let fake = Arc::new(Fake::default());
     fake.on("/plan/8000912/261024/08", 200, PLAN).on("/fchg/8000912", 200, "<timetable/>");
     let db = client(&fake).await;
-    let (first, _) = db.visits("8000912", &[at("06:00"), at("07:00")]).await.unwrap();
-    let (second, _) = db.visits("8000912", &[at("06:00")]).await.unwrap();
+    let (first, _) = db.visits("8000912", &[at("06:00"), at("07:00")], &|_, _| {}).await.unwrap();
+    let (second, _) = db.visits("8000912", &[at("06:00")], &|_, _| {}).await.unwrap();
     assert_eq!((first.len(), second.len()), (6, 6));
     assert_eq!(fake.count("/plan/8000912/261024/08"), 1);
     assert_eq!(fake.count("/plan/8000912/261024/09"), 1, "an empty hour is asked once too");
@@ -719,7 +740,7 @@ async fn plans_are_cached_on_disk_changes_fetched_once_per_client() {
     let other = Arc::new(Fake::default());
     other.on("/fchg/8000912", 200, CHANGES);
     let again = client(&other).await;
-    let (visits, _) = again.visits("8000912", &[at("06:00")]).await.unwrap();
+    let (visits, _) = again.visits("8000912", &[at("06:00")], &|_, _| {}).await.unwrap();
     assert_eq!(other.log(), ["/fchg/8000912"]);
     assert_eq!(visits.len(), 7);
     assert_eq!(by_label(&visits)["ICE 591"].arrival.as_ref().unwrap().changed, Some(at("06:42")));
@@ -739,9 +760,9 @@ async fn an_unwritable_cache_still_answers() {
     db.cache_dir = Some(blocked);
     let station = db.resolve("Schreibschutz", None).await.unwrap().unwrap();
     assert_eq!(station.eva, "8000913");
-    let (visits, _) = db.visits("8000913", &[at("06:00")]).await.unwrap();
+    let (visits, _) = db.visits("8000913", &[at("06:00")], &|_, _| {}).await.unwrap();
     assert_eq!(visits.len(), 6);
-    db.visits("8000913", &[at("06:00")]).await.unwrap();
+    db.visits("8000913", &[at("06:00")], &|_, _| {}).await.unwrap();
     assert_eq!(fake.count("/plan/8000913/261024/08"), 1, "the board is still kept in memory");
 }
 

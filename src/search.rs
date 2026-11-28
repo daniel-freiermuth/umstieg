@@ -17,6 +17,7 @@ use crate::fallback::{self, Fallbacks};
 use crate::keys::Keys;
 use crate::motis::{Motis, Stop};
 use crate::sj::{self, Sj};
+use crate::sketch::{self, Sketch};
 use crate::text::{buffer, clock, duration, header, route, timed, window};
 use crate::trafikverket::{self, Trafikverket};
 use crate::{checked, complete, db, efa, plot, rough, timetable, usable};
@@ -210,6 +211,8 @@ pub struct PlotPage {
     /// Where the page fetches its connections' details (`umstieg serve`);
     /// `None` puts them into the page (a file).
     pub details_url: Option<String>,
+    /// Where the search draws what it has seen (`umstieg serve`'s progress page).
+    pub sketch: Sketch,
 }
 
 /// Runs a search; with `plot`, also renders the plot page. DB and Trafikverket
@@ -231,8 +234,9 @@ pub async fn run(
         events(event);
     };
     let user_agent = endpoints.user_agent();
-    let motis = Motis::new(&endpoints.api, &user_agent)?;
-    let feeds = Feeds::new(args, endpoints, keys, &user_agent, events)?;
+    let sketch = plot.as_ref().map(|p| p.sketch.clone()).unwrap_or_default();
+    let motis = Motis::new(&endpoints.api, &user_agent)?.sketching(sketch.clone());
+    let feeds = Feeds::new(args, endpoints, keys, &user_agent, &sketch, events)?;
     let (efa, db, tv) = (feeds.efa.as_ref(), feeds.db.as_ref(), feeds.tv.as_ref());
 
     let zone = match args.time_zone {
@@ -249,6 +253,7 @@ pub async fn run(
     let extra_time = extra_time(args.extra_hours)?;
     events(Event::Stage("Finding stations"));
     let (origin, destination, vias) = stations(&motis, args).await?;
+    sketch.draw_all(|| sketch::ends(&origin, &destination, time, depart_until));
     let asked = || feeds.so_far(&motis);
 
     events(Event::Stage("Asking Transitous and EFA for rough routes"));
@@ -262,6 +267,7 @@ pub async fn run(
     if args.planned {
         built.timetable.ignore_delays();
     }
+    sketch.draw(|| timetable_sketch(&built.timetable));
     for warning in rough.warnings.iter().chain(&built.warnings) {
         events(Event::Warning(warning));
     }
@@ -292,7 +298,8 @@ pub async fn run(
         Ok((built, enumeration, limits, lower_bound))
     })
     .await?;
-    ticking(complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events), events, asked).await;
+    let completing = complete_stops(&motis, &mut built.timetable, &mut enumeration.chains, events, &sketch);
+    ticking(completing, events, asked).await;
     let requests = feeds.summary(&motis);
     // What the search cost the services, for the operator (Transitous asks to keep the load light).
     tracing::info!(
@@ -322,6 +329,14 @@ pub async fn run(
         plot,
     };
     blocking(events, move |updates| report.write(updates)).await
+}
+
+/// The timetable as the progress page draws it, on the plot's remaining-time
+/// heights (none if they can't be computed).
+fn timetable_sketch(tt: &timetable::Timetable) -> sketch::Item {
+    let heights: Vec<Option<i32>> =
+        plot::remaining_ride_minutes(tt).map(|h| h.into_iter().collect()).unwrap_or_default();
+    sketch::timetable(tt, &heights)
 }
 
 /// What all `chains` use, drawn whether listed or not, and what the fallbacks
@@ -392,19 +407,27 @@ async fn station(motis: &Motis, name: &str, id: Option<&str>) -> Result<Stop> {
 }
 
 /// Fills in the stops of trains in `chains` known only from DB boards, from
-/// Transitous (see `complete`). Failures only cost those stops.
+/// Transitous (see `complete`). Failures only cost those stops. Each train
+/// asked about is drawn as its answer comes.
 async fn complete_stops(
     motis: &Motis,
     tt: &mut timetable::Timetable,
     chains: &mut [Chain],
     events: &(dyn Fn(Event<'_>) + Sync),
+    sketch: &Sketch,
 ) {
     let wanted = complete::wanted(tt, chains);
     if wanted.is_empty() {
         return;
     }
     events(Event::Stage("Asking Transitous for the stops of trains known only from DB boards"));
-    let found = join_all(wanted.iter().map(|&trip| complete::lookup(motis, tt, trip))).await;
+    let tt_ref = &*tt;
+    let found = join_all(wanted.iter().map(|&trip| async move {
+        let found = complete::lookup(motis, tt_ref, trip).await;
+        sketch.draw(|| sketch::Item::AskedTrain { trip: trip.0 });
+        found
+    }))
+    .await;
     for (&trip, found) in wanted.iter().zip(found) {
         match found {
             Ok(Some(leg)) => {
@@ -489,9 +512,13 @@ impl Feeds {
         endpoints: &Endpoints,
         keys: Keys,
         user_agent: &str,
+        sketch: &Sketch,
         events: &(dyn Fn(Event<'_>) + Sync),
     ) -> Result<Self> {
-        let efa = (!endpoints.efa.is_empty()).then(|| efa::Efa::new(&endpoints.efa, user_agent)).transpose()?;
+        let efa = (!endpoints.efa.is_empty())
+            .then(|| efa::Efa::new(&endpoints.efa, user_agent))
+            .transpose()?
+            .map(|efa| efa.sketching(sketch.clone()));
         let db = match (args.no_db, keys.db) {
             (false, Some(credentials)) => Some(db::Db::new(&endpoints.db_api, credentials, user_agent)?),
             (false, None) => {
@@ -691,7 +718,7 @@ impl Report {
         }
 
         let rendered = match plot {
-            Some(PlotPage { back, details_url }) => {
+            Some(PlotPage { back, details_url, .. }) => {
                 // Only fails once `run` has stopped listening.
                 updates.send(Update::Stage("Drawing the plot")).ok();
                 let progress = |done: usize, total: usize| {

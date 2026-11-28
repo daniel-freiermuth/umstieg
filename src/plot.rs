@@ -101,7 +101,7 @@ fn heights(net: &Network<'_>, metric: Metric) -> Result<PerStation<Option<f64>>>
 /// than it lasts: minutes as drawn (whole minutes of the timestamps), the
 /// shorter of planned and live time, cancelled stops included, walks rounded
 /// down. Heights are i32 minutes: a lower bound beyond ~4000 years saturates.
-fn remaining_ride_minutes(tt: &Timetable) -> Result<PerStation<Option<i32>>> {
+pub fn remaining_ride_minutes(tt: &Timetable) -> Result<PerStation<Option<i32>>> {
     let minute = |t: DateTime<Utc>| t.timestamp().div_euclid(60);
     let mut edges: PerStation<Vec<(StationIdx, i64)>> = tt.per_station(Vec::new());
     let mut connect = |a: StationIdx, b: StationIdx, w: i64| -> Result<()> {

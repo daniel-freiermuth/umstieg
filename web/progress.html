@@ -9,7 +9,34 @@
       body {
         min-height: 100vh;
       }
+      /* What the search has seen so far, behind everything: the trains
+         blurred, the stations being asked about sharp. */
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        transition: opacity 0.6s;
+      }
+      #sketch {
+        filter: blur(1.6px);
+        opacity: 0.55;
+      }
+      #asks {
+        opacity: 0.9;
+      }
+      /* Lines at half lightness show less on a dark page. */
+      @media (prefers-color-scheme: dark) {
+        #sketch {
+          opacity: 0.8;
+        }
+      }
+      .over canvas {
+        opacity: 0.2;
+      }
       main {
+        position: relative;
         width: min(640px, 100%);
         margin: 0 auto;
         padding: max(6vh, 24px) 16px 40px;
@@ -20,6 +47,8 @@
       }
       .card {
         padding: 20px 22px;
+        background: color-mix(in srgb, var(--panel) 80%, transparent);
+        backdrop-filter: blur(6px);
       }
       .head {
         display: flex;
@@ -84,6 +113,8 @@
     </style>
   </head>
   <body>
+    <canvas id="sketch"></canvas>
+    <canvas id="asks"></canvas>
     <main>
       <header><!--__BRAND__--></header>
       <div class="card">

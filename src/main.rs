@@ -14,6 +14,7 @@ mod rough;
 mod search;
 mod serve;
 mod sj;
+mod sketch;
 mod sync;
 mod text;
 mod timetable;
@@ -91,7 +92,11 @@ async fn main() -> Result<()> {
             eprintln!("warning: {warning}");
         }
     };
-    let plot = args.html.as_ref().map(|_| search::PlotPage { back: None, details_url: None });
+    let plot = args.html.as_ref().map(|_| search::PlotPage {
+        back: None,
+        details_url: None,
+        sketch: sketch::Sketch::default(),
+    });
     let outcome = search::run(&args, &cli.endpoints, keys::Keys::load()?, plot, &events).await?;
     print!("{}", outcome.text);
     if let (Some(path), Some(plot)) = (&args.html, &outcome.plot) {

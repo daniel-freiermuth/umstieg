@@ -37,6 +37,7 @@ use serde_json::{Value, json};
 use crate::db::Credentials;
 use crate::keys::Keys;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
+use crate::sketch::Sketch;
 use crate::testkit;
 
 /// The tests share the process's DB caches (plans, `stations.tsv`), which are
@@ -737,7 +738,7 @@ async fn search(stand_in: &StandIn, extra: &[&str], with_credentials: bool, plot
         &args(extra),
         &stand_in.endpoints(),
         keys(with_credentials),
-        plot.then_some(PlotPage { back: None, details_url: None }),
+        plot.then_some(PlotPage { back: None, details_url: None, sketch: Sketch::default() }),
         &events,
     )
     .await?;
@@ -837,6 +838,108 @@ async fn trains_only_db_boards_know_get_their_stops_from_transitous() {
         asked,
         [format!("motis stoptimes {} {}", BERGSTADT.id, iso(berlin("08:53"))), format!("motis trip {}", FLX_1236.trip)]
     );
+}
+
+/// Whether sketch item kinds come in the drawing's order: the ends once and
+/// first, then answers (stations asked, trains), at most one timetable, and
+/// after it only trains asked about and their Transitous trips.
+fn in_order(kinds: &[&str]) -> bool {
+    let timetable = kinds.iter().position(|&k| k == "timetable").unwrap_or(kinds.len());
+    let (before, after) = kinds.split_at(timetable);
+    kinds.first() == Some(&"ends")
+        && before.iter().skip(1).all(|&k| k == "asked" || k == "train")
+        && after.iter().skip(1).all(|&k| k == "asked_train" || k == "train")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_draws_its_ends_answers_timetable_and_the_trains_it_asks_about_in_turn() {
+    use crate::sketch::{Item, Place};
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::with_flix().await;
+    let (sketch, drawn) = testkit::recording();
+    let plot = Some(PlotPage { back: None, details_url: None, sketch });
+    search::run(&args(&[]), &stand_in.endpoints(), keys(true), plot, &|_| {}).await.unwrap();
+    let drawn = testkit::taken(&drawn);
+    let kinds: Vec<&str> = drawn
+        .iter()
+        .map(|i| match i {
+            Item::Ends { .. } => "ends",
+            Item::Asked { .. } => "asked",
+            Item::Train { .. } => "train",
+            Item::Timetable { .. } => "timetable",
+            Item::AskedTrain { .. } => "asked_train",
+        })
+        .collect();
+    assert!(in_order(&kinds), "{kinds:?}");
+
+    let place = |s: &Station| Place { name: s.name.to_owned(), at: s.position };
+    let ends = Item::Ends {
+        from: place(&AMSEL),
+        to: place(&ZIELHAFEN),
+        depart_from: berlin("08:00").timestamp(),
+        depart_until: berlin("09:00").timestamp(),
+    };
+    assert_eq!(drawn[0], ends);
+    let timetable = kinds.iter().position(|&k| k == "timetable").unwrap();
+    let (answers, after) = (&drawn[1..timetable], &drawn[timetable + 1..]);
+    assert!(answers.iter().any(|i| matches!(i, Item::Train { id, .. } if id == ICE_101.trip)), "{answers:?}");
+    let db_seen = |i: &Item| matches!(i, Item::Asked { seen, .. } if seen.iter().any(|s| s.0.starts_with("db:")));
+    assert!(answers.iter().any(db_seen), "DB boards: {answers:?}");
+
+    let Item::Timetable { stations, trains } = &drawn[timetable] else { panic!("{timetable} isn't the timetable") };
+    let index = |name: &str| stations.iter().position(|s| s.name == name).unwrap();
+    assert_eq!(stations[index("Zielhafen Hbf")].height, Some(0));
+    assert!(stations[index("Amsel")].height.is_some_and(|h| h > 0), "{stations:?}");
+    // FLX 1236, known only from DB's boards, is asked about: its Transitous trip, then the train.
+    assert!(matches!(after.first(), Some(Item::Train { id, .. }) if id == FLX_1236.trip), "{after:?}");
+    let bergstadt = index("Bergstadt Hbf");
+    let leaves_at_0855 =
+        |t: usize| trains[t].iter().any(|c| c.0 == bergstadt && c.2 == Some(berlin("08:55").timestamp()));
+    assert!(matches!(after.get(1), Some(&Item::AskedTrain { trip }) if leaves_at_0855(trip)), "{after:?} {trains:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_progress_page_gets_the_sketch_in_pieces_until_the_search_is_done() {
+    let _serial = SERIAL.lock().await;
+    let stand_in = StandIn::with_flix().await;
+    let router = crate::serve::test_router(1, stand_in.endpoints(), fake_keys).unwrap();
+    let site = testkit::serve(router).await;
+    let http = reqwest::Client::new();
+    let at = format!("{}T08:00", day());
+    let form = [
+        ("from", "Amsel"),
+        ("to", "Zielhafen Hbf"),
+        ("at", at.as_str()),
+        ("time_zone", "Europe/Berlin"),
+        ("window", "60"),
+    ];
+    let Started { status: status_url, .. } = start_search(&http, &site, &form).await;
+
+    // As the page does: each poll asks for what it hasn't got yet; the one
+    // saying the search is done brings the rest.
+    let mut items: Vec<Value> = Vec::new();
+    let poll = async {
+        loop {
+            let url = format!("{status_url}?sketch={}", items.len());
+            let status: Value = http.get(url).send().await.unwrap().json().await.unwrap();
+            items.extend(status["sketch"].as_array().unwrap().iter().cloned());
+            if status["done"] == true {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    let done = tokio::time::timeout(Duration::from_secs(10), poll).await.unwrap();
+    assert_eq!(done["error"], Value::Null, "{done}");
+    let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
+    assert!(in_order(&kinds), "{kinds:?}");
+    for kind in ["train", "asked", "timetable", "asked_train"] {
+        assert!(kinds.contains(&kind), "{kind} missing: {kinds:?}");
+    }
+    assert_eq!(items[0]["from"], json!({"name": "Amsel", "at": [50.0, 8.0]}));
+    // Handed out: the sketch is gone.
+    let status: Value = http.get(format!("{status_url}?sketch=0")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(status["sketch"], json!([]));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1013,7 +1116,7 @@ async fn search_runs_on_a_current_thread_runtime() {
             stages.lock().unwrap().push(s.to_owned());
         }
     };
-    let plot = Some(PlotPage { back: None, details_url: None });
+    let plot = Some(PlotPage { back: None, details_url: None, sketch: Sketch::default() });
     let outcome = search::run(&args(&[]), &stand_in.endpoints(), keys(true), plot, &events).await.unwrap();
     assert!(summary(&outcome.text).starts_with("fastest 2h01 "), "{}", outcome.text);
     assert!(outcome.plot.is_some());
