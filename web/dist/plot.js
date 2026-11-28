@@ -1411,6 +1411,50 @@ function step(list, pinned, down) {
 function toggle(picks, target) {
   return picks.some((p) => p.id === target.id) ? picks.filter((p) => p.id !== target.id) : [...picks, target];
 }
+function atHeights(picks, pieces, heights) {
+  return picks.map((p) => {
+    const spot = p.spot;
+    if (spot !== undefined && "piece" in spot) {
+      const { raw } = item(pieces, spot.piece);
+      const [first, last] = [p.raw[0], p.raw[p.raw.length - 1]];
+      const from = raw.findIndex(([t, s]) => t === first?.[0] && s === first[1]);
+      const to = from < 0 ? -1 : raw.findIndex(([t, s], k) => k > from && t === last?.[0] && s === last[1]);
+      return { ...p, pts: to < 0 ? [] : stretch(raw, heights, from, to) };
+    }
+    return {
+      ...p,
+      pts: p.raw.flatMap(([t, s]) => {
+        const h = heights[s] ?? null;
+        return h === null ? [] : [[t, h, s]];
+      })
+    };
+  });
+}
+function stretch(raw, heights, from, to) {
+  const drawn = raw.flatMap(([t, s], k) => {
+    const h = heights[s] ?? null;
+    return h === null ? [] : [{ k, pt: [t, h, s] }];
+  });
+  const on = (a, b, t) => [
+    t,
+    a[0] === b[0] ? a[1] : a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]),
+    a[2]
+  ];
+  const cut = [];
+  const push = (q) => {
+    const l = cut[cut.length - 1];
+    if (l?.[0] !== q[0] || l[1] !== q[1])
+      cut.push(q);
+  };
+  for (let n = 1;n < drawn.length; n++) {
+    const a = item(drawn, n - 1), b = item(drawn, n);
+    if (b.k <= from || a.k >= to)
+      continue;
+    push(a.k < from ? on(a.pt, b.pt, item(raw, from)[0]) : a.pt);
+    push(b.k > to ? on(a.pt, b.pt, item(raw, to)[0]) : b.pt);
+  }
+  return cut;
+}
 
 // plot.ts
 var D = load(decodeData(parseJson(byId("data", HTMLScriptElement).text), "data"));
@@ -1545,6 +1589,7 @@ function heightOf(s) {
 function applyMetric(k) {
   metricIndex = k;
   rows = applyHeights(D, k);
+  picks = atHeights(picks, D.pieces, item(D.metrics, k).heights);
   full = extent(D);
   dom = { ...full };
   writeLegend();
@@ -1944,8 +1989,10 @@ var asPick = (t) => ({
   id: t.id,
   info: t.info,
   pts: t.pts,
+  raw: "raw" in t ? t.raw : t.pts.flatMap(([time, , s]) => s === undefined ? [] : [[time, s]]),
   need: t.need ?? null,
-  reach: t.reach ?? null
+  reach: t.reach ?? null,
+  ...t.spot === undefined ? {} : { spot: t.spot }
 });
 function applyPicks() {
   candidates = withBest(narrow(picks));
