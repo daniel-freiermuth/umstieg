@@ -130,6 +130,21 @@ pub fn embedded_json(html: &str, id: &str) -> serde_json::Value {
     serde_json::from_str(json.trim()).unwrap_or_else(|e| panic!("embedded JSON in {open}: {e}"))
 }
 
+/// What a sketch drew, in order.
+pub type Drawn = std::sync::Arc<std::sync::Mutex<Vec<crate::sketch::Item>>>;
+
+/// A sketch keeping what is drawn on it.
+pub fn recording() -> (crate::sketch::Sketch, Drawn) {
+    let drawn = Drawn::default();
+    let sink = drawn.clone();
+    (crate::sketch::Sketch::new(move |item| sink.lock().unwrap().push(item)), drawn)
+}
+
+/// Takes what was drawn so far.
+pub fn taken(drawn: &Drawn) -> Vec<crate::sketch::Item> {
+    std::mem::take(&mut *drawn.lock().unwrap())
+}
+
 /// Serves `router` on a free local port; returns its base URL ("http://127.0.0.1:port").
 pub async fn serve(router: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

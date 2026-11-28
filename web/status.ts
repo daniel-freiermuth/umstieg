@@ -1,6 +1,7 @@
 // Status of a running search (`umstieg serve`), as polled by the progress page.
 
 import { type Decoder, array, boolean, field, nullable, object, string } from "./decode";
+import { type Item, decodeItem } from "./sketch";
 
 export interface Status {
   log: string[];
@@ -12,6 +13,8 @@ export interface Status {
   /** The text report of a search that found no connection. */
   no_connection: string | null;
   back: string;
+  /** What the search has seen from the item asked for on (`?sketch=N`). */
+  sketch: Item[];
 }
 
 export const decodeStatus: Decoder<Status> = (v, path) => {
@@ -23,6 +26,7 @@ export const decodeStatus: Decoder<Status> = (v, path) => {
     error: field(o, "error", nullable(string), path),
     no_connection: field(o, "no_connection", nullable(string), path),
     back: field(o, "back", string, path),
+    sketch: field(o, "sketch", array(decodeItem), path),
   };
 };
 

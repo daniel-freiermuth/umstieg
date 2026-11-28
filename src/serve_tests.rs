@@ -34,7 +34,15 @@ fn plotted(html: &str) -> JobOutcome {
 }
 
 fn job(result: Option<JobOutcome>) -> Job {
-    Job { query: String::new(), key: String::new(), started: Instant::now(), log: Vec::new(), now: None, result }
+    Job {
+        query: String::new(),
+        key: String::new(),
+        started: Instant::now(),
+        log: Vec::new(),
+        now: None,
+        result,
+        sketch: Vec::new(),
+    }
 }
 
 #[test]
@@ -439,6 +447,47 @@ async fn a_search_link_finds_its_search_again_and_shows_its_plot_once_done() {
     let (_, _, body) = get_page(&app, "/job/4/status").await;
     let status: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(ending(&status), (json!(true), json!("no stop named like \"C\""), Value::Null));
+}
+
+/// The sketch items in a status answer.
+async fn sketch_from(app: &Arc<App>, uri: &str) -> Value {
+    let (code, _, body) = get_page(app, uri).await;
+    assert_eq!(code, StatusCode::OK);
+    serde_json::from_str::<Value>(&body).unwrap()["sketch"].clone()
+}
+
+#[tokio::test]
+async fn status_tells_the_sketch_from_the_item_asked_for_on() {
+    let app = app("http://127.0.0.1:9");
+    let mut running = job(None);
+    running.sketch = (0..3).map(|trip| crate::sketch::Item::AskedTrain { trip }).collect();
+    lock(&app.jobs).insert(1, running);
+    let trips = |from: usize| -> Value {
+        (from..3).map(|trip| json!({"kind": "asked_train", "trip": trip})).collect::<Vec<_>>().into()
+    };
+    assert_eq!(sketch_from(&app, "/job/1/status").await, trips(0), "all of it at first");
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=0").await, trips(0));
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=2").await, trips(2));
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=3").await, json!([]));
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=9").await, json!([]), "past the end");
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=two").await, trips(0), "not a number: from the start");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_searchs_sketch_goes_with_the_first_status_saying_so() {
+    let (api, _) = stand_in(json!([])).await;
+    let app = app(&api);
+    let mut running = job(None);
+    running.sketch = (0..2).map(|trip| crate::sketch::Item::AskedTrain { trip }).collect();
+    lock(&app.jobs).insert(1, running);
+    let args = parse(&params(&[("from", "Nowhere"), ("to", "B"), ("at", "2026-11-03T08:00")])).unwrap();
+    crate::cache::TEST_ROOT.scope(app.cache_root.clone(), super::run(app.clone(), 1, args)).await;
+    assert_eq!(lock(&app.jobs)[&1].sketch.len(), 2, "kept until the page hears the search is done");
+    let (_, _, body) = get_page(&app, "/job/1/status?sketch=1").await;
+    let status: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((&status["done"], &status["sketch"]), (&json!(true), &json!([{"kind": "asked_train", "trip": 1}])));
+    assert_eq!(sketch_from(&app, "/job/1/status?sketch=0").await, json!([]), "handed out: gone");
+    assert_eq!(lock(&app.jobs)[&1].sketch, []);
 }
 
 #[tokio::test]

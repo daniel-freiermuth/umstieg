@@ -22,6 +22,7 @@ use tokio::sync::Semaphore;
 use crate::keys::Keys;
 use crate::motis::Motis;
 use crate::search::{self, Endpoints, Event, PlotPage, SearchArgs};
+use crate::sketch::{self, Sketch};
 use crate::sync::lock;
 use crate::{page, plot};
 
@@ -53,6 +54,9 @@ struct Job {
     now: Option<String>,
     /// How the search ended; `None` while it runs.
     result: Option<JobOutcome>,
+    /// What the search has seen, for the progress page to draw; dropped
+    /// once a status answer saying the search is done has handed out the rest.
+    sketch: Vec<sketch::Item>,
 }
 
 /// How a finished search ended.
@@ -313,7 +317,8 @@ async fn search(
     let id = found.unwrap_or_else(|| {
         let id = app.next.fetch_add(1, Ordering::Relaxed);
         let query = raw.unwrap_or_default();
-        let job = Job { query, key, started: Instant::now(), log: Vec::new(), now: None, result: None };
+        let job =
+            Job { query, key, started: Instant::now(), log: Vec::new(), now: None, result: None, sketch: Vec::new() };
         admit(&mut jobs, id, job);
         let job = run(app.clone(), id, args);
         #[cfg(test)]
@@ -373,6 +378,14 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     let Ok(_permit) = app.permits.acquire().await else { return };
     let started = Instant::now();
     let back = Some(format!("/?{query}"));
+    let sketch = {
+        let app = app.clone();
+        Sketch::new(move |item| {
+            if let Some(job) = lock(&app.jobs).get_mut(&id) {
+                job.sketch.push(item);
+            }
+        })
+    };
     let events = |event: Event<'_>| match event {
         Event::Stage(stage) => note(stage, false),
         Event::Warning(warning) => note(&format!("warning: {warning}"), false),
@@ -385,7 +398,7 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
                 &args,
                 &app.endpoints,
                 keys,
-                Some(PlotPage { back, details_url: Some(format!("/job/{id}/chains")) }),
+                Some(PlotPage { back, details_url: Some(format!("/job/{id}/chains")), sketch }),
                 &events,
             )
             .await
@@ -412,7 +425,13 @@ async fn run(app: Arc<App>, id: u64, args: SearchArgs) {
     }
 }
 
-async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
+/// The search's progress; `?sketch=N`: its sketch items from the `N`th on.
+/// The first answer saying it is done hands out the rest and drops the sketch.
+async fn status(
+    State(app): State<Arc<App>>,
+    Path(id): Path<u64>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     #[derive(Serialize)]
     struct Status<'a> {
         log: &'a [String],
@@ -424,13 +443,17 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
         /// The text report of a search that found no connection.
         no_connection: Option<&'a str>,
         back: String,
+        /// What the search has seen since the page last asked.
+        sketch: &'a [sketch::Item],
     }
-    let jobs = lock(&app.jobs);
-    let Some(job) = jobs.get(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    let from = params.get("sketch").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+    let mut jobs = lock(&app.jobs);
+    let Some(job) = jobs.get_mut(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    let done = job.result.is_some();
     let status = Status {
         log: &job.log,
         now: job.now.as_deref(),
-        done: job.result.is_some(),
+        done,
         error: match &job.result {
             Some(JobOutcome::Failed(e)) => Some(e),
             _ => None,
@@ -440,8 +463,12 @@ async fn status(State(app): State<Arc<App>>, Path(id): Path<u64>) -> Response {
             _ => None,
         },
         back: format!("/?{}", job.query),
+        sketch: job.sketch.get(from..).unwrap_or_default(),
     };
     let response = axum::Json(status).into_response();
+    if done {
+        job.sketch = Vec::new();
+    }
     drop(jobs);
     response
 }

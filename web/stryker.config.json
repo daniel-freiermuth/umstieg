@@ -16,6 +16,7 @@
     "geometry.ts",
     "picks.ts",
     "reach.ts",
+    "sketch.ts",
     "status.ts",
     "util.ts"
   ],

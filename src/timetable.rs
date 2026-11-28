@@ -12,6 +12,7 @@ use futures::future::join_all;
 use crate::checked;
 use crate::db::{self, Coverage, Db, Event, Visit};
 use crate::motis::{Itinerary, Leg, Motis, Place, Stop};
+use crate::sketch::{self, Sketch};
 use crate::trafikverket::{self, Trafikverket};
 
 /// Same train number within this time difference at a shared station = same train.
@@ -944,13 +945,23 @@ fn hours(lo: DateTime<Utc>, hi: DateTime<Utc>) -> Vec<DateTime<Utc>> {
     out
 }
 
+/// The boards of `wanted` (station index, eva, hours); each hour is drawn as
+/// its board comes, at the station in `stations`.
 async fn load_boards(
     db: &Db,
+    stations: &[Station],
     wanted: Vec<(StationIdx, String, Vec<DateTime<Utc>>)>,
+    sketch: &Sketch,
     warnings: &mut Vec<String>,
 ) -> Boards {
-    let fetches =
-        wanted.into_iter().map(|(idx, eva, hours)| async move { (idx, eva.clone(), db.visits(&eva, &hours).await) });
+    let fetches = wanted.into_iter().map(|(idx, eva, hours)| async move {
+        let seen = |hour: DateTime<Utc>, visits: &[Visit]| {
+            if let Some(station) = stations.get(idx.0) {
+                sketch.draw_all(|| sketch::board_hour(station, hour, visits));
+            }
+        };
+        (idx, eva.clone(), db.visits(&eva, &hours, &seen).await)
+    });
     let mut boards = Boards::new();
     for (idx, eva, result) in join_all(fetches).await {
         match result {
@@ -978,7 +989,7 @@ async fn fetch_boards(
         .iter()
         .filter_map(|(&idx, &(lo, hi))| Some((idx, stations.list.get(idx.0)?.eva.clone()?, hours(lo, hi))))
         .collect();
-    let mut boards = load_boards(db, wanted, warnings).await;
+    let mut boards = load_boards(db, &stations.list, wanted, motis.sketch(), warnings).await;
 
     let by_db_name: HashMap<String, StationIdx> =
         boards.keys().filter_map(|&idx| Some((stations.list.get(idx.0)?.board_name.clone()?, idx))).collect();
@@ -1043,7 +1054,7 @@ async fn fetch_boards(
             Err(e) => warnings.push(format!("DB station lookup for {name}: {e:#}")),
         }
     }
-    boards.extend(load_boards(db, wanted, warnings).await);
+    boards.extend(load_boards(db, &stations.list, wanted, motis.sketch(), warnings).await);
     boards
 }
 
@@ -1092,17 +1103,24 @@ fn board_span(lo: DateTime<Utc>, hi: DateTime<Utc>) -> (DateTime<Utc>, DateTime<
 }
 
 /// Trains at the boards of `wanted` (signature → span): per signature what it
-/// lists, and the runs not in `known` yet (in `known` from then on).
+/// lists, and the runs not in `known` yet (in `known` from then on). Each
+/// board is drawn as it comes, at its station in `by_sig`.
 async fn tv_boards(
     tv: &Trafikverket,
     wanted: &HashMap<String, (DateTime<Utc>, DateTime<Utc>)>,
+    by_sig: &HashMap<&str, &trafikverket::Station>,
+    sketch: &Sketch,
     known: &mut HashSet<trafikverket::RunKey>,
     keep: impl Fn(&trafikverket::Seen) -> bool,
     warnings: &mut Vec<String>,
 ) -> (HashMap<String, Vec<trafikverket::Seen>>, Vec<trafikverket::RunKey>) {
     let fetches = wanted.iter().map(|(sig, &(lo, hi))| async move {
-        let (from, until) = board_span(lo, hi);
-        (sig.clone(), tv.board(sig, from, until).await)
+        let span = board_span(lo, hi);
+        let result = tv.board(sig, span.0, span.1).await;
+        if let (Ok(seen), Some(station)) = (&result, by_sig.get(sig.as_str())) {
+            sketch.draw_all(|| sketch::tv_board(station, span, seen));
+        }
+        (sig.clone(), result)
     });
     let mut listed = HashMap::new();
     let mut new = Vec::new();
@@ -1121,6 +1139,11 @@ async fn tv_boards(
     }
     new.sort();
     (listed, new)
+}
+
+/// Draws Trafikverket's `runs`, their stops at the stations of `by_sig`.
+fn draw_runs(sketch: &Sketch, runs: &[trafikverket::Run], by_sig: &HashMap<&str, &trafikverket::Station>) {
+    sketch.draw_all(|| runs.iter().map(|run| sketch::tv_run(run, |sig| by_sig.get(sig)?.position)));
 }
 
 /// Trains in Sweden from Trafikverket: the whole runs of every train at the
@@ -1168,7 +1191,8 @@ async fn swedish(
     let line =
         stations.list.get(ends.0.0).and_then(|s| s.position).zip(stations.list.get(ends.1.0).and_then(|s| s.position));
     let mut known = HashSet::new();
-    let (mut listed, keys) = tv_boards(tv, &first, &mut known, |_| true, warnings).await;
+    let sketch = motis.sketch();
+    let (mut listed, keys) = tv_boards(tv, &first, &by_sig, sketch, &mut known, |_| true, warnings).await;
     if !listed.is_empty() && listed.values().all(Vec::is_empty) {
         // Trafikverket announces trains about two weeks ahead: past that its
         // boards are empty, and Transitous's departures stand in.
@@ -1183,11 +1207,14 @@ async fn swedish(
             return Swedish::default();
         }
     };
+    draw_runs(sketch, &runs, &by_sig);
 
     let second = change_points(&runs, &by_sig, line, &first);
-    let (more, keys) = tv_boards(tv, &second, &mut known, |s| s.class != ProductClass::SBahn, warnings).await;
+    let keep = |s: &trafikverket::Seen| s.class != ProductClass::SBahn;
+    let (more, keys) = tv_boards(tv, &second, &by_sig, sketch, &mut known, keep, warnings).await;
     let fed = match tv.runs(&keys).await {
         Ok(found) => {
+            draw_runs(sketch, &found, &by_sig);
             runs.extend(found);
             true
         }

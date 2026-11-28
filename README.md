@@ -144,7 +144,15 @@ Submitting opens the search's own link (`/search?from=…&to=…&at=…`), which
 shows its progress, updated at least every few seconds (requests sent so far,
 DB's per-minute limit being waited for, states explored, connections drawn),
 then the plot, whose "← Change search" link returns to the form with the same
-settings. The link is a permalink: opened again, it shows the same search's
+settings. Behind the progress, blurred, the page draws what the search has
+seen so far, time across and the distance left along the line from start to
+goal down (the plot's `axis` heights): every train an answer names (Transitous
+and EFA routes, DB and Trafikverket boards and runs) as it comes in, each
+station circled while it is asked about, its asked hours staying tinted. Once
+the timetable is built, it replaces those trains and glides onto the plot's
+`remaining-time` heights; trains whose stops are then asked of Transitous
+light up. A poll's news is drawn one by one over the second until the next,
+so nearly every request moves something. The link is a permalink: opened again, it shows the same search's
 plot while the server keeps it, and runs the search again after that (with the
 same results, schedules unchanged; a failed search always runs again). A link
 whose time is relative (no `at`: now; `at=HH:MM`: today) leads on to the link

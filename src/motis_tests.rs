@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::sketch::{Item, Place};
 use crate::testkit::{self, at};
 
 const PLAN: &str = include_str!("../testdata/motis/plan_neustadt_goeteborg.json");
@@ -686,4 +687,76 @@ async fn bodies_cut_short_are_retried() {
     let error = motis.suggest("Fulda").await.unwrap_err();
     assert_eq!(error.to_string(), format!("reading {base}/api/v1/geocode"), "the last attempt's error: {error:#}");
     assert_eq!(motis.request_count(), MAX_ATTEMPTS as usize);
+}
+
+// ---- sketch ----
+
+#[tokio::test]
+async fn plans_draw_their_trains_also_from_the_cache() {
+    let fake = Arc::new(Fake::default());
+    fake.on("/api/v5/plan", 200, None, PLAN);
+    let (sketch, drawn) = testkit::recording();
+    let motis = client(&fake).await.sketching(sketch);
+    let answer = motis.plan("from", "to", at("06:00"), TimeDelta::hours(1)).await.unwrap();
+    let trains = sketch::itineraries(&answer);
+    let transit = answer.iter().flat_map(|i| &i.legs).filter(|l| l.is_transit()).count();
+    assert_eq!((trains.len(), transit > 0), (transit, true), "one train per transit leg");
+    assert_eq!(testkit::taken(&drawn), trains);
+    motis.plan("from", "to", at("06:00"), TimeDelta::hours(1)).await.unwrap();
+    assert_eq!(fake.requests(), 1);
+    assert_eq!(testkit::taken(&drawn), trains, "a cached answer is drawn again");
+}
+
+/// A stop time at `name` (lat, lon) departing at `departure`, with `next` stops.
+fn stop_time(trip: &str, name: &str, at_: (f64, f64), departure: &str, next: &[(&str, (f64, f64), &str)]) -> Value {
+    let place = |name: &str, p: (f64, f64), arrival: Option<&str>, departure: Option<&str>| {
+        json!({ "name": name, "lat": p.0, "lon": p.1,
+                "scheduledArrival": arrival.map(|t| at(t).to_rfc3339()),
+                "scheduledDeparture": departure.map(|t| at(t).to_rfc3339()) })
+    };
+    json!({
+        "place": place(name, at_, None, Some(departure)),
+        "mode": "REGIONAL_RAIL",
+        "tripId": trip,
+        "nextStops": next.iter().map(|&(n, p, t)| place(n, p, Some(t), None)).collect::<Vec<_>>(),
+    })
+}
+
+#[tokio::test]
+async fn onward_draws_the_station_asked_and_the_trains_leaving() {
+    let answer = json!({ "stopTimes": [
+        stop_time("t1", "Alvesta", (56.9, 14.55), "08:00", &[("Växjö", (56.88, 14.81), "08:15")]),
+        stop_time("t2", "Alvesta", (56.9, 14.55), "08:30", &[("Lund", (55.7, 13.19), "10:00")]),
+    ]});
+    let fake = Arc::new(Fake::default());
+    fake.on("/api/v5/stoptimes", 200, None, &answer.to_string());
+    let (sketch, drawn) = testkit::recording();
+    let motis = client(&fake).await.sketching(sketch);
+    let legs = motis.onward(Some("stop"), None, at("07:30"), at("10:30")).await.unwrap();
+    let place = Place { name: "Alvesta".to_owned(), at: (56.9, 14.55) };
+    let asked = Item::Asked { place, span: Some((at("07:30").timestamp(), at("10:30").timestamp())), seen: Vec::new() };
+    let mut expected = vec![asked];
+    expected.extend(legs.iter().filter_map(sketch::train));
+    assert_eq!(expected.len(), 3);
+    assert_eq!(testkit::taken(&drawn), expected);
+}
+
+#[tokio::test]
+async fn a_trip_asked_for_draws_its_train() {
+    let leg = json!({
+        "mode": "REGIONAL_RAIL", "tripId": "t9",
+        "startTime": at("08:00").to_rfc3339(), "endTime": at("09:00").to_rfc3339(),
+        "from": { "name": "A", "lat": 50.0, "lon": 8.0, "departure": at("08:00").to_rfc3339() },
+        "to": { "name": "B", "lat": 51.0, "lon": 9.0, "arrival": at("09:00").to_rfc3339() },
+    });
+    let fake = Arc::new(Fake::default());
+    fake.on("/api/v5/trip", 200, None, &json!({ "legs": [leg] }).to_string());
+    let (sketch, drawn) = testkit::recording();
+    let motis = client(&fake).await.sketching(sketch);
+    motis.trip("t9").await.unwrap();
+    let stops = vec![
+        sketch::Stop(50.0, 8.0, None, Some(at("08:00").timestamp())),
+        sketch::Stop(51.0, 9.0, Some(at("09:00").timestamp()), None),
+    ];
+    assert_eq!(testkit::taken(&drawn), [Item::Train { id: "t9".to_owned(), stops }]);
 }

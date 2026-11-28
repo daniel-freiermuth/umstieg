@@ -2308,13 +2308,14 @@ fn feed_copies_without_a_shared_number_merge_by_the_same_times_at_two_stations()
 /// `fetch_boards` from Westend and Osthafen against a fake DB and MOTIS whose
 /// geocoder answers `geocode`; DB trains run via `middle`. `evas` are
 /// Westend's, `middle`'s and Osthafen's: each test uses its own, as DB
-/// answers are cached across tests. Discovered names, warnings, stations,
-/// boards and the paths asked for.
+/// answers are cached across tests. Westend lies at `WESTEND`, the others
+/// nowhere known. Discovered names, warnings, stations, boards, the paths
+/// asked for and what was drawn.
 async fn discover_between_westend_and_osthafen(
     geocode: axum::http::StatusCode,
     middle: &'static str,
     evas: [&'static str; 3],
-) -> (Vec<String>, Vec<String>, Stations, Boards, Vec<String>) {
+) -> (Vec<String>, Vec<String>, Stations, Boards, Vec<String>, Vec<crate::sketch::Item>) {
     use std::sync::{Arc, Mutex};
 
     use axum::extract::{Request, State};
@@ -2354,25 +2355,30 @@ async fn discover_between_westend_and_osthafen(
     let log = Arc::new(Mutex::new(Vec::new()));
     let fake = Fake { log: log.clone(), geocode, middle, evas };
     let base = crate::testkit::serve(axum::Router::new().fallback(answer).with_state(fake)).await;
-    let motis = crate::motis::Motis::new(&base, "umstieg-test").unwrap();
+    let (sketch, drawn) = crate::testkit::recording();
+    let motis = crate::motis::Motis::new(&base, "umstieg-test").unwrap().sketching(sketch);
     let credentials = crate::db::Credentials { client_id: "id".to_owned(), api_key: "key".to_owned() };
     let db = crate::db::Db::new(&base, credentials, "umstieg-test").unwrap();
 
     let mut stations = Stations::default();
-    let mut db_station =
-        |name, eva| stations.intern(Sighting { name, eva: Some(eva), board_name: Some(name), ..Sighting::default() });
-    let (westend, osthafen) = (db_station("Westend", evas[0]), db_station("Osthafen", evas[2]));
+    let mut db_station = |name, eva, position| {
+        stations.intern(Sighting { name, eva: Some(eva), board_name: Some(name), position, ..Sighting::default() })
+    };
+    let (westend, osthafen) = (db_station("Westend", evas[0], Some(WESTEND)), db_station("Osthafen", evas[2], None));
     let corridor = HashMap::from([(westend, (at("08:00"), at("08:00"))), (osthafen, (at("12:00"), at("12:00")))]);
     let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
     let boards = super::fetch_boards(&motis, &db, &mut stations, &corridor, &mut discovered, &mut warnings).await;
     let asked = log.lock().unwrap().clone();
-    (discovered, warnings, stations, boards, asked)
+    (discovered, warnings, stations, boards, asked, crate::testkit::taken(&drawn))
 }
+
+/// Where Westend lies.
+const WESTEND: (f64, f64) = (50.119_051, 8.653_513);
 
 #[tokio::test]
 async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
     // MOTIS knows no Mittelfeld: no position, but nothing to warn about.
-    let (discovered, warnings, stations, boards, log) = discover_between_westend_and_osthafen(
+    let (discovered, warnings, stations, boards, log, _) = discover_between_westend_and_osthafen(
         axum::http::StatusCode::OK,
         "Mittelfeld",
         ["8099701", "8099702", "8099703"],
@@ -2392,7 +2398,7 @@ async fn stations_on_db_train_paths_get_boards_until_the_train_arrives() {
 
 #[tokio::test]
 async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
-    let (discovered, warnings, stations, boards, _) = discover_between_westend_and_osthafen(
+    let (discovered, warnings, stations, boards, _, _) = discover_between_westend_and_osthafen(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         "Mittelberg",
         ["8099711", "8099712", "8099713"],
@@ -2407,6 +2413,25 @@ async fn a_failed_motis_stop_lookup_for_a_discovered_station_is_a_warning() {
     let mittelberg = index_of(&stations, "Mittelberg");
     assert!(boards.contains_key(&mittelberg));
     assert_eq!(stations.list[mittelberg.0].position, None);
+}
+
+#[tokio::test]
+async fn each_hour_of_a_db_board_is_drawn_at_its_station_if_it_has_a_position() {
+    use crate::sketch::{Item, Place, Seen};
+    let (_, _, _, _, _, drawn) = discover_between_westend_and_osthafen(
+        axum::http::StatusCode::OK,
+        "Mittelhof",
+        ["8099721", "8099722", "8099723"],
+    )
+    .await;
+    // ICE 1 leaves Westend at 08:00 UTC; the stand-in lists it in every hour.
+    // Osthafen and Mittelhof lie nowhere known: not drawn.
+    let hour = |h: &str| Item::Asked {
+        place: Place { name: "Westend".to_owned(), at: (50.11905, 8.65351) },
+        span: Some((at(h).timestamp(), at(h).timestamp() + 3600)),
+        seen: vec![Seen("db:1001-2610241000".to_owned(), None, Some(at("08:00").timestamp()))],
+    };
+    assert_eq!(drawn, [hour("07:00"), hour("08:00")]);
 }
 
 // ---------------------------------------------------------------- Trafikverket
@@ -2563,6 +2588,66 @@ async fn sweden_comes_from_trafikverket_runs_and_junction_boards() {
     let sj = trips.iter().find(|t| t.label == "SJ Regional 319").unwrap();
     let names: Vec<&str> = sj.calls.iter().map(|c| stations.list[c.station.0].name.as_str()).collect();
     assert_eq!(names, ["Göteborg Centralstation", "Lessebo", "Emmaboda", "Nybro", "Kalmar C"]);
+}
+
+#[tokio::test]
+async fn trafikverket_boards_and_runs_are_drawn_as_they_come() {
+    use crate::sketch::{Item, Place, Seen, Stop};
+    let url = crate::testkit::serve_trafikverket(&tv_world()).await;
+    let tv = crate::trafikverket::Trafikverket::new(&url, "key", "umstieg-test").unwrap();
+    let (sketch, drawn) = crate::testkit::recording();
+    let motis = unused_motis().sketching(sketch);
+    let mut stations = Stations::default();
+    let origin = stations.intern(Sighting { name: "Göteborg C", position: Some(GOTEBORG), ..Sighting::default() });
+    let destination = stations.intern(Sighting { name: "Karlshamn", position: Some(KARLSHAMN), ..Sighting::default() });
+    let corridor = HashMap::from([(origin, (at("06:00"), at("07:00"))), (destination, (at("06:30"), at("11:00")))]);
+    let (mut discovered, mut warnings) = (Vec::new(), Vec::new());
+    swedish(&tv, &motis, &mut stations, &corridor, (origin, destination), &mut discovered, &mut warnings).await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let drawn = crate::testkit::taken(&drawn);
+    let id = |ident: &str| format!("tv:{ident}/{}", crate::testkit::TV_DATE);
+    let mut kinds: Vec<String> = drawn
+        .iter()
+        .map(|item| match item {
+            Item::Asked { place, .. } => format!("asked {}", place.name),
+            Item::Train { id, .. } => id.clone(),
+            _ => "other".to_owned(),
+        })
+        .collect();
+    // The corridor's boards, their runs; the junctions' boards, their new long-distance and regional runs.
+    let rounds = [
+        vec!["asked Göteborg C".to_owned(), "asked Karlshamn".to_owned()],
+        vec![id("1060"), id("319"), id("7100")],
+        ["Alvesta", "Emmaboda", "Karlskrona C", "Nybro"].map(|s| format!("asked {s}")).to_vec(),
+        vec![id("7200")],
+    ];
+    let mut rest = kinds.as_mut_slice();
+    for round in rounds {
+        let (this, next) = rest.split_at_mut(round.len().min(rest.len()));
+        this.sort();
+        assert_eq!(this, round.as_slice());
+        rest = next;
+    }
+    assert!(rest.is_empty(), "{rest:?}");
+
+    let goteborg = Item::Asked {
+        place: Place { name: "Göteborg C".to_owned(), at: GOTEBORG },
+        span: Some((at("05:30").timestamp(), at("07:30").timestamp())),
+        seen: vec![Seen(id("319"), Some(at("06:04").timestamp()), Some(at("06:04").timestamp()))],
+    };
+    assert!(drawn.contains(&goteborg), "{drawn:?}");
+    let s = |hhmm: &str| Some(at(hhmm).timestamp());
+    let sj = Item::Train {
+        id: id("319"),
+        stops: vec![
+            Stop(GOTEBORG.0, GOTEBORG.1, None, s("06:04")),
+            Stop(56.751, 15.27, s("08:50"), s("08:51")),
+            Stop(56.63, 15.535, s("09:30"), s("09:33")),
+            Stop(56.744, 15.906, s("09:44"), None),
+        ],
+    };
+    assert!(drawn.contains(&sj), "live times where known: {drawn:?}");
 }
 
 #[tokio::test]

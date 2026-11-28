@@ -8,7 +8,7 @@ describe("decodeStatus", () => {
   test("a running search", () => {
     expect(
       status(
-        '{"log": ["rough routes"], "now": "3 requests to DB", "done": false, "error": null, "no_connection": null, "back": "/?from=A"}',
+        '{"log": ["rough routes"], "now": "3 requests to DB", "done": false, "error": null, "no_connection": null, "back": "/?from=A", "sketch": [{"kind": "asked_train", "trip": 2}]}',
       ),
     ).toEqual({
       log: ["rough routes"],
@@ -17,6 +17,7 @@ describe("decodeStatus", () => {
       error: null,
       no_connection: null,
       back: "/?from=A",
+      sketch: [{ kind: "asked_train", trip: 2 }],
     });
   });
 
@@ -47,6 +48,10 @@ describe("decodeStatus", () => {
         "status.no_connection: expected a string",
       ],
       ['{"log": [], "now": null, "done": true, "error": null, "no_connection": null}', "status.back: expected a value"],
+      [
+        '{"log": [], "now": null, "done": true, "error": null, "no_connection": null, "back": "", "sketch": [{}]}',
+        "status.sketch[0].kind: expected a value",
+      ],
       ["[]", "status: expected an object"],
     ];
     for (const [text, message] of cases) expect(() => status(text)).toThrow(message);
@@ -54,38 +59,33 @@ describe("decodeStatus", () => {
 });
 
 describe("next", () => {
+  const at = (s: Pick<Status, "done" | "error" | "no_connection">): Status => ({
+    log: [],
+    now: null,
+    back: "",
+    sketch: [],
+    ...s,
+  });
   test("polls while running, even with an error already set", () => {
-    expect(next({ log: [], now: null, done: false, error: null, no_connection: null, back: "" })).toEqual({
-      poll: true,
-    });
-    expect(next({ log: [], now: null, done: false, error: "late", no_connection: null, back: "" })).toEqual({
-      poll: true,
-    });
+    expect(next(at({ done: false, error: null, no_connection: null }))).toEqual({ poll: true });
+    expect(next(at({ done: false, error: "late", no_connection: null }))).toEqual({ poll: true });
   });
 
   test("opens the plot when done without error", () => {
-    expect(next({ log: [], now: null, done: true, error: null, no_connection: null, back: "" })).toEqual({
-      plot: true,
-    });
+    expect(next(at({ done: true, error: null, no_connection: null }))).toEqual({ plot: true });
   });
 
   test("shows why there is no plot, even an empty reason", () => {
-    expect(
-      next({ log: [], now: null, done: true, error: "no stop named like A", no_connection: null, back: "" }),
-    ).toEqual({
+    expect(next(at({ done: true, error: "no stop named like A", no_connection: null }))).toEqual({
       error: "no stop named like A",
     });
-    expect(next({ log: [], now: null, done: true, error: "", no_connection: null, back: "" })).toEqual({ error: "" });
+    expect(next(at({ done: true, error: "", no_connection: null }))).toEqual({ error: "" });
   });
 
   test("shows the report of a search that found no connection, apart from failures", () => {
     const report = "rough routes via B\n\nNo connection found.\n";
-    expect(next({ log: [], now: null, done: true, error: null, no_connection: report, back: "" })).toEqual({
-      noConnection: report,
-    });
-    expect(next({ log: [], now: null, done: true, error: null, no_connection: "", back: "" })).toEqual({
-      noConnection: "",
-    });
+    expect(next(at({ done: true, error: null, no_connection: report }))).toEqual({ noConnection: report });
+    expect(next(at({ done: true, error: null, no_connection: "" }))).toEqual({ noConnection: "" });
   });
 });
 

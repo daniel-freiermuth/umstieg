@@ -353,35 +353,47 @@ impl Db {
     }
 
     /// Trains at `eva` during the given hours, with live changes applied.
-    /// Also returns which product classes the board covers per hour.
-    pub async fn visits(&self, eva: &str, hours: &[DateTime<Utc>]) -> Result<(Vec<Visit>, Coverage)> {
+    /// Also returns which product classes the board covers per hour. `seen`
+    /// gets each hour's planned trains (changes applied) as its board comes.
+    pub async fn visits(
+        &self,
+        eva: &str,
+        hours: &[DateTime<Utc>],
+        seen: &(dyn Fn(DateTime<Utc>, &[Visit]) + Sync),
+    ) -> Result<(Vec<Visit>, Coverage)> {
         let changes = self.changes(eva).await?;
         let mut by_trip: HashMap<String, Visit> = HashMap::new();
         let mut coverage = Coverage::default();
         for hour in hours {
             let slot = slot(*hour);
+            let (mut ids, mut visits) = (Vec::new(), Vec::new());
             for visit in self.plan(eva, &slot).await?.iter() {
                 if let Some(class) = visit.class {
                     coverage.0.push((slot.clone(), class));
                 }
-                by_trip.insert(visit_id(visit), visit.clone());
-            }
-        }
-        for (id, change) in changes.iter() {
-            match by_trip.get_mut(id) {
-                Some(visit) => visit.merge(change),
-                // Trains added after planning (diversions, extra trains) come with full data.
-                None if change.number.is_some() => {
-                    let in_hours = [&change.arrival, &change.departure]
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|e| e.planned)
-                        .any(|t| hours.iter().any(|h| slot(*h) == slot(t)));
-                    if in_hours {
-                        by_trip.insert(id.clone(), change.clone());
-                    }
+                let id = visit_id(visit);
+                let mut visit = visit.clone();
+                if let Some(change) = changes.get(&id) {
+                    visit.merge(change);
                 }
-                None => {}
+                ids.push(id);
+                visits.push(visit);
+            }
+            seen(*hour, &visits);
+            by_trip.extend(ids.into_iter().zip(visits));
+        }
+        // Trains added after planning (diversions, extra trains) come with full data.
+        for (id, change) in changes.iter() {
+            if change.number.is_none() || by_trip.contains_key(id) {
+                continue;
+            }
+            let in_hours = [&change.arrival, &change.departure]
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.planned)
+                .any(|t| hours.iter().any(|h| slot(*h) == slot(t)));
+            if in_hours {
+                by_trip.insert(id.clone(), change.clone());
             }
         }
         coverage.0.sort();
